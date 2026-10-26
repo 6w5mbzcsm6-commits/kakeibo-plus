@@ -1385,6 +1385,14 @@
             <button type="button" class="modal-close-btn" onclick="closeLineAuthModal()">✕</button>
           </div>
           <div class="modal-body">
+            <!-- PC直接LINEログインボタン -->
+            <div style="margin-bottom:14px;">
+              <button type="button" class="btn-primary-pill-full" style="background:#06C755; color:#fff; font-size:15px; font-weight:700; padding:13px; border:none; border-radius:12px; cursor:pointer; width:100%; box-shadow:0 4px 14px rgba(6,199,85,0.3); display:flex; align-items:center; justify-content:center; gap:8px;" onclick="triggerDirectLineLogin()">
+                <span class="line-logo-badge" style="background:#fff; color:#06C755; font-size:11px; padding:2px 6px; border-radius:4px;">LINE</span>
+                <span>このPCでLINEログインする (認証画面へ)</span>
+              </button>
+            </div>
+
             <!-- 現在のログイン状態カード -->
             <div class="card" style="padding:14px 16px; margin-bottom:16px; background:#f8fafc; border:1px solid #e2e8f0;">
               <div style="font-size:12px; color:#64748b; font-weight:600; margin-bottom:6px;">現在のユーザー情報</div>
