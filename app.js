@@ -1,5 +1,27 @@
 
 /**
+ * PC等から直接LINE公式ログイン画面を開く
+ */
+function triggerDirectLineLogin() {
+  if (typeof liff !== 'undefined' && liff.init) {
+    if (liff.isLoggedIn()) {
+      showToast('すでにLINEログイン済みです！');
+      return;
+    }
+    try {
+      liff.login({ redirectUri: window.location.href.split('?')[0].split('#')[0] });
+    } catch (e) {
+      console.warn('liff.login fallback:', e);
+      window.location.href = 'https://liff.line.me/' + LIFF_ID;
+    }
+  } else {
+    window.location.href = 'https://liff.line.me/' + LIFF_ID;
+  }
+}
+window.triggerDirectLineLogin = triggerDirectLineLogin;
+
+
+/**
  * LINE認証状態をUIに反映
  */
 // ================= GAS ネイティブブリッジ (google.script.run 自動通信) =================
