@@ -1,0 +1,1453 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+  <title>家計簿Plus - かんたん・見やすい家計簿Webアプリ</title>
+  <meta name="description" content="シンプルで使いやすい「家計簿Plus」Webアプリ。Googleスプレッドシート(GAS)とシームレスに同期可能。">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Noto+Sans+JP:wght@400;500;600;700&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <!-- Chart.js CDN -->
+  <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+  <!-- LINE LIFF SDK -->
+  <script charset="utf-8" src="https://static.line-scdn.net/liff/edge/2/sdk.js"></script>
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <!-- アプリ本体コンテナ（モバイルファースト） -->
+  <div class="app-wrapper">
+    <div class="mobile-frame" id="appFrame">
+      
+
+
+      <!-- アプリヘッダーバー (PC & スマホ レスポンシブ対応) -->
+      <nav class="app-title-bar">
+        <div class="title-brand">
+          <div class="brand-logo-icon">📒</div>
+          <div class="title-texts">
+            <h1 class="app-title">家計簿Plus</h1>
+            <span class="app-subdomain">かんたん共有＆AI家計簿</span>
+          </div>
+        </div>
+
+        <!-- PC専用クイックアクション (PC大画面時に表示) -->
+        <div class="pc-header-nav">
+          <button type="button" class="pc-nav-btn primary" onclick="openAddModal()">＋ 明細入力</button>
+          <button type="button" class="pc-nav-btn ai" onclick="openReceiptModal()">✨ AIレシート</button>
+          <button type="button" class="pc-nav-btn" onclick="openShoppingScreen()">🧺 買い物メモ</button>
+          <button type="button" class="pc-nav-btn" onclick="openSmartInputScreen()">📄 スマート入力</button>
+          <button type="button" class="pc-nav-btn" onclick="openFixedCostsScreen()">🔁 固定費</button>
+          <button type="button" class="pc-nav-btn" onclick="openSettingsScreen()">⚙️ 設定</button>
+        </div>
+
+        <div class="title-actions">
+          <!-- LINEログイン / 連携ボタン -->
+          <div class="line-auth-box" id="lineAuthBox">
+            <button type="button" class="btn-line-login" id="btnLineLoginHeader" onclick="handleLineLoginClick()" title="LINEアカウントでログイン">
+              <span class="line-logo-badge">LINE</span>
+              <span id="lineLoginBtnText">LINEでログイン</span>
+            </button>
+          </div>
+          <button type="button" class="nav-icon-btn" id="btnGasStatus" title="GAS同期ステータス" aria-label="GAS同期ステータス">
+            <span class="sync-dot online" id="syncStatusIndicator"></span>
+          </button>
+          <button type="button" class="nav-icon-btn" id="btnMoreMenu" onclick="openSettingsScreen()" title="設定メニュー" aria-label="設定メニュー">⚙️</button>
+        </div>
+      </nav>
+
+      <!-- メインビュー領域（スクロール可能） -->
+      <main class="main-content" id="mainContent">
+
+
+
+        <!-- 承認待ちバナー (自分がグループ承認待ちの場合に表示) -->
+        <div class="pending-group-banner" id="pendingGroupBanner" style="display: none;">
+          <div class="pending-banner-content">
+            <span class="pending-banner-icon">⏳</span>
+            <div class="pending-banner-texts">
+              <strong id="pendingBannerGroupName">グループ名</strong>
+              <span>参加承認待ちです。グループ作成者・メンバーの承認をお待ちください。</span>
+            </div>
+          </div>
+        </div>
+
+        <!-- 承認要請通知 (自分がオーナー等で承認待ちメンバーがいる場合に表示) -->
+        <div class="action-required-banner" id="ownerApprovalNoticeBanner" style="display: none;">
+          <div class="action-banner-content">
+            <span class="action-banner-icon">🔔</span>
+            <span class="action-banner-text">参加申請が届いています</span>
+          </div>
+          <button type="button" class="action-banner-btn" id="btnOpenPendingApprovals" onclick="openGroupManageModal()">確認・承認する</button>
+        </div>
+
+        <div class="dashboard-grid">
+          <div class="dashboard-left-col">
+        <!-- 個人 / グループ 切り替えセグメント & グループ選択 -->
+        <div class="scope-switch-container">
+          <div class="scope-switch-pill">
+            <button type="button" class="scope-btn active" id="scopePersonalBtn" onclick="switchScope('personal')" data-scope="personal">
+              <span class="scope-icon">👤</span>
+              <span class="scope-text">個人 (非公開)</span>
+            </button>
+            <button type="button" class="scope-btn" id="scopeGroupBtn" onclick="switchScope('group')" data-scope="group">
+              <span class="scope-icon">👥</span>
+              <span class="scope-text" id="groupScopeLabel">グループ</span>
+            </button>
+          </div>
+
+          <!-- グループ選択バー (グループモード時に表示) -->
+          <div class="group-select-row" id="groupSelectRow" style="display: none;">
+            <div class="group-select-dropdown-wrap">
+              <select class="group-dropdown-select" id="activeGroupSelect" onchange="switchActiveGroup(this.value)" aria-label="グループ選択"></select>
+            </div>
+            <div class="group-actions-btns">
+              <button type="button" class="btn-group-action" id="btnOpenGroupManage" onclick="openGroupManageModal()" title="グループ設定・メンバー管理">⚙️ 管理</button>
+              <button type="button" class="btn-group-action" id="btnOpenCreateGroup" onclick="openCreateGroupModal()" title="新しいグループを作成">➕ 作成</button>
+              <button type="button" class="btn-group-action" id="btnOpenJoinGroup" onclick="openJoinGroupModal()" title="招待コードで参加">🔑 参加</button>
+            </div>
+          </div>
+        </div>
+
+        <!-- 画面トップ操作行: 設定ボタン & 年月ピッカー -->
+        <div class="top-nav-bar">
+          <button type="button" class="pill-btn btn-settings" id="openSettingsBtn" onclick="openSettingsScreen()" aria-label="設定画面を開く">
+            <span class="icon">⚙️</span>
+            <span>設定</span>
+          </button>
+
+          <div class="month-selector">
+            <button type="button" class="month-arrow-btn" id="prevMonthBtn" onclick="changeMonth(-1)" aria-label="前月">&lt;</button>
+            <button type="button" class="current-month-display" id="monthPickerBtn" onclick="promptMonthChange()" aria-label="月を変更">
+              <span id="currentMonthLabel">2026年10月</span>
+            </button>
+            <button type="button" class="month-arrow-btn" id="nextMonthBtn" onclick="changeMonth(1)" aria-label="次月">&gt;</button>
+          </div>
+        </div>
+
+        <!-- 支出合計カード -->
+        <section class="card summary-hero-card" id="heroSummaryCard">
+          <div class="hero-header">
+            <span class="hero-label" id="heroSummaryLabel">支出合計 (個人)</span>
+            <button type="button" class="budget-link-btn" id="budgetSettingLink" onclick="openBudgetModal()">詳細予算を設定</button>
+          </div>
+          <div class="hero-amount-row">
+            <span class="hero-currency">¥</span><span class="hero-amount" id="totalExpenseHero">850</span>
+          </div>
+
+          <!-- 予算プログレス (月間 & 年間) -->
+          <div class="budget-progress-wrap" id="budgetProgressWrap" style="display: none;">
+            <!-- 月間予算バー -->
+            <div class="budget-progress-row" id="monthlyBudgetRow">
+              <div class="budget-info-text">
+                <span class="budget-tag-label">今月の予算</span>
+                <span id="budgetRemainingText">残 ¥149,150</span>
+                <span id="budgetTotalText">/ ¥150,000</span>
+              </div>
+              <div class="progress-bar-bg">
+                <div class="progress-bar-fill" id="budgetProgressBar" style="width: 0.5%;"></div>
+              </div>
+              <div class="daily-budget-allowance" id="dailyBudgetAllowanceText">
+                📅 今月あと7日 / 1日あたり <strong>¥21,307</strong> 使える目安
+              </div>
+            </div>
+
+            <!-- 年間予算バー (設定時表示) -->
+            <div class="budget-progress-row yearly-row" id="yearlyBudgetRow" style="display: none;">
+              <div class="budget-info-text">
+                <span class="budget-tag-label">年間の予算</span>
+                <span id="budgetYearlyRemainingText">残 ¥1,799,150</span>
+                <span id="budgetYearlyTotalText">/ ¥1,800,000</span>
+              </div>
+              <div class="progress-bar-bg">
+                <div class="progress-bar-fill yearly-fill" id="budgetYearlyProgressBar" style="width: 0.1%;"></div>
+              </div>
+            </div>
+          </div>
+        </section>
+
+        <!-- 同棲・グループ精算カード (グループモード時のみ表示) -->
+        <section class="card settlement-card" id="groupSettlementCard" style="display: none;">
+          <div class="settlement-header">
+            <div class="settlement-title-wrap">
+              <span class="settlement-emoji">💑</span>
+              <h3 class="settlement-title">同棲・割り勘精算</h3>
+            </div>
+            <button class="btn-copy-settlement" id="copySettlementBtn" title="精算テキストをコピー">LINE等で共有</button>
+          </div>
+
+          <div class="settlement-members-grid">
+            <div class="settlement-member-col">
+              <span class="member-label" id="labelMyName">自分</span>
+              <span class="member-paid" id="statMyPaid">¥850</span>
+            </div>
+            <div class="settlement-split-icon">⇄</div>
+            <div class="settlement-member-col">
+              <span class="member-label" id="labelPartnerName">パートナー</span>
+              <span class="member-paid" id="statPartnerPaid">¥0</span>
+            </div>
+          </div>
+
+          <div class="settlement-result-box" id="settlementResultBox">
+            <span class="result-badge">精算</span>
+            <span class="result-text" id="settlementResultText">パートナー → 自分へ ¥425</span>
+          </div>
+        </section>
+
+          </div><!-- /.dashboard-left-col -->
+          <div class="dashboard-right-col">
+        <!-- メインタブ切り替え (明細 / 分析) -->
+        <div class="tab-switch-container">
+          <div class="tab-switch-pill">
+            <button type="button" class="tab-btn active" id="tabDetailsBtn" onclick="switchTab('details')" data-tab="details">明細</button>
+            <button type="button" class="tab-btn" id="tabAnalysisBtn" onclick="switchTab('analysis')" data-tab="analysis">分析</button>
+          </div>
+        </div>
+
+        <!-- ================= 明細タブ ビュー ================= -->
+        <div class="tab-view active" id="viewDetails">
+          <!-- サブ切替: 件数表示 & リスト/カレンダー トグル -->
+          <div class="details-subnav">
+            <span class="items-count-badge" id="itemsCountBadge">1件</span>
+            <div class="view-toggle-pill">
+              <button type="button" class="view-toggle-btn active" id="toggleListBtn" onclick="switchSubView('list')" data-view="list">リスト</button>
+              <button type="button" class="view-toggle-btn" id="toggleCalendarBtn" onclick="switchSubView('calendar')" data-view="calendar">カレンダー</button>
+            </div>
+          </div>
+
+          <!-- キーワード検索 ＆ カテゴリ絞り込みフィルタ -->
+          <div class="details-filter-section" id="detailsFilterSection">
+            <div class="search-input-wrap">
+              <span class="search-icon-prefix">🔍</span>
+              <input type="text" id="searchTxInput" class="search-tx-input" placeholder="品目・メモ・カテゴリで検索..." oninput="handleSearchFilterChange()">
+              <button type="button" id="btnClearSearchTx" class="btn-clear-search" onclick="clearSearchFilter()" style="display: none;" aria-label="検索をクリア">✕</button>
+            </div>
+            <div class="category-filter-pills" id="categoryFilterPills">
+              <!-- JSで動的生成（すべて ＋ 各カテゴリ） -->
+            </div>
+          </div>
+
+          <!-- リスト表示モード -->
+          <div class="submode-view" id="modeListView">
+            <div class="transactions-list-container" id="transactionsList">
+              <!-- JSで動的レンダリング -->
+              <div class="date-group">
+                <div class="date-group-header">
+                  <span class="date-group-day">10/24(土)</span>
+                  <span class="date-group-sum">支出 ¥850</span>
+                </div>
+                <div class="transaction-item card">
+                  <div class="item-icon-box">🍽️</div>
+                  <div class="item-info">
+                    <span class="item-title">ランチ</span>
+                    <span class="item-category-tag">外食</span>
+                  </div>
+                  <div class="item-amount">¥850</div>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <!-- カレンダー表示モード -->
+          <div class="submode-view" id="modeCalendarView" style="display: none;">
+            <div class="card calendar-card">
+              <div class="calendar-grid-header">
+                <span class="col-sun">日</span>
+                <span>月</span>
+                <span>火</span>
+                <span>水</span>
+                <span>木</span>
+                <span>金</span>
+                <span class="col-sat">土</span>
+              </div>
+              <div class="calendar-grid-cells" id="calendarGridCells">
+                <!-- 動的生成 -->
+              </div>
+            </div>
+            <!-- 選択された日の詳細リスト -->
+            <div class="selected-day-details" id="selectedDayDetails">
+              <div class="selected-day-title" id="selectedDayTitle">選択日の明細</div>
+              <div class="selected-day-list" id="selectedDayList"></div>
+            </div>
+          </div>
+        </div>
+
+        <!-- ================= 分析タブ ビュー ================= -->
+        <div class="tab-view" id="viewAnalysis" style="display: none;">
+          <!-- 4分割サマリーカード グリッド -->
+          <div class="analysis-stats-grid">
+            <!-- 1. 最高額の支出 -->
+            <div class="card stat-card">
+              <span class="stat-label">最高額の支出</span>
+              <span class="stat-value" id="statMaxExpense">¥850</span>
+              <span class="stat-sub" id="statMaxCategory">外食</span>
+            </div>
+            <!-- 2. 最も使ったカテゴリ -->
+            <div class="card stat-card">
+              <span class="stat-label">最も使ったカテゴリ</span>
+              <div class="stat-icon-row">
+                <span class="stat-emoji" id="statTopCatEmoji">🍽️</span>
+                <span class="stat-title" id="statTopCatName">外食</span>
+              </div>
+              <span class="stat-sub-amount" id="statTopCatAmount">¥850</span>
+            </div>
+            <!-- 3. 最も使った日 -->
+            <div class="card stat-card">
+              <span class="stat-label">最も使った日</span>
+              <span class="stat-value" id="statTopDayAmount">¥850</span>
+              <span class="stat-sub" id="statTopDayDate">10/24(土)</span>
+            </div>
+            <!-- 4. 1日の平均 -->
+            <div class="card stat-card">
+              <span class="stat-label">1日の平均</span>
+              <span class="stat-value" id="statDailyAverage">¥35</span>
+              <span class="stat-sub" id="statActiveDays">24日間</span>
+            </div>
+          </div>
+
+          <!-- 今月の収支カード -->
+          <div class="card balance-card">
+            <h2 class="section-title">今月の収支</h2>
+            <div class="balance-row">
+              <div class="balance-col">
+                <span class="col-label">収入</span>
+                <span class="col-val text-blue" id="balanceIncome">¥0</span>
+              </div>
+              <div class="balance-col">
+                <span class="col-label">支出</span>
+                <span class="col-val text-black" id="balanceExpense">¥850</span>
+              </div>
+              <div class="balance-col">
+                <span class="col-label">収支</span>
+                <span class="col-val text-red" id="balanceNet">-¥850</span>
+              </div>
+            </div>
+          </div>
+
+          <!-- 支出の累計(前月と比較) -->
+          <div class="card chart-card">
+            <h2 class="section-title">支出の累計(前月と比較)</h2>
+            <div class="chart-container">
+              <canvas id="chartCumulative"></canvas>
+            </div>
+          </div>
+
+          <!-- 前月比バー -->
+          <div class="card chart-card">
+            <h2 class="section-title">前月比</h2>
+            <div class="category-bars-list" id="categoryDiffList">
+              <div class="category-bar-item">
+                <div class="cat-bar-left">
+                  <span class="cat-icon">🍽️</span>
+                  <span class="cat-name">外食</span>
+                </div>
+                <div class="cat-bar-track">
+                  <div class="cat-bar-fill" style="width: 60%; background-color: #ef4444;"></div>
+                </div>
+                <div class="cat-bar-diff text-red">+¥850</div>
+              </div>
+            </div>
+          </div>
+
+          <!-- 直近6か月 -->
+          <div class="card chart-card">
+            <div class="section-header-flex">
+              <h2 class="section-title">直近6か月</h2>
+            </div>
+            <div class="chart-container">
+              <canvas id="chartRecentMonths"></canvas>
+            </div>
+          </div>
+
+          <!-- 曜日別の支出 -->
+          <div class="card chart-card">
+            <h2 class="section-title">曜日別の支出</h2>
+            <div class="chart-container">
+              <canvas id="chartWeekday"></canvas>
+            </div>
+          </div>
+        </div>
+          </div><!-- /.dashboard-right-col -->
+        </div><!-- /.dashboard-grid -->
+
+      </main>
+
+      <!-- フローティングアクションボタン群 (FAB) -->
+      <div class="fab-container">
+        <!-- 買い物メモボタン (🧺) -->
+        <button type="button" class="fab-btn fab-shopping" id="openShoppingFab" onclick="openShoppingScreen()" title="買い物メモ" aria-label="買い物メモを開く">
+          <span class="fab-emoji">🧺</span>
+        </button>
+        <!-- レシートAI読取ボタン (📷 Gemini API) -->
+        <button type="button" class="fab-btn fab-receipt" id="openReceiptFab" onclick="openReceiptModal()" title="レシート読取 (Gemini AI)" aria-label="レシート読取を開く">
+          <span class="fab-emoji">📷</span>
+        </button>
+        <!-- 支出・収入追加ボタン (＋) -->
+        <button type="button" class="fab-btn fab-add" id="openAddModalFab" onclick="openAddModal()" title="明細を追加" aria-label="明細を追加">
+          <span class="fab-plus">＋</span>
+        </button>
+      </div>
+
+      <!-- ================= 買い物メモ フルスクリーン/スライド画面 ================= -->
+      <div class="slide-screen" id="shoppingScreen">
+        <div class="screen-header">
+          <button type="button" class="screen-back-btn screen-back-pill" id="closeShoppingBtn" onclick="closeShoppingScreen()">‹ 戻る</button>
+          <h2 class="screen-title">買い物メモ</h2>
+        </div>
+        <div class="screen-body">
+          <p class="screen-guide-text">スペース区切りで複数項目をまとめて追加できます（例：「牛乳 卵 食パン」）。</p>
+          
+          <div class="shopping-input-row">
+            <input type="text" id="shoppingInput" class="custom-input shopping-input" placeholder="買うもの(スペース区切りで複数)">
+            <button type="button" class="primary-btn btn-add-shopping" id="addShoppingBtn" onclick="handleAddShoppingItem()">追加</button>
+          </div>
+
+          <div class="shopping-list-section">
+            <div class="section-header-row">
+              <span class="shopping-count" id="shoppingCountLabel">買うもの 0件</span>
+              <button type="button" class="text-link-btn" id="clearCompletedShoppingBtn" onclick="clearCompletedShopping()" style="display: none;">完了済みを削除</button>
+            </div>
+
+            <div class="shopping-items-wrap" id="shoppingItemsWrap">
+              <div class="card empty-card" id="emptyShoppingCard">
+                <p>買うものはありません。</p>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- ================= 設定画面 フルスクリーン/スライド画面 ================= -->
+      <div class="slide-screen" id="settingsScreen">
+        <div class="screen-header">
+          <button type="button" class="screen-back-btn screen-back-pill" id="closeSettingsBtn" onclick="closeSettingsScreen()">‹ 戻る</button>
+          <h2 class="screen-title">設定</h2>
+        </div>
+        <div class="screen-body settings-body">
+          
+          <!-- プラン -->
+          <section class="settings-group">
+            <h3 class="group-label">プラン</h3>
+            <div class="card setting-nav-item" id="openPlanModalBtn">
+              <span class="setting-nav-text">全機能解放プラン (無料)</span>
+              <span class="setting-nav-arrow">›</span>
+            </div>
+          </section>
+
+          <!-- 予算設定 (個人・グループ / 年間・月間) -->
+          <section class="settings-group">
+            <h3 class="group-label">予算設定 (年間・月間・グループ別)</h3>
+            <div class="card setting-nav-item highlight-item-budget" id="openBudgetModalBtn" onclick="openBudgetModal()">
+              <div class="nav-item-content">
+                <span class="setting-nav-text font-bold">🎯 詳細予算を設定する</span>
+                <span class="setting-nav-sub" id="budgetSummarySettingText">個人: 月¥150,000 / 年¥1,800,000</span>
+              </div>
+              <span class="setting-nav-arrow">›</span>
+            </div>
+          </section>
+
+          <!-- Gemini API 設定 (レシートAI読取用) -->
+          <section class="settings-group">
+            <h3 class="group-label">Gemini API 設定 (レシート自動入力)</h3>
+            <div class="card gemini-config-card">
+              <div class="config-field">
+                <div class="gemini-label-row">
+                  <label class="config-label" for="settingGeminiApiKey">Gemini API キー</label>
+                  <a href="https://aistudio.google.com/app/apikey" target="_blank" rel="noopener" class="gemini-key-link">無料キーを取得 ↗</a>
+                </div>
+                <input type="password" id="settingGeminiApiKey" class="custom-input" placeholder="AIzaSy...">
+              </div>
+              <div class="gemini-btn-row">
+                <button type="button" class="primary-btn btn-save-gemini" id="saveGeminiApiKeyBtn" onclick="handleSaveGeminiApiKey()">APIキーを保存</button>
+                <span class="gemini-status-tag" id="geminiKeyStatusTag">未設定 (デモモード)</span>
+              </div>
+            </div>
+          </section>
+
+          <!-- Google Apps Script 連携 (ハイライト表示) -->
+          <section class="settings-group">
+            <h3 class="group-label">Google スプレッドシート連携 (GAS)</h3>
+            <div class="card setting-nav-item highlight-item" id="openGasModalBtn" onclick="openGasModal()">
+              <div class="nav-item-content">
+                <span class="setting-nav-text font-bold">GAS API 連携設定</span>
+                <span class="setting-nav-sub" id="gasSyncSubLabel">ローカル保存中 (未連携)</span>
+              </div>
+              <span class="setting-nav-arrow">›</span>
+            </div>
+          </section>
+
+          <!-- 同棲・グループ共有設定 -->
+          <section class="settings-group">
+            <h3 class="group-label">同棲・グループ共有設定 (カップル家計簿)</h3>
+            <div class="card group-config-card">
+              <div class="config-field">
+                <label class="config-label" for="configMyName">あなたの表示名</label>
+                <input type="text" id="configMyName" class="custom-input config-input" value="自分" placeholder="例: 自分">
+              </div>
+              <div class="config-field">
+                <label class="config-label" for="configPartnerName">パートナーの表示名</label>
+                <input type="text" id="configPartnerName" class="custom-input config-input" value="パートナー" placeholder="例: パートナー">
+              </div>
+              <div class="config-field">
+                <label class="config-label" for="configSplitRatio">割り勘の負担割合 (自分 : パートナー)</label>
+                <select id="configSplitRatio" class="custom-input config-input">
+                  <option value="0.5" selected>折半 (50% : 50%)</option>
+                  <option value="0.6">自分 60% : 相手 40%</option>
+                  <option value="0.7">自分 70% : 相手 30%</option>
+                  <option value="0.4">自分 40% : 相手 60%</option>
+                </select>
+              </div>
+              <div class="group-info-note">
+                <p>💡 <strong>プライバシー保護:</strong> 個人の明細は共有されず、あなた専用として保護されます。「👥 グループに共有」ボタンを押した明細のみが2人の精算対象になります。</p>
+              </div>
+              <button class="primary-btn btn-save-group-config" id="saveGroupConfigBtn">設定を保存</button>
+            </div>
+          </section>
+
+          <!-- 記録 -->
+          <section class="settings-group">
+            <h3 class="group-label">記録</h3>
+            <div class="card setting-nav-item" id="btnHistory" onclick="openHistoryScreen()">
+              <span class="setting-nav-text">登録の履歴</span>
+              <span class="setting-nav-arrow">›</span>
+            </div>
+            <div class="card setting-nav-item" id="btnFixedCosts" onclick="openFixedCostsScreen()">
+              <span class="setting-nav-text">固定費</span>
+              <span class="setting-nav-arrow">›</span>
+            </div>
+          </section>
+
+          <!-- カスタマイズ -->
+          <section class="settings-group">
+            <h3 class="group-label">カスタマイズ</h3>
+            <div class="card setting-nav-item" id="btnEditCategories" onclick="openEditCategoriesScreen()">
+              <span class="setting-nav-text">カテゴリを編集</span>
+              <span class="setting-nav-arrow">›</span>
+            </div>
+            <div class="card setting-nav-item" id="btnCategoryRules" onclick="openCategoryRulesScreen()">
+              <span class="setting-nav-text">カテゴリルール</span>
+              <span class="setting-nav-arrow">›</span>
+            </div>
+          </section>
+
+          <!-- データ -->
+          <section class="settings-group">
+            <h3 class="group-label">データ</h3>
+            <div class="card setting-nav-item" id="btnSmartInput" onclick="openSmartInputScreen()">
+              <span class="setting-nav-text">スマート入力</span>
+              <span class="setting-nav-arrow">›</span>
+            </div>
+            <div class="card setting-badge-item" id="btnExportCsv" style="cursor: pointer;">
+              <span class="setting-nav-text">エクスポート(CSV)</span>
+              <div class="export-right-group">
+                <span class="badge-blue">ダウンロード</span>
+              </div>
+            </div>
+          </section>
+
+          <!-- 使い方 -->
+          <section class="settings-group">
+            <h3 class="group-label">使い方</h3>
+            <div class="card guide-info-card">
+              <ul class="guide-bullets">
+                <li>右下の「📷」ボタンからレシートの写真をGemini AIで自動認識して記録できます。</li>
+                <li>「スマート入力」からクレジットカードや銀行・PayPayの利用明細(CSV/PDF)をまとめて取り込めます。</li>
+                <li>「カテゴリルール」にキーワードを登録すると、特定の店名やメモを自動で指定カテゴリに仕訳します。</li>
+                <li>夫婦やルームシェアのグループに招待すると、グループの家計簿になり「精算」で精算額がわかります。</li>
+              </ul>
+            </div>
+          </section>
+
+          <!-- 要望を送る -->
+          <section class="settings-group">
+            <h3 class="group-label">要望を送る</h3>
+            <div class="card feedback-card">
+              <textarea id="feedbackText" class="custom-textarea" rows="4" placeholder="ほしい機能や困ったことを書いてください"></textarea>
+              <button class="outline-btn btn-send-feedback" id="sendFeedbackBtn">送信する</button>
+            </div>
+          </section>
+
+          <!-- サービスについて -->
+          <section class="settings-group">
+            <h3 class="group-label">サービスについて</h3>
+            <div class="card setting-nav-item" id="btnTerms">
+              <span class="setting-nav-text">利用規約</span>
+              <span class="setting-nav-arrow">›</span>
+            </div>
+            <div class="card setting-nav-item" id="btnPrivacy">
+              <span class="setting-nav-text">プライバシーポリシー</span>
+              <span class="setting-nav-arrow">›</span>
+            </div>
+          </section>
+
+          <div class="version-footer">
+            <p>家計簿Plus Web v2.0.0 (GAS連携・スマート入力対応)</p>
+          </div>
+        </div>
+      </div>
+
+      <!-- ================= 1. スマート入力 (ファイル一括インポート機能: IMG_6062.PNG 再現) ================= -->
+      <div class="slide-screen" id="smartInputScreen">
+        <div class="screen-header">
+          <button type="button" class="screen-back-btn screen-back-pill" id="closeSmartInputBtn" onclick="closeSmartInputScreen()">‹ 戻る</button>
+          <h2 class="screen-title">スマート入力</h2>
+        </div>
+        <div class="screen-body">
+          <div class="card smart-input-hero-card">
+            <p class="smart-input-lead">
+              カードや銀行、PayPay の利用明細をまとめて取り込めます。
+            </p>
+            <ul class="smart-input-bullets">
+              <li>CSV(PayPay・クレジットカード・銀行)</li>
+              <li>明細の PDF</li>
+              <li>2MB・500件まで。収入は収入として、カード代金やATMなどのお金の移動は確認してから取り込めます</li>
+            </ul>
+            <input type="file" id="smartImportFileInput" accept=".csv,.pdf,.txt,text/csv,application/pdf" style="display: none;" onchange="handleSmartImportFileSelect(event)">
+            <button type="button" class="btn-primary-pill-full" id="btnChooseSmartFile" onclick="document.getElementById('smartImportFileInput').click()">
+              ファイルを選ぶ
+            </button>
+            <button type="button" class="outline-btn btn-demo-smart-import" id="btnDemoSmartImport" onclick="handleLoadDemoSmartImport()">
+              💡 サンプル明細(PayPay・クレカCSV)で試す
+            </button>
+          </div>
+
+          <!-- 取り込み確認プレビューセクション -->
+          <div id="smartImportPreviewSection" style="display: none;">
+            <div class="section-header-row" style="margin: 18px 2px 10px;">
+              <h3 class="sub-screen-section-title" style="margin: 0;">取り込み内容の確認 (<span id="smartImportCountLabel">0</span>件)</h3>
+              <button type="button" class="text-link-btn" onclick="toggleAllSmartImportChecks()">全選択/解除</button>
+            </div>
+            <p class="screen-guide-text" style="font-size: 12.5px; margin-bottom: 10px;">
+              ※ カテゴリルールが自動適用されています。「⚠️ お金の移動（カード引落・ATM等）」は二重計上防止のため初期状態でチェックを外しています。
+            </p>
+            <div class="card smart-import-scope-bar">
+              <span class="smart-scope-label">取り込み先:</span>
+              <div class="smart-scope-btns">
+                <button type="button" class="smart-scope-btn active" id="smartScopePersonalBtn" onclick="setSmartImportScope('personal')">👤 個人用</button>
+                <button type="button" class="smart-scope-btn" id="smartScopeGroupBtn" onclick="setSmartImportScope('group')">👥 グループ共有</button>
+              </div>
+            </div>
+            <div class="smart-import-preview-list" id="smartImportPreviewList"></div>
+            <button type="button" class="btn-primary-pill-full" id="btnConfirmSmartImport" onclick="handleExecuteSmartImport()" style="margin-top: 16px;">
+              選択した明細をまとめて取り込む
+            </button>
+          </div>
+        </div>
+      </div>
+
+      <!-- ================= 2. カテゴリルール (キーワード自動仕訳機能: IMG_6061.PNG 再現) ================= -->
+      <div class="slide-screen" id="categoryRulesScreen">
+        <div class="screen-header">
+          <button type="button" class="screen-back-btn screen-back-pill" id="closeCategoryRulesBtn" onclick="closeCategoryRulesScreen()">‹ 戻る</button>
+          <h2 class="screen-title">カテゴリルール</h2>
+        </div>
+        <div class="screen-body">
+          <p class="screen-guide-text">品目やメモにこの文字を含む支出は、このカテゴリで記録します。</p>
+
+          <!-- 登録済みルール一覧カード -->
+          <div class="card category-rules-card" id="categoryRulesListCard">
+            <!-- JSで動的描画（例: 「コメダ」 → 食費） -->
+          </div>
+
+          <h3 class="sub-screen-section-title">ルールを追加</h3>
+          <div class="card rule-add-card">
+            <input type="text" id="inputRuleKeyword" class="custom-input" placeholder="含む文字(例: コメダ)">
+            <div class="rule-add-bottom-row">
+              <select id="selectRuleCategory" class="custom-input rule-cat-select" aria-label="ルール適用カテゴリ"></select>
+              <button type="button" class="btn-outline-pill-action" id="btnAddCategoryRule" onclick="handleAddCategoryRule()">追加</button>
+            </div>
+          </div>
+
+          <button type="button" class="btn-primary-pill-full" id="btnSaveCategoryRules" onclick="handleSaveCategoryRules()">
+            保存する
+          </button>
+          <p class="screen-footer-note">ルールを変えても、これまでの記録のカテゴリは変わりません。</p>
+        </div>
+      </div>
+
+      <!-- ================= 3. カテゴリを編集 (カスタムカテゴリ管理機能: IMG_6059.jpg, IMG_6060.PNG 再現) ================= -->
+      <div class="slide-screen" id="editCategoriesScreen">
+        <div class="screen-header">
+          <button type="button" class="screen-back-btn screen-back-pill" id="closeEditCategoriesBtn" onclick="closeEditCategoriesScreen()">‹ 戻る</button>
+          <h2 class="screen-title">カテゴリを編集</h2>
+        </div>
+        <div class="screen-body">
+          <!-- 支出 / 収入 切り替えピル -->
+          <div class="sub-type-pill-bar">
+            <button type="button" class="sub-type-pill-btn active" id="editCatTypeExpenseBtn" onclick="switchEditCategoryType('expense')">支出</button>
+            <button type="button" class="sub-type-pill-btn" id="editCatTypeIncomeBtn" onclick="switchEditCategoryType('income')">収入</button>
+          </div>
+
+          <p class="screen-guide-text">
+            カテゴリを押すと名前と絵文字を変えられます。右の ⋮⋮ をつかんで上下に動かすと並べ替えられます。
+          </p>
+
+          <!-- カテゴリ一覧カード -->
+          <div class="card edit-categories-list-card" id="customCategoriesListWrap">
+            <!-- JSで動的生成 -->
+          </div>
+
+          <!-- カテゴリを追加 -->
+          <h3 class="sub-screen-section-title">カテゴリを追加</h3>
+          <div class="card add-category-card">
+            <div class="emoji-picker-grid" id="emojiPickerGrid">
+              <!-- JSで26個の丸い絵文字ボタンを生成 -->
+            </div>
+            <div class="add-cat-input-row">
+              <input type="text" id="inputNewCatName" class="custom-input" placeholder="例: ペット">
+              <button type="button" class="btn-outline-pill-action" id="btnAddCustomCat" onclick="handleAddCustomCategory()">追加</button>
+            </div>
+          </div>
+
+          <!-- 既定に戻す / 保存する -->
+          <div class="edit-cat-bottom-actions">
+            <button type="button" class="btn-outline-pill-large" id="btnResetCustomCats" onclick="handleResetCustomCategories()">既定に戻す</button>
+            <button type="button" class="btn-primary-pill-large" id="btnSaveCustomCats" onclick="handleSaveCustomCategories()">保存する</button>
+          </div>
+          <p class="screen-footer-note">カテゴリを削除しても、これまでの記録は消えません。</p>
+        </div>
+      </div>
+
+      <!-- ================= 4. 固定費 (定期支出・定額の自動記録機能: IMG_6058.jpg 再現) ================= -->
+      <div class="slide-screen" id="fixedCostsScreen">
+        <div class="screen-header">
+          <button type="button" class="screen-back-btn screen-back-pill" id="closeFixedCostsBtn" onclick="closeFixedCostsScreen()">‹ 戻る</button>
+          <h2 class="screen-title">固定費</h2>
+        </div>
+        <div class="screen-body">
+          <p class="screen-guide-text">
+            家賃・光熱費・サブスクなど毎月決まった支出を登録すると、指定した日に自動で記録します。
+          </p>
+
+          <h3 class="sub-screen-section-title">登録中の固定費</h3>
+          <div class="card fixed-costs-list-card" id="fixedCostsListCard">
+            <p class="fixed-empty-text">まだありません。下から登録できます。</p>
+          </div>
+
+          <h3 class="sub-screen-section-title">固定費を追加</h3>
+          <div class="card fixed-cost-form-card">
+            <div class="sub-type-pill-bar" style="margin-bottom: 18px;">
+              <button type="button" class="sub-type-pill-btn active" id="fixedCostTypeExpense" onclick="switchFixedCostType('expense')">支出</button>
+              <button type="button" class="sub-type-pill-btn" id="fixedCostTypeIncome" onclick="switchFixedCostType('income')">収入</button>
+            </div>
+
+            <div class="form-group">
+              <label class="form-label" for="selectFixedCostCat">カテゴリ</label>
+              <select id="selectFixedCostCat" class="custom-input"></select>
+            </div>
+
+            <div class="form-group">
+              <label class="form-label" for="inputFixedCostAmount">金額</label>
+              <input type="number" id="inputFixedCostAmount" class="custom-input" placeholder="例: 85000" min="1" step="1" inputmode="numeric">
+            </div>
+
+            <div class="form-group">
+              <label class="form-label" for="selectFixedCostDay">毎月の記録日</label>
+              <select id="selectFixedCostDay" class="custom-input"></select>
+            </div>
+
+            <div class="form-group">
+              <label class="form-label" for="inputFixedCostMemo">メモ</label>
+              <input type="text" id="inputFixedCostMemo" class="custom-input" placeholder="例: 家賃、Netflix">
+            </div>
+
+            <button type="button" class="btn-primary-pill-full" id="btnSubmitFixedCost" onclick="handleAddFixedCost()" style="margin-top: 8px;">
+              登録する
+            </button>
+          </div>
+        </div>
+      </div>
+
+      <!-- ================= 5. 登録の履歴 スライド画面 ================= -->
+      <div class="slide-screen" id="historyScreen">
+        <div class="screen-header">
+          <button type="button" class="screen-back-btn screen-back-pill" id="closeHistoryBtn" onclick="closeHistoryScreen()">‹ 戻る</button>
+          <h2 class="screen-title">登録の履歴</h2>
+        </div>
+        <div class="screen-body">
+          <p class="screen-guide-text">最近登録・取り込みされた明細の履歴（最新50件）です。タップして編集できます。</p>
+          <div id="historyListWrap"></div>
+        </div>
+      </div>
+
+      <!-- ================= 支出・収入 追加モーダル (IMG_6049再現) ================= -->
+      <div class="modal-overlay" id="addModalOverlay">
+        <div class="modal-sheet" id="addModalSheet">
+          <!-- 支出 / 収入 タブ -->
+          <div class="modal-type-switch">
+            <button type="button" class="type-pill-btn active" id="typeExpenseBtn" onclick="switchAddModalType('expense')" data-type="expense">支出</button>
+            <button type="button" class="type-pill-btn" id="typeIncomeBtn" onclick="switchAddModalType('income')" data-type="income">収入</button>
+          </div>
+
+          <!-- レシートAI自動読取バナー (Gemini API) -->
+          <button type="button" class="modal-receipt-banner" id="btnOpenReceiptFromModal" onclick="closeAddModal(); openReceiptModal();">
+            <span class="banner-icon">✨📷</span>
+            <span class="banner-text">レシートを撮影してGeminiで自動入力</span>
+            <span class="banner-arrow">›</span>
+          </button>
+
+          <!-- スマート入力（CSV/PDF明細一括取込）ショートカットバナー -->
+          <button type="button" class="modal-smart-banner" id="btnOpenSmartFromModal" onclick="closeAddModal(); openSmartInputScreen();">
+            <span class="banner-icon">📄</span>
+            <span class="banner-text">カード・PayPay明細(CSV/PDF)をまとめて取込</span>
+            <span class="banner-arrow">›</span>
+          </button>
+
+          <form id="transactionForm" onsubmit="return false;">
+            <!-- 金額入力 -->
+            <div class="form-group">
+              <label class="form-label" for="inputAmount">金額</label>
+              <div class="amount-input-box">
+                <input type="number" id="inputAmount" class="modal-amount-input" placeholder="0" min="1" step="1" inputmode="numeric" required>
+              </div>
+            </div>
+
+            <!-- カテゴリ選択グリッド -->
+            <div class="form-group">
+              <label class="form-label">カテゴリ</label>
+              <div class="categories-grid" id="categoriesGrid">
+                <!-- 支出カテゴリ (デフォルト) -->
+                <button type="button" class="cat-select-btn" data-cat="食費" data-icon="🛒">
+                  <span class="cat-icon-lg">🛒</span>
+                  <span class="cat-name-sm">食費</span>
+                </button>
+                <button type="button" class="cat-select-btn selected" data-cat="外食" data-icon="🍽️">
+                  <span class="cat-icon-lg">🍽️</span>
+                  <span class="cat-name-sm">外食</span>
+                </button>
+                <button type="button" class="cat-select-btn" data-cat="日用品" data-icon="🧴">
+                  <span class="cat-icon-lg">🧴</span>
+                  <span class="cat-name-sm">日用品</span>
+                </button>
+                <button type="button" class="cat-select-btn" data-cat="交通費" data-icon="🚃">
+                  <span class="cat-icon-lg">🚃</span>
+                  <span class="cat-name-sm">交通費</span>
+                </button>
+                <button type="button" class="cat-select-btn" data-cat="水道光熱費" data-icon="💡">
+                  <span class="cat-icon-lg">💡</span>
+                  <span class="cat-name-sm">水道光熱費</span>
+                </button>
+                <button type="button" class="cat-select-btn" data-cat="住居費" data-icon="🏠">
+                  <span class="cat-icon-lg">🏠</span>
+                  <span class="cat-name-sm">住居費</span>
+                </button>
+                <button type="button" class="cat-select-btn" data-cat="衣服・美容" data-icon="👕">
+                  <span class="cat-icon-lg">👕</span>
+                  <span class="cat-name-sm">衣服・美容</span>
+                </button>
+                <button type="button" class="cat-select-btn" data-cat="医療" data-icon="🏥">
+                  <span class="cat-icon-lg">🏥</span>
+                  <span class="cat-name-sm">医療</span>
+                </button>
+                <button type="button" class="cat-select-btn" data-cat="通信" data-icon="📱">
+                  <span class="cat-icon-lg">📱</span>
+                  <span class="cat-name-sm">通信</span>
+                </button>
+                <button type="button" class="cat-select-btn" data-cat="趣味・娯楽" data-icon="🎮">
+                  <span class="cat-icon-lg">🎮</span>
+                  <span class="cat-name-sm">趣味・娯楽</span>
+                </button>
+                <button type="button" class="cat-select-btn" data-cat="その他" data-icon="📦">
+                  <span class="cat-icon-lg">📦</span>
+                  <span class="cat-name-sm">その他</span>
+                </button>
+              </div>
+            </div>
+
+            <!-- メモ入力 -->
+            <div class="form-group">
+              <label class="form-label" for="inputMemo">メモ <span id="autoRuleAppliedBadge" class="auto-rule-badge" style="display: none;">✨ ルール自動適用</span></label>
+              <input type="text" id="inputMemo" class="custom-input memo-input" placeholder="お店の名前や内容" oninput="handleMemoInputAutoRule(this.value)">
+            </div>
+
+            <!-- 日付入力 -->
+            <div class="form-group">
+              <label class="form-label" for="inputDate">日付</label>
+              <input type="date" id="inputDate" class="custom-input date-input" value="2026-10-24">
+            </div>
+
+            <!-- 写真添付エリア -->
+            <div class="form-group">
+              <label class="form-label">写真添付 (レシート・領収書・購入物)</label>
+              <div class="photo-upload-box">
+                <input type="file" id="inputPhotoFile" accept="image/*" capture="environment" style="display: none;">
+                <div class="photo-preview-wrap" id="photoPreviewWrap" style="display: none;">
+                  <img id="photoPreviewImg" src="" alt="添付写真プレビュー" class="photo-preview-thumb">
+                  <button type="button" class="btn-remove-photo" id="btnRemovePhoto">✕ 写真を削除</button>
+                </div>
+                <button type="button" class="btn-attach-photo" id="btnAttachPhoto">
+                  <span class="photo-icon">📷</span>
+                  <span id="photoAttachLabel">写真を撮影 / 選択</span>
+                </button>
+              </div>
+            </div>
+
+            <!-- 登録先 (プライバシー設定: 個人 / グループ) -->
+            <div class="form-group">
+              <label class="form-label">共有設定 (プライバシー)</label>
+              <div class="scope-choice-row">
+                <button type="button" class="scope-choice-btn active" id="modalScopePersonal" onclick="setModalScope('personal')" data-scope="personal">
+                  <span class="choice-icon">👤</span>
+                  <span class="choice-title">自分のみ</span>
+                  <span class="choice-sub">相手には一切見えません</span>
+                </button>
+                <button type="button" class="scope-choice-btn" id="modalScopeGroup" onclick="setModalScope('group')" data-scope="group">
+                  <span class="choice-icon">👥</span>
+                  <span class="choice-title">グループで共有</span>
+                  <span class="choice-sub">参加メンバーと共有・精算</span>
+                </button>
+              </div>
+            </div>
+
+            <!-- 対象グループ選択 (グループ共有時のみ表示) -->
+            <div class="form-group" id="targetGroupFormGroup" style="display: none;">
+              <label class="form-label" for="modalTargetGroupSelect">登録先グループ</label>
+              <select id="modalTargetGroupSelect" class="custom-input"></select>
+            </div>
+
+            <!-- 支払者選択 (グループ共有時のみ表示) -->
+            <div class="form-group" id="paidByFormGroup" style="display: none;">
+              <label class="form-label">誰が支払ったか</label>
+              <div class="payer-choice-row">
+                <button type="button" class="payer-choice-btn active" id="modalPaidByMe" onclick="setModalPaidBy('me')" data-payer="me">
+                  <span class="payer-badge-name" id="modalPaidByMeText">自分</span> が支払い
+                </button>
+                <button type="button" class="payer-choice-btn" id="modalPaidByPartner" onclick="setModalPaidBy('partner')" data-payer="partner">
+                  <span class="payer-badge-name" id="modalPaidByPartnerText">パートナー</span> が支払い
+                </button>
+              </div>
+            </div>
+
+            <!-- アクションボタン -->
+            <div class="modal-actions-row">
+              <button type="button" class="btn-cancel" id="cancelAddModalBtn" onclick="closeAddModal()">キャンセル</button>
+              <button type="submit" class="btn-submit" id="submitTransactionBtn">追加する</button>
+            </div>
+          </form>
+        </div>
+      </div>
+
+      <!-- ================= GAS 連携設定モーダル ================= -->
+      <div class="modal-overlay" id="gasModalOverlay">
+        <div class="modal-sheet">
+          <div class="modal-header-row">
+            <h3 class="modal-title">Google Apps Script (GAS) 連携設定</h3>
+            <button type="button" class="modal-close-icon" id="closeGasModalBtn" onclick="closeGasModal()">✕</button>
+          </div>
+          <div class="modal-content-body">
+            <p class="modal-desc">
+              Google スプレッドシートに設置した GAS WebアプリのURLを入力すると、データをリアルタイムに同期・バックアップできます。
+            </p>
+
+            <div class="form-group">
+              <label class="form-label" for="gasApiUrlInput">GAS Web アプリ URL (デプロイURL)</label>
+              <input type="url" id="gasApiUrlInput" class="custom-input" placeholder="https://script.google.com/macros/s/.../exec">
+            </div>
+
+            <div class="gas-btn-group">
+              <button type="button" class="primary-btn btn-gas-test" id="testGasConnectionBtn">接続テスト＆同期</button>
+              <button type="button" class="outline-btn btn-gas-clear" id="clearGasUrlBtn">設定解除 (ローカルに戻す)</button>
+            </div>
+
+            <div class="connection-status-box" id="gasConnectionStatus" style="display: none;">
+              <span class="status-icon" id="gasStatusIcon">⏳</span>
+              <span class="status-msg" id="gasStatusMsg">接続中...</span>
+            </div>
+
+            <div class="gas-instructions-card">
+              <h4>🚀 連携の始め方 (約3分)</h4>
+              <ol class="gas-steps">
+                <li><a href="https://sheets.new" target="_blank" rel="noopener">Google スプレッドシートを新規作成</a></li>
+                <li>メニューの「拡張機能」>「Apps Script」を開く</li>
+                <li><code>gas/Code.gs</code> のコードを貼り付けて保存</li>
+                <li>「initSpreadsheet」関数を実行して初期化</li>
+                <li>右上の「デプロイ」>「新しいデプロイ」でウェブアプリを作成（アクセスできるユーザー: 全員）</li>
+                <li>発行されたURLを上記に入力して「接続テスト＆同期」をクリック</li>
+              </ol>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- ================= 詳細予算設定モーダル (個人・グループ / 年間・月間) ================= -->
+      <div class="modal-overlay" id="budgetModalOverlay">
+        <div class="modal-sheet">
+          <div class="modal-header-row">
+            <h3 class="modal-title">詳細予算設定 (年間・月間)</h3>
+            <button type="button" class="modal-close-icon" id="closeBudgetModalBtn" onclick="closeBudgetModal()">✕</button>
+          </div>
+          <div class="modal-content-body">
+            <!-- 予算スコープ切替 (個人予算 / グループ予算) -->
+            <div class="scope-choice-row" style="margin-bottom: 16px;">
+              <button type="button" class="scope-choice-btn active" id="budgetScopePersonalBtn">
+                <span class="choice-icon">👤</span>
+                <span class="choice-title" id="budgetModalPersonalTitle">個人予算</span>
+              </button>
+              <button type="button" class="scope-choice-btn" id="budgetScopeGroupBtn">
+                <span class="choice-icon">👥</span>
+                <span class="choice-title" id="budgetModalGroupTitle">同棲グループ予算</span>
+              </button>
+            </div>
+
+            <!-- 月間予算入力 -->
+            <div class="form-group">
+              <label class="form-label" for="inputModalMonthlyBudget">月間予算 (円)</label>
+              <input type="number" id="inputModalMonthlyBudget" class="custom-input" placeholder="例: 150000" min="0" step="1" inputmode="numeric">
+              <span class="field-hint">毎月の上限目安額を設定します</span>
+            </div>
+
+            <!-- 年間予算入力 -->
+            <div class="form-group">
+              <div class="field-label-flex">
+                <label class="form-label" for="inputModalYearlyBudget">年間予算 (円)</label>
+                <button type="button" class="text-link-btn" id="btnAutoCalcYearlyBudget">月予算×12で自動計算</button>
+              </div>
+              <input type="number" id="inputModalYearlyBudget" class="custom-input" placeholder="例: 1800000" min="0" step="1" inputmode="numeric">
+              <span class="field-hint">1年間（1月〜12月）を通した予算上限を設定します</span>
+            </div>
+
+            <!-- カテゴリ別月間予算 (詳細内訳アコーディオン) -->
+            <div class="form-group category-budget-section">
+              <div class="category-budget-header" id="toggleCategoryBudgetsBtn">
+                <label class="form-label" style="margin: 0; cursor: pointer;">主要カテゴリ別 月間予算 (内訳)</label>
+                <span class="cat-budget-toggle-arrow">▼</span>
+              </div>
+              <div class="category-budgets-grid" id="categoryBudgetsGrid" style="display: none; margin-top: 10px;">
+                <div class="cat-budget-row">
+                  <span class="cat-budget-label">🛒 食費</span>
+                  <input type="number" class="custom-input input-cat-budget" data-cat="食費" placeholder="例: 35000" min="0" step="1">
+                </div>
+                <div class="cat-budget-row">
+                  <span class="cat-budget-label">🍽️ 外食</span>
+                  <input type="number" class="custom-input input-cat-budget" data-cat="外食" placeholder="例: 15000" min="0" step="1">
+                </div>
+                <div class="cat-budget-row">
+                  <span class="cat-budget-label">🧴 日用品</span>
+                  <input type="number" class="custom-input input-cat-budget" data-cat="日用品" placeholder="例: 10000" min="0" step="1">
+                </div>
+                <div class="cat-budget-row">
+                  <span class="cat-budget-label">💡 水道光熱費</span>
+                  <input type="number" class="custom-input input-cat-budget" data-cat="水道光熱費" placeholder="例: 15000" min="0" step="1">
+                </div>
+                <div class="cat-budget-row">
+                  <span class="cat-budget-label">🏠 住居費</span>
+                  <input type="number" class="custom-input input-cat-budget" data-cat="住居費" placeholder="例: 80000" min="0" step="1">
+                </div>
+                <div class="cat-budget-row">
+                  <span class="cat-budget-label">🎮 趣味・娯楽</span>
+                  <input type="number" class="custom-input input-cat-budget" data-cat="趣味・娯楽" placeholder="例: 10000" min="0" step="1">
+                </div>
+              </div>
+            </div>
+
+            <div class="modal-actions-row" style="margin-top: 20px;">
+              <button type="button" class="btn-cancel" id="cancelBudgetModalBtn">閉じる</button>
+              <button type="button" class="btn-submit" id="saveDetailedBudgetBtn">予算を保存する</button>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- ================= Gemini レシートAI自動読取モーダル ================= -->
+      <div class="modal-overlay" id="receiptModalOverlay">
+        <div class="modal-sheet">
+          <div class="modal-header-row">
+            <h3 class="modal-title">✨ Gemini レシートAI自動読取</h3>
+            <button type="button" class="modal-close-icon" id="closeReceiptModalBtn" onclick="closeReceiptModal()">✕</button>
+          </div>
+          <div class="modal-content-body">
+            <p class="modal-desc">
+              レシートの写真をアップロードすると、Gemini 2.5 Flash が店名・日付・品目・金額・カテゴリを自動認識して家計簿に入力します。
+            </p>
+
+            <!-- アップロード / 撮影エリア -->
+            <div class="receipt-drop-zone" id="receiptDropZone">
+              <input type="file" id="receiptFileInput" accept="image/*" capture="environment" style="display: none;">
+              <div class="drop-zone-content" id="dropZonePrompt">
+                <span class="drop-zone-icon">📷</span>
+                <span class="drop-zone-title">レシートを撮影 または 写真を選択</span>
+                <span class="drop-zone-sub">タップしてカメラ起動 / ライブラリから選択</span>
+              </div>
+              <div class="drop-zone-preview" id="dropZonePreview" style="display: none;">
+                <img id="receiptPreviewImg" src="" alt="レシートプレビュー">
+                <button type="button" class="btn-change-image" id="btnChangeImage">写真を変更</button>
+              </div>
+            </div>
+
+            <!-- アクションボタン (解析 & デモ) -->
+            <div class="receipt-action-btns">
+              <button type="button" class="primary-btn btn-ai-analyze" id="btnAnalyzeReceipt" disabled>
+                ✨ Geminiでレシートを解析する
+              </button>
+              <button type="button" class="outline-btn btn-demo-receipt" id="btnDemoReceipt">
+                💡 サンプルレシートで試す
+              </button>
+            </div>
+
+            <!-- AI解析中ローディング -->
+            <div class="ai-loading-box" id="aiLoadingBox" style="display: none;">
+              <div class="ai-spinner"></div>
+              <span class="ai-loading-text">Gemini AI がレシートを解析中...</span>
+              <span class="ai-loading-sub">店名・品目・金額・カテゴリを抽出しています</span>
+            </div>
+
+            <!-- 解析結果確認カード -->
+            <div class="receipt-result-card" id="receiptResultCard" style="display: none;">
+              <div class="result-header">
+                <span class="result-title">🎉 解析結果 (確認・編集)</span>
+                <span class="confidence-tag">AI認識完了</span>
+              </div>
+
+              <div class="form-group">
+                <label class="form-label" for="receiptResultStore">店名・内容</label>
+                <input type="text" id="receiptResultStore" class="custom-input">
+              </div>
+
+              <div class="receipt-result-row">
+                <div class="form-group" style="flex: 1;">
+                  <label class="form-label" for="receiptResultAmount">合計金額 (円)</label>
+                  <input type="number" id="receiptResultAmount" class="custom-input font-bold" min="1" step="1" style="font-size: 20px;">
+                </div>
+                <div class="form-group" style="flex: 1;">
+                  <label class="form-label" for="receiptResultDate">日付</label>
+                  <input type="date" id="receiptResultDate" class="custom-input">
+                </div>
+              </div>
+
+              <div class="form-group">
+                <label class="form-label" for="receiptResultCategory">カテゴリ (AI推奨・ルール連動)</label>
+                <select id="receiptResultCategory" class="custom-input"></select>
+              </div>
+
+              <!-- 登録先 (個人 / グループ) -->
+              <div class="form-group">
+                <label class="form-label">登録先 (プライバシー設定)</label>
+                <div class="scope-choice-row">
+                  <button type="button" class="scope-choice-btn active" id="receiptScopePersonal">
+                    <span class="choice-icon">👤</span>
+                    <span class="choice-title">自分のみ</span>
+                  </button>
+                  <button type="button" class="scope-choice-btn" id="receiptScopeGroup">
+                    <span class="choice-icon">👥</span>
+                    <span class="choice-title">グループ共有</span>
+                  </button>
+                </div>
+              </div>
+
+              <!-- 登録先グループ選択 (グループ時) -->
+              <div class="form-group" id="receiptTargetGroupWrap" style="display: none;">
+                <label class="form-label" for="receiptTargetGroupSelect">登録先グループ</label>
+                <select id="receiptTargetGroupSelect" class="custom-input"></select>
+              </div>
+
+              <!-- 支払者選択 (グループ時) -->
+              <div class="form-group" id="receiptPaidByGroup" style="display: none;">
+                <label class="form-label">支払った人</label>
+                <div class="payer-choice-row">
+                  <button type="button" class="payer-choice-btn active" id="receiptPaidByMe">
+                    <span id="receiptPaidByMeLabel">自分</span> が支払い
+                  </button>
+                  <button type="button" class="payer-choice-btn" id="receiptPaidByPartner">
+                    <span id="receiptPaidByPartnerLabel">パートナー</span> が支払い
+                  </button>
+                </div>
+              </div>
+
+              <!-- 抽出品目アコーディオン -->
+              <div class="receipt-items-accordion" id="receiptItemsAccordion" style="display: none;">
+                <span class="items-accordion-title">検出された内訳品目</span>
+                <ul class="receipt-items-list" id="receiptItemsList"></ul>
+              </div>
+
+              <button type="button" class="primary-btn btn-confirm-receipt" id="btnRegisterReceipt">
+                この内容で家計簿に登録する
+              </button>
+            </div>
+
+            <!-- APIキー未設定の案内 -->
+            <div class="gemini-key-notice" id="geminiKeyNotice" style="display: none;">
+              <span>⚠️ Gemini APIキーが未設定です。「設定」からAPIキーを登録するか、「サンプルレシート」をお試しください。</span>
+            </div>
+
+          </div>
+        </div>
+      </div>
+
+      <!-- ================= 明細編集モーダル ================= -->
+      <div class="modal-overlay" id="editModalOverlay">
+        <div class="modal-sheet" id="editModalSheet">
+          <div class="modal-header-row">
+            <h3 class="modal-title">明細の編集</h3>
+            <button type="button" class="modal-close-icon" id="closeEditModalBtn" onclick="closeEditModal()">✕</button>
+          </div>
+
+          <!-- 支出 / 収入 タブ -->
+          <div class="modal-type-switch">
+            <button type="button" class="type-pill-btn active" id="editTypeExpenseBtn" onclick="switchEditModalType('expense')">支出</button>
+            <button type="button" class="type-pill-btn" id="editTypeIncomeBtn" onclick="switchEditModalType('income')">収入</button>
+          </div>
+
+          <form id="editTransactionForm" onsubmit="return false;">
+            <input type="hidden" id="editTxId">
+
+            <!-- 金額入力 -->
+            <div class="form-group">
+              <label class="form-label" for="editInputAmount">金額</label>
+              <div class="amount-input-box">
+                <input type="number" id="editInputAmount" class="modal-amount-input" placeholder="0" min="1" step="1" inputmode="numeric" required>
+              </div>
+            </div>
+
+            <!-- カテゴリ選択グリッド -->
+            <div class="form-group">
+              <label class="form-label">カテゴリ</label>
+              <div class="categories-grid" id="editCategoriesGrid"></div>
+            </div>
+
+            <!-- メモ入力 -->
+            <div class="form-group">
+              <label class="form-label" for="editInputMemo">メモ</label>
+              <input type="text" id="editInputMemo" class="custom-input memo-input" placeholder="お店の名前や内容">
+            </div>
+
+            <!-- 日付入力 -->
+            <div class="form-group">
+              <label class="form-label" for="editInputDate">日付</label>
+              <input type="date" id="editInputDate" class="custom-input date-input">
+            </div>
+
+            <!-- 写真添付エリア -->
+            <div class="form-group">
+              <label class="form-label">添付写真</label>
+              <div class="photo-upload-box">
+                <input type="file" id="editInputPhotoFile" accept="image/*" capture="environment" style="display: none;">
+                <div class="photo-preview-wrap" id="editPhotoPreviewWrap" style="display: none;">
+                  <img id="editPhotoPreviewImg" src="" alt="添付写真プレビュー" class="photo-preview-thumb">
+                  <button type="button" class="btn-remove-photo" id="btnEditRemovePhoto" onclick="handleRemovePhoto('edit')">✕ 写真を削除</button>
+                </div>
+                <button type="button" class="btn-attach-photo" id="btnEditAttachPhoto" onclick="document.getElementById('editInputPhotoFile').click()">
+                  <span class="photo-icon">📷</span>
+                  <span id="editPhotoAttachLabel">写真を変更 / 添付</span>
+                </button>
+              </div>
+            </div>
+
+            <!-- 共有設定 (プライバシー: 個人 / グループ) -->
+            <div class="form-group">
+              <label class="form-label">共有設定 (プライバシー)</label>
+              <div class="scope-choice-row">
+                <button type="button" class="scope-choice-btn active" id="editScopePersonal" onclick="setEditModalScope('personal')">
+                  <span class="choice-icon">👤</span>
+                  <span class="choice-title">自分のみ</span>
+                  <span class="choice-sub">相手には一切見えません</span>
+                </button>
+                <button type="button" class="scope-choice-btn" id="editScopeGroup" onclick="setEditModalScope('group')">
+                  <span class="choice-icon">👥</span>
+                  <span class="choice-title">グループ共有</span>
+                  <span class="choice-sub">参加メンバーと共有</span>
+                </button>
+              </div>
+            </div>
+
+            <!-- 対象グループ選択 (グループ共有時のみ) -->
+            <div class="form-group" id="editTargetGroupFormGroup" style="display: none;">
+              <label class="form-label" for="editTargetGroupSelect">登録先グループ</label>
+              <select id="editTargetGroupSelect" class="custom-input"></select>
+            </div>
+
+            <!-- 支払者選択 (グループ共有時のみ) -->
+            <div class="form-group" id="editPaidByFormGroup" style="display: none;">
+              <label class="form-label">誰が支払ったか</label>
+              <div class="payer-choice-row">
+                <button type="button" class="payer-choice-btn active" id="editPaidByMe" onclick="setEditModalPaidBy('me')" data-payer="me">
+                  <span class="payer-badge-name" id="editPaidByMeText">自分</span> が支払い
+                </button>
+                <button type="button" class="payer-choice-btn" id="editPaidByPartner" onclick="setEditModalPaidBy('partner')" data-payer="partner">
+                  <span class="payer-badge-name" id="editPaidByPartnerText">パートナー</span> が支払い
+                </button>
+              </div>
+            </div>
+
+            <!-- アクションボタン -->
+            <div class="modal-actions-row">
+              <button type="button" class="btn-delete-tx-modal" id="btnDeleteTransaction" onclick="handleDeleteTransaction()">🗑️ 削除</button>
+              <button type="button" class="btn-submit" id="btnSaveEditedTx" onclick="handleSaveEditedTx()">変更を保存</button>
+            </div>
+          </form>
+        </div>
+      </div>
+
+      <!-- ================= 写真拡大ライトボックス ================= -->
+      <div class="lightbox-overlay" id="photoLightboxOverlay" style="display: none;">
+        <div class="lightbox-content">
+          <button type="button" class="lightbox-close-btn" id="closeLightboxBtn">✕</button>
+          <img id="lightboxImg" src="" alt="拡大写真" class="lightbox-img">
+        </div>
+      </div>
+
+      <!-- ================= グループ新規作成モーダル ================= -->
+      <div class="modal-overlay" id="createGroupModalOverlay">
+        <div class="modal-sheet">
+          <div class="modal-header-row">
+            <h3 class="modal-title">➕ 新しいグループを作成</h3>
+            <button type="button" class="modal-close-icon" id="closeCreateGroupModalBtn" onclick="closeCreateGroupModal()">✕</button>
+          </div>
+          <div class="modal-content-body">
+            <p class="modal-desc">
+              友人との旅行、サークル、シェアハウスなどのグループを作成します。初期メンバーはあなた1人です。招待パスコードを伝えて参加してもらえます。
+            </p>
+            <div class="form-group">
+              <label class="form-label" for="inputNewGroupName">グループ名</label>
+              <input type="text" id="inputNewGroupName" class="custom-input" placeholder="例: 沖縄旅行、シェアハウス用">
+            </div>
+            <div class="form-group">
+              <div class="field-label-flex">
+                <label class="form-label" for="inputNewGroupPasscode">招待パスコード (Pass)</label>
+                <button type="button" class="text-link-btn" id="btnGeneratePasscode" onclick="handleGenerateNewPasscode()">自動生成</button>
+              </div>
+              <input type="text" id="inputNewGroupPasscode" class="custom-input font-mono" placeholder="例: TRIP2026">
+              <span class="field-hint">友人が参加申請する際に入力する合言葉です</span>
+            </div>
+            <div class="modal-actions-row" style="margin-top: 20px;">
+              <button type="button" class="btn-cancel" id="cancelCreateGroupBtn" onclick="closeCreateGroupModal()">キャンセル</button>
+              <button type="button" class="btn-submit" id="btnConfirmCreateGroup" onclick="handleConfirmCreateGroup()">グループを作成</button>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- ================= 招待コードで参加モーダル ================= -->
+      <div class="modal-overlay" id="joinGroupModalOverlay">
+        <div class="modal-sheet">
+          <div class="modal-header-row">
+            <h3 class="modal-title">🔑 招待コードでグループに参加</h3>
+            <button type="button" class="modal-close-icon" id="closeJoinGroupModalBtn" onclick="closeJoinGroupModal()">✕</button>
+          </div>
+          <div class="modal-content-body">
+            <p class="modal-desc">
+              友人から受け取った招待パスコード（Pass）を入力して参加申請します。グループ参加者が承認するまでは閲覧権限は与えられず、承認待ち状態になります。
+            </p>
+            <div class="form-group">
+              <label class="form-label" for="inputJoinPasscode">招待パスコード (Pass)</label>
+              <input type="text" id="inputJoinPasscode" class="custom-input font-mono" placeholder="招待コードを入力">
+            </div>
+            <div class="modal-actions-row" style="margin-top: 20px;">
+              <button type="button" class="btn-cancel" id="cancelJoinGroupBtn" onclick="closeJoinGroupModal()">キャンセル</button>
+              <button type="button" class="btn-submit" id="btnConfirmJoinGroup" onclick="handleConfirmJoinGroup()">参加申請を送る</button>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- ================= グループ設定・メンバー管理モーダル ================= -->
+      <div class="modal-overlay" id="groupManageModalOverlay">
+        <div class="modal-sheet">
+          <div class="modal-header-row">
+            <h3 class="modal-title" id="manageModalGroupTitle">⚙️ グループ設定・メンバー管理</h3>
+            <button type="button" class="modal-close-icon" id="closeGroupManageModalBtn" onclick="closeGroupManageModal()">✕</button>
+          </div>
+          <div class="modal-content-body">
+            <!-- 招待パスコードカード -->
+            <div class="card manage-passcode-card">
+              <span class="passcode-card-label">招待パスコード (Pass)</span>
+              <div class="passcode-display-row">
+                <span class="passcode-text" id="manageGroupPasscodeText">------</span>
+                <button type="button" class="btn-copy-passcode" id="btnCopyGroupPasscode" onclick="handleCopyGroupPasscode()">コードをコピー</button>
+              </div>
+              <span class="field-hint">このコードを友人に教えると参加申請できます</span>
+            </div>
+
+            <!-- 参加承認待ちメンバーセクション -->
+            <div class="manage-section" id="pendingMembersSection" style="display: none;">
+              <h4 class="manage-section-title">⏳ 参加承認待ちのメンバー (<span id="pendingCountLabel">0</span>)</h4>
+              <div class="pending-members-list" id="pendingMembersList"></div>
+            </div>
+
+            <!-- 正式参加メンバー一覧 -->
+            <div class="manage-section">
+              <h4 class="manage-section-title">👥 参加メンバー (<span id="activeMemberCountLabel">0</span>)</h4>
+              <div class="members-list" id="activeMembersList"></div>
+            </div>
+
+            <!-- 退会ボタン (一般メンバー用) -->
+            <div class="manage-actions-section" id="leaveGroupSection">
+              <button type="button" class="btn-leave-group" id="btnLeaveGroup" onclick="handleLeaveCurrentGroup()">このグループから退会する</button>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- ================= LINE連携・ユーザー情報引き継ぎモーダル ================= -->
+      <div class="modal-overlay" id="lineAuthModalOverlay">
+        <div class="modal-sheet">
+          <div class="modal-header">
+            <h3 class="modal-title">🟢 LINEユーザー連携・引き継ぎ</h3>
+            <button type="button" class="modal-close-btn" onclick="closeLineAuthModal()">✕</button>
+          </div>
+          <div class="modal-body">
+            <!-- 現在のログイン状態カード -->
+            <div class="card" style="padding:14px 16px; margin-bottom:16px; background:#f8fafc; border:1px solid #e2e8f0;">
+              <div style="font-size:12px; color:#64748b; font-weight:600; margin-bottom:6px;">現在のユーザー情報</div>
+              <div id="lineModalCurrentProfile" style="display:flex; align-items:center; justify-content:space-between; gap:10px;">
+                <span style="font-weight:700; font-size:15px;">👤 自分</span>
+              </div>
+            </div>
+
+            <!-- ステップ1: スマホLINEからの自動引き継ぎ (QR & LIFF URL) -->
+            <div class="card" style="padding:16px; margin-bottom:16px; border:1.5px solid #06C755; background:#f0fdf4;">
+              <h4 style="font-size:14px; font-weight:700; color:#15803d; margin:0 0 8px 0;">📱 方法1：スマホのLINEから自動取得・引き継ぎ（推奨）</h4>
+              <p style="font-size:12.5px; color:#334155; line-height:1.5; margin:0 0 12px 0;">
+                下のQRコードをスマホのカメラ（またはLINEの友だち追加QRリーダー）で読み取って開くと、<strong>LINEのアイコン・表示名・ユーザーIDが自動取得</strong>され、スプレッドシート経由でPC画面にも自動引き継ぎされます。
+              </p>
+              <div style="display:flex; align-items:center; gap:16px; flex-wrap:wrap; justify-content:center; background:#ffffff; padding:12px; border-radius:12px; border:1px solid #bbf7d0;">
+                <img src="https://api.qrserver.com/v1/create-qr-code/?size=140x140&data=https%3A%2F%2Fliff.line.me%2F2012210633-iHf6ozQs" alt="LINE LIFF QR" style="width:120px; height:120px; border-radius:8px;">
+                <div style="flex:1; min-width:180px;">
+                  <div style="font-size:11px; color:#64748b; font-weight:600; margin-bottom:4px;">LIFF アプリURL:</div>
+                  <input type="text" readonly value="https://liff.line.me/2012210633-iHf6ozQs" class="custom-input" style="font-size:12px; padding:6px 8px; margin-bottom:8px; width:100%;" onclick="this.select()">
+                  <div style="display:flex; gap:8px;">
+                    <button type="button" class="primary-btn" style="background:#06C755; font-size:12px; padding:7px 12px; flex:1;" onclick="copyLiffUrl()">📋 URLをコピー</button>
+                    <a href="https://liff.line.me/2012210633-iHf6ozQs" target="_blank" rel="noopener" class="primary-btn" style="background:#059669; font-size:12px; padding:7px 12px; text-decoration:none; text-align:center; color:#fff; border-radius:8px;">↗ LINEで開く</a>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <!-- ステップ2: スプレッドシート保存済みLINEユーザーから1クリック引き継ぎ -->
+            <div class="card" style="padding:16px; margin-bottom:16px; border:1px solid #e2e8f0;">
+              <h4 style="font-size:14px; font-weight:700; color:#1e293b; margin:0 0 6px 0;">💻 方法2：連携済みLINEアカウントをPCに引き継ぐ</h4>
+              <p style="font-size:12px; color:#64748b; margin:0 0 10px 0;">
+                スマホのLINEで一度開くと、ここにあなたのLINEアカウントが表示されます。クリック1つでPCでも同じLINEユーザーとして使えます。
+              </p>
+              <div id="savedLineProfilesList" style="display:flex; flex-direction:column; gap:8px;">
+                <div style="font-size:12px; color:#94a3b8; text-align:center; padding:8px;">スマホのLINEで開くとここに表示されます</div>
+              </div>
+            </div>
+
+            <!-- ステップ3: 表示名・ユーザー情報の直接設定 -->
+            <div class="card" style="padding:16px; border:1px solid #e2e8f0;">
+              <h4 style="font-size:14px; font-weight:700; color:#1e293b; margin:0 0 8px 0;">✏️ 方法3：表示名・引き継ぎIDを直接設定する</h4>
+              <div class="config-field" style="margin-bottom:10px;">
+                <label class="config-label" for="manualLineDisplayName">あなたの表示名（LINE名など）</label>
+                <input type="text" id="manualLineDisplayName" class="custom-input" placeholder="例: なおや">
+              </div>
+              <div class="config-field" style="margin-bottom:12px;">
+                <label class="config-label" for="manualLineUserId">ユーザー識別ID（スマホ・PC共通の英数字 / 空欄で自動生成）</label>
+                <input type="text" id="manualLineUserId" class="custom-input" placeholder="例: line_naoya_01">
+              </div>
+              <button type="button" class="primary-btn" style="width:100%;" onclick="handleSaveManualLineProfile()">このユーザー情報で保存・引き継ぐ</button>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- トースト通知 -->
+      <div class="toast-notification" id="toastNotification">
+        <span class="toast-message" id="toastMessage">保存しました</span>
+      </div>
+
+    </div>
+  </div>
+
+  <script src="app.js"></script>
+</body>
+</html>
