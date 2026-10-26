@@ -1420,29 +1420,16 @@
               </div>
             </div>
 
-            <!-- ステップ2: スプレッドシート保存済みLINEユーザーから1クリック引き継ぎ -->
-            <div class="card" style="padding:16px; margin-bottom:16px; border:1px solid #e2e8f0;">
-              <h4 style="font-size:14px; font-weight:700; color:#1e293b; margin:0 0 6px 0;">💻 方法2：連携済みLINEアカウントをPCに引き継ぐ</h4>
-              <p style="font-size:12px; color:#64748b; margin:0 0 10px 0;">
-                スマホのLINEで一度開くと、ここにあなたのLINEアカウントが表示されます。クリック1つでPCでも同じLINEユーザーとして使えます。
-              </p>
-              <div id="savedLineProfilesList" style="display:flex; flex-direction:column; gap:8px;">
-                <div style="font-size:12px; color:#94a3b8; text-align:center; padding:8px;">スマホのLINEで開くとここに表示されます</div>
-              </div>
             </div>
 
-            <!-- ステップ3: 表示名・ユーザー情報の直接設定 -->
+            <!-- 表示名設定 (LINE未連携時のフォールバック) -->
             <div class="card" style="padding:16px; border:1px solid #e2e8f0;">
-              <h4 style="font-size:14px; font-weight:700; color:#1e293b; margin:0 0 8px 0;">✏️ 方法3：表示名・引き継ぎIDを直接設定する</h4>
+              <h4 style="font-size:14px; font-weight:700; color:#1e293b; margin:0 0 8px 0;">✏️ あなたの表示名を設定する</h4>
               <div class="config-field" style="margin-bottom:10px;">
-                <label class="config-label" for="manualLineDisplayName">あなたの表示名（LINE名など）</label>
+                <label class="config-label" for="manualLineDisplayName">表示名（例: なおや）</label>
                 <input type="text" id="manualLineDisplayName" class="custom-input" placeholder="例: なおや">
               </div>
-              <div class="config-field" style="margin-bottom:12px;">
-                <label class="config-label" for="manualLineUserId">ユーザー識別ID（スマホ・PC共通の英数字 / 空欄で自動生成）</label>
-                <input type="text" id="manualLineUserId" class="custom-input" placeholder="例: line_naoya_01">
-              </div>
-              <button type="button" class="primary-btn" style="width:100%;" onclick="handleSaveManualLineProfile()">このユーザー情報で保存・引き継ぐ</button>
+              <button type="button" class="primary-btn" style="width:100%;" onclick="handleSaveManualLineProfile()">表示名を保存する</button>
             </div>
           </div>
         </div>

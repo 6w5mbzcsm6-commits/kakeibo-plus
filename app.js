@@ -199,87 +199,44 @@ function renderLineAuthModal() {
         '<div style="display:flex;align-items:center;gap:10px;">' +
           av +
           '<div>' +
-            '<div style="font-weight:700;font-size:15px;color:#0f172a;">' + escapeHtml(state.lineProfile.displayName) + ' <span style="font-size:11px;background:#dcfce7;color:#15803d;padding:2px 6px;border-radius:8px;">連携中</span></div>' +
-            '<div style="font-size:11px;color:#64748b;">ID: ' + escapeHtml(state.lineProfile.userId) + '</div>' +
+            '<div style="font-weight:700;font-size:15px;color:#0f172a;">' + escapeHtml(state.lineProfile.displayName) + ' <span style="font-size:11px;background:#dcfce7;color:#15803d;padding:2px 6px;border-radius:8px;">LINE認証済み</span></div>' +
           '</div>' +
         '</div>' +
-        '<button type="button" class="outline-btn" style="padding:5px 10px;font-size:12px;" onclick="handleDisconnectLineProfile()">解除</button>';
+        '<button type="button" class="outline-btn" style="padding:5px 10px;font-size:12px;" onclick="handleDisconnectLineProfile()">ログアウト</button>';
     } else {
       currentBox.innerHTML =
         '<div style="display:flex;align-items:center;gap:8px;">' +
           '<span style="font-size:20px;">👤</span>' +
           '<div>' +
-            '<div style="font-weight:700;font-size:14px;color:#334155;">' + escapeHtml(state.groupSettings.myName || '自分') + ' (未連携)</div>' +
-            '<div style="font-size:11px;color:#64748b;">下の方法1〜3のいずれかでLINEユーザー情報を引き継げます</div>' +
+            '<div style="font-weight:700;font-size:14px;color:#334155;">' + escapeHtml(state.groupSettings.myName || '自分') + ' (LINE未認証)</div>' +
+            '<div style="font-size:11px;color:#64748b;">上のボタンからLINEログインするか、下で表示名を設定できます</div>' +
           '</div>' +
         '</div>';
-    }
-  }
-
-  // 保存済みLINEアカウント一覧
-  const listEl = document.getElementById('savedLineProfilesList');
-  if (listEl) {
-    const profiles = Object.values(state.savedLineProfiles || {});
-    if (profiles.length === 0) {
-      listEl.innerHTML = '<div style="font-size:12px; color:#94a3b8; text-align:center; padding:8px;">まだスプレッドシートに保存されたLINEアカウントはありません。<br>スマホのLINEで開くか、下の「方法3」で登録するとここに表示されます。</div>';
-    } else {
-      listEl.innerHTML = profiles.map(function(p) {
-        const isCurrent = state.lineProfile && state.lineProfile.userId === p.userId;
-        const av = p.pictureUrl
-          ? '<img src="' + p.pictureUrl + '" style="width:28px;height:28px;border-radius:50%;object-fit:cover;">'
-          : '<span style="font-size:20px;">🟢</span>';
-        return '<div style="display:flex;align-items:center;justify-content:space-between;padding:8px 12px;background:#f8fafc;border:1px solid #cbd5e1;border-radius:10px;">' +
-          '<div style="display:flex;align-items:center;gap:8px;">' +
-            av +
-            '<div>' +
-              '<div style="font-weight:700;font-size:13.5px;color:#1e293b;">' + escapeHtml(p.displayName) + '</div>' +
-              '<div style="font-size:11px;color:#64748b;">ID: ' + escapeHtml(p.userId) + '</div>' +
-            '</div>' +
-          '</div>' +
-          (isCurrent
-            ? '<span style="font-size:12px;font-weight:700;color:#15803d;">✓ 適用中</span>'
-            : '<button type="button" class="primary-btn" style="padding:5px 12px;font-size:12px;background:#06C755;" data-uid="' + escapeHtml(p.userId) + '" onclick="handleSelectSavedLineProfile(this.dataset.uid)">このユーザーで引き継ぐ</button>') +
-        '</div>';
-      }).join('');
     }
   }
 
   const nameInput = document.getElementById('manualLineDisplayName');
-  const idInput = document.getElementById('manualLineUserId');
   if (nameInput) nameInput.value = (state.lineProfile && state.lineProfile.displayName) || state.groupSettings.myName || '';
-  if (idInput) idInput.value = (state.lineProfile && state.lineProfile.userId) || '';
-}
-
-function handleSelectSavedLineProfile(userId) {
-  const p = (state.savedLineProfiles || {})[userId];
-  if (!p) return;
-  applyLineProfile(p, false);
-  renderLineAuthModal();
-  closeLineAuthModal();
-  showToast('🟢 LINEユーザー「' + p.displayName + '」を引き継ぎました！');
 }
 
 function handleSaveManualLineProfile() {
   const nameInput = document.getElementById('manualLineDisplayName');
-  const idInput = document.getElementById('manualLineUserId');
   const displayName = (nameInput ? nameInput.value : '').trim();
   if (!displayName) {
-    alert('あなたの表示名を入力してください');
+    alert('表示名を入力してください');
     return;
   }
-  let userId = (idInput ? idInput.value : '').trim();
-  if (!userId) {
-    userId = 'line_' + displayName.replace(/\s+/g, '_').toLowerCase();
+  state.groupSettings.myName = displayName;
+  safeStorage.setItem('kakeibo_my_name', displayName);
+  if (state.lineProfile) {
+    state.lineProfile.displayName = displayName;
   }
-  const profile = {
-    userId: userId,
-    displayName: displayName,
-    pictureUrl: (state.lineProfile && state.lineProfile.pictureUrl) || ''
-  };
-  applyLineProfile(profile, true);
+  updateGroupConfigInputs();
+  updateUserSwitcherUI();
   renderLineAuthModal();
   closeLineAuthModal();
-  showToast('🟢 ユーザー情報「' + displayName + '」を保存・同期しました！');
+  renderApp();
+  showToast('表示名を「' + displayName + '」に保存しました');
 }
 
 function handleDisconnectLineProfile() {
@@ -310,7 +267,6 @@ function copyLiffUrl() {
 window.handleLineLoginClick = handleLineLoginClick;
 window.openLineAuthModal = openLineAuthModal;
 window.closeLineAuthModal = closeLineAuthModal;
-window.handleSelectSavedLineProfile = handleSelectSavedLineProfile;
 window.handleSaveManualLineProfile = handleSaveManualLineProfile;
 window.handleDisconnectLineProfile = handleDisconnectLineProfile;
 window.copyLiffUrl = copyLiffUrl;
@@ -2734,16 +2690,7 @@ async function syncWithGas(showNotification = true) {
         state.settings.monthlyBudget = payload.settings.monthlyBudget;
         safeStorage.setItem('kakeibo_budget', payload.settings.monthlyBudget);
       }
-      if (payload.lineProfiles && typeof payload.lineProfiles === 'object') {
-        state.savedLineProfiles = payload.lineProfiles;
-        // PC等で未連携状態のとき、スプレッドシートに保存されたLINEプロフィールがあれば自動引き継ぎ
-        if (!state.lineProfile) {
-          const profList = Object.values(payload.lineProfiles);
-          if (profList.length > 0) {
-            applyLineProfile(profList[profList.length - 1], false);
-          }
-        }
-      }
+
       renderApp();
       if (showNotification) showToast('スプレッドシートの最新データと同期しました');
     }
