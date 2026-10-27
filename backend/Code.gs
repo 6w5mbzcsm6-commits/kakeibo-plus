@@ -226,13 +226,39 @@ function verifyIdToken(idToken, channelId) {
 }
 
 /**
- * ユーザーIDから夫/妻を判定。未登録なら null
+ * 設定から2人の表示名を取得（未設定時は「メンバー1」「メンバー2」）
+ */
+function getMemberNames(config) {
+  const cfg = config || getConfigData();
+  return {
+    husbandName: cleanSheetStr(cfg.husbandName || '') || 'メンバー1',
+    wifeName: cleanSheetStr(cfg.wifeName || '') || 'メンバー2'
+  };
+}
+
+/**
+ * 支払者名またはスロット識別子から 'husband' | 'wife' | 'shared' | null を判定
+ * 過去データの「夫」「妻」や表示名変更前のデータもスロットに正規化する
+ */
+function resolvePayerSlot(payer, config) {
+  const p = String(payer || '').trim();
+  if (!p) return null;
+  if (p === '共同' || p === 'shared') return 'shared';
+  const names = getMemberNames(config);
+  if (p === names.husbandName || p === '夫' || p === 'メンバー1' || p === 'husband') return 'husband';
+  if (p === names.wifeName || p === '妻' || p === 'メンバー2' || p === 'wife') return 'wife';
+  return null;
+}
+
+/**
+ * ユーザーIDからメンバー表示名を判定。未登録なら null
  */
 function memberNameFromUserId(userId) {
   if (!userId) return null;
   const config = getConfigData();
-  if (userId === config.husbandUserId) return '夫';
-  if (userId === config.wifeUserId) return '妻';
+  const names = getMemberNames(config);
+  if (userId === config.husbandUserId) return names.husbandName;
+  if (userId === config.wifeUserId) return names.wifeName;
   return null;
 }
 
@@ -263,22 +289,25 @@ function resolveActor(idToken) {
   const name = memberNameFromUserId(userId);
   if (!name) {
     const config = getConfigData();
+    const names = getMemberNames(config);
     return {
       allowed: false,
       code: 'UNREGISTERED',
       userId: userId,
       availableRoles: {
         husband: !config.husbandUserId,
-        wife: !config.wifeUserId
+        wife: !config.wifeUserId,
+        husbandName: names.husbandName,
+        wifeName: names.wifeName
       },
-      error: 'このLINEアカウントはまだ登録されていません。下のボタンから「夫」または「妻」として登録してください。'
+      error: 'このLINEアカウントはまだ登録されていません。下の画面でお好きな表示名を入力して登録してください。'
     };
   }
   return { allowed: true, verified: true, name: name, userId: userId };
 }
 
 /**
- * LIFFの検証済みIDトークンを用いた安全な初回メンバー登録
+ * LIFFの検証済みIDトークンを用いた安全な初回メンバー登録（自由な表示名に対応）
  */
 function registerMemberByToken(idToken, data) {
   const channelId = SCRIPT_PROPERTIES.getProperty('LIFF_CHANNEL_ID');
@@ -289,9 +318,19 @@ function registerMemberByToken(idToken, data) {
   if (!userId) {
     return { success: false, code: 'AUTH', error: 'LINEログインの検証に失敗しました。再読み込みしてください。' };
   }
-  const role = data && data.role;
-  if (role !== '夫' && role !== '妻') {
-    return { success: false, error: '登録する役割（夫 または 妻）を選択してください' };
+  const rawSlot = data && (data.slot || data.role);
+  const slot = (rawSlot === 'husband' || rawSlot === '夫' || rawSlot === 'メンバー1')
+    ? 'husband'
+    : ((rawSlot === 'wife' || rawSlot === '妻' || rawSlot === 'メンバー2') ? 'wife' : '');
+  if (!slot) {
+    return { success: false, error: '登録するメンバー枠を選択してください' };
+  }
+  const customName = String((data && data.name) || '').trim().slice(0, 15);
+  if (!customName) {
+    return { success: false, error: '表示名（ニックネーム）を入力してください（15文字以内）' };
+  }
+  if (['共同', 'all', '未認証', '自動計上'].indexOf(customName) !== -1) {
+    return { success: false, error: `「${customName}」はシステム予約語のため表示名に使用できません` };
   }
   const requiredCode = SCRIPT_PROPERTIES.getProperty('REGISTER_CODE');
   if (requiredCode && String(data.registerCode || '').trim() !== requiredCode) {
@@ -301,18 +340,32 @@ function registerMemberByToken(idToken, data) {
   return withLock(() => {
     clearMemCache();
     const config = getConfigData();
-    const key = role === '夫' ? 'husbandUserId' : 'wifeUserId';
-    const otherKey = role === '夫' ? 'wifeUserId' : 'husbandUserId';
+    const names = getMemberNames(config);
+    const key = slot === 'husband' ? 'husbandUserId' : 'wifeUserId';
+    const otherKey = slot === 'husband' ? 'wifeUserId' : 'husbandUserId';
+    const nameKey = slot === 'husband' ? 'husbandName' : 'wifeName';
+    const otherName = slot === 'husband' ? names.wifeName : names.husbandName;
+    const avail = () => ({
+      husband: !config.husbandUserId,
+      wife: !config.wifeUserId,
+      husbandName: names.husbandName,
+      wifeName: names.wifeName
+    });
+
     if (config[key] && config[key] !== userId) {
-      return { success: false, error: `「${role}」は既に別のアカウントで登録済みです。変更はスプレッドシートのConfigシートで行ってください。` };
+      return { success: false, availableRoles: avail(), error: '選択した枠は既に別のアカウントで登録済みです。もう一方の枠を選択してください。' };
     }
     if (config[otherKey] === userId) {
-      return { success: false, error: 'このアカウントは既にもう一方の役割で登録されています。' };
+      return { success: false, availableRoles: avail(), error: 'このLINEアカウントは既にもう一方の枠で登録されています。' };
+    }
+    if (config[otherKey] && customName === otherName) {
+      return { success: false, availableRoles: avail(), error: `パートナーと同じ名前（${otherName}）は登録できません。区別できる表示名にしてください。` };
     }
     setConfigValue(key, userId);
-    const actor = { allowed: true, verified: true, name: role, userId: userId };
-    writeAudit(actor, '登録', 'メンバー', role, null, { role: role });
-    return { success: true, role: role };
+    setConfigValue(nameKey, safeSheetStr(customName));
+    const actor = { allowed: true, verified: true, name: customName, userId: userId };
+    writeAudit(actor, '登録', 'メンバー', customName, null, { role: customName, slot: slot });
+    return { success: true, role: customName, slot: slot };
   });
 }
 
@@ -500,35 +553,44 @@ function setConfigValue(key, value) {
  */
 function processNaturalLanguageMessage(text, userId) {
   // メンバー登録（Webhook偽装対策のため、REGISTER_CODE設定時のみトーク登録を許可。未設定時はLIFF画面へ誘導）
-  const regMatch = text.match(/^(夫|妻)として登録(?:\s+(.+))?$/);
+  const regMatch = text.match(/^(.{1,15})として登録(?:\s+(.+))?$/);
   if (regMatch) {
-    const role = regMatch[1];
+    const customName = regMatch[1].trim();
     const codeArg = (regMatch[2] || '').trim();
     const requiredCode = SCRIPT_PROPERTIES.getProperty('REGISTER_CODE');
     if (!requiredCode) {
-      return `🔒 セキュリティ保護のため、アカウント登録はLINE内の「ふたり家計簿」アプリ（画面下のメニュー）を開いて「${role}として登録」ボタンを押してください✨`;
+      return `🔒 セキュリティ保護のため、アカウント登録はLINE内の「ふたり家計簿」アプリを開いて、お好きな表示名で登録ボタンを押してください✨`;
     }
     if (codeArg !== requiredCode) {
-      return `合言葉が一致しません。「${role}として登録 合言葉」の形式で送信するか、LIFFアプリ画面から登録してください。`;
+      return `合言葉が一致しません。「表示名として登録 合言葉」の形式で送信するか、LIFFアプリ画面から登録してください。`;
+    }
+    if (['共同', 'all', '未認証', '自動計上'].indexOf(customName) !== -1) {
+      return `「${customName}」はシステム予約語のため表示名に使用できません。`;
     }
     return withLock(() => {
       clearMemCache();
       const config = getConfigData();
-      const key = role === '夫' ? 'husbandUserId' : 'wifeUserId';
-      const otherKey = role === '夫' ? 'wifeUserId' : 'husbandUserId';
-      if (config[key] && config[key] !== userId) {
-        return `${role}は既に別のアカウントで登録済みです。変更はスプレッドシートのConfigシートで行ってください。`;
+      const names = getMemberNames(config);
+      if (config.husbandUserId === userId || config.wifeUserId === userId) {
+        return 'このアカウントは既に登録されています。表示名の変更はアプリの「設定」タブから行えます。';
       }
-      if (config[otherKey] === userId) {
-        return 'このアカウントは既にもう一方の役割で登録されています。';
+      const slot = !config.husbandUserId ? 'husband' : (!config.wifeUserId ? 'wife' : '');
+      if (!slot) {
+        return '2名分の枠が既に登録済みです。変更はスプレッドシートのConfigシートで行ってください。';
       }
-      setConfigValue(key, userId);
-      writeAudit({ name: role, verified: true }, '登録', 'メンバー', role, null, { role: role });
-      return `✅ このアカウントを「${role}」として登録しました！`;
+      const otherName = slot === 'husband' ? names.wifeName : names.husbandName;
+      if ((slot === 'husband' ? config.wifeUserId : config.husbandUserId) && customName === otherName) {
+        return `パートナーと同じ名前（${otherName}）は登録できません。区別できる表示名にしてください。`;
+      }
+      setConfigValue(slot === 'husband' ? 'husbandUserId' : 'wifeUserId', userId);
+      setConfigValue(slot === 'husband' ? 'husbandName' : 'wifeName', safeSheetStr(customName));
+      writeAudit({ name: customName, verified: true }, '登録', 'メンバー', customName, null, { role: customName, slot: slot });
+      return `✅ このアカウントを「${customName}」として登録しました！`;
     });
   }
 
   const config = getConfigData();
+  const names = getMemberNames(config);
   const userName = memberNameFromUserId(userId);
   const anyRegistered = !!(config.husbandUserId || config.wifeUserId);
 
@@ -539,7 +601,7 @@ function processNaturalLanguageMessage(text, userId) {
   if (!userName) {
     return anyRegistered
       ? 'このアカウントは未登録です。ご家族の設定をご確認ください。'
-      : '初回設定です。リッチメニューから「ふたり家計簿」アプリを開いて、「夫」または「妻」として登録してください✨';
+      : '初回設定です。リッチメニューから「ふたり家計簿」アプリを開いて、お好きなニックネームでメンバー登録してください✨';
   }
   const actor = { allowed: true, verified: true, name: userName, userId: userId };
 
@@ -559,9 +621,9 @@ function processNaturalLanguageMessage(text, userId) {
     const t = calculateTransfers();
     return `🏦【今月の共同口座 振込予定額】\n` +
            `━━━━━━━━━━━━━━\n` +
-           `👨 夫: ¥${t.husband.totalTransfer.toLocaleString()}\n` +
+           `🔵 ${names.husbandName}: ¥${t.husband.totalTransfer.toLocaleString()}\n` +
            ` (基本¥${t.husband.baseContribution.toLocaleString()} + 私物¥${t.husband.privateOnSharedCard.toLocaleString()} - 立替¥${t.husband.advancedForShared.toLocaleString()})\n\n` +
-           `👩 妻: ¥${t.wife.totalTransfer.toLocaleString()}\n` +
+           `🩷 ${names.wifeName}: ¥${t.wife.totalTransfer.toLocaleString()}\n` +
            ` (基本¥${t.wife.baseContribution.toLocaleString()} + 私物¥${t.wife.privateOnSharedCard.toLocaleString()} - 立替¥${t.wife.advancedForShared.toLocaleString()})\n` +
            `━━━━━━━━━━━━━━`;
   }
@@ -618,14 +680,15 @@ function parseExpenseInput(text, actor) {
   let payer = actor.name;
   const remainingParts = [];
 
+  const names = getMemberNames();
   parts.forEach(part => {
     const cleanNum = part.replace(/[¥,円]/g, '');
     if (/^\d+$/.test(cleanNum) && amount === null) { amount = parseInt(cleanNum, 10); return; }
     if (part === '立替') { paymentType = 'advanced_by_user'; return; }
     if (part === '私物' || part === '個人') { isShared = false; return; }
     if (part === '共同カード') { paymentType = 'shared_card'; return; }
-    if (part === '夫' || part === 'パパ') { payer = '夫'; return; }
-    if (part === '妻' || part === 'ママ') { payer = '妻'; return; }
+    if (part === names.husbandName || part === '夫' || part === 'パパ') { payer = names.husbandName; return; }
+    if (part === names.wifeName || part === '妻' || part === 'ママ') { payer = names.wifeName; return; }
     remainingParts.push(part);
   });
 
@@ -664,12 +727,14 @@ function sendLineReply(replyToken, text, token) {
 function getInitialData(targetMonth, actor) {
   const month = sanitizeMonth(targetMonth);
   const config = getConfigData();
+  const names = getMemberNames(config);
   const transactions = getTransactionsForMonth(month);
+  const actorSlot = resolvePayerSlot(actor.name, config) || 'husband';
 
   return {
     success: true,
     month: month,
-    actor: { name: actor.name, verified: !!actor.verified },
+    actor: { name: actor.name, slot: actorSlot, verified: !!actor.verified },
     transactions: transactions,
     receiptItems: getReceiptItemsForMonth(month),
     shoppingList: getShoppingList(),
@@ -679,7 +744,9 @@ function getInitialData(targetMonth, actor) {
     rules: getRules(),
     config: {
       husbandBaseContribution: Number(config.husbandBaseContribution) || 60000,
-      wifeBaseContribution: Number(config.wifeBaseContribution) || 60000
+      wifeBaseContribution: Number(config.wifeBaseContribution) || 60000,
+      husbandName: names.husbandName,
+      wifeName: names.wifeName
     },
     transfers: calculateTransfers(month),
     summary: calculateMonthlySummary(month),
@@ -742,8 +809,11 @@ function validateTxInput(tx) {
   if (!isValidDateStr(date)) return { error: '日付の形式が正しくありません' };
   const paymentType = tx.paymentType || 'shared_card';
   if (ALLOWED_PAYMENT_TYPES.indexOf(paymentType) === -1) return { error: '決済手段が正しくありません' };
-  const payer = tx.payer;
-  if (payer !== '夫' && payer !== '妻' && payer !== '共同') return { error: '支払者が正しくありません' };
+  const config = getConfigData();
+  const names = getMemberNames(config);
+  const slot = resolvePayerSlot(tx.payer, config);
+  if (!slot) return { error: '支払者が正しくありません' };
+  const payer = slot === 'husband' ? names.husbandName : (slot === 'wife' ? names.wifeName : '共同');
   return {
     value: {
       date: date, title: title, amount: amount,
@@ -859,20 +929,37 @@ function deleteTransaction(id, actor) {
 
 function getMonthlyTotals(count) {
   const n = Math.min(Math.max(Number(count) || MAX_HISTORY_MONTHS, 1), MAX_HISTORY_MONTHS);
+  const config = getConfigData();
+  const names = getMemberNames(config);
   const [cy, cm] = currentMonthStr().split('-').map(Number);
   const map = {};
   const order = [];
   for (let i = n - 1; i >= 0; i--) {
     const d = new Date(cy, cm - 1 - i, 1);
     const m = `${d.getFullYear()}-${ ('0' + (d.getMonth() + 1)).slice(-2) }`;
-    map[m] = { month: m, shared: 0, personal: { '夫': 0, '妻': 0 }, budget: resolveBudget(m) };
+    const personalObj = { husband: 0, wife: 0, '夫': 0, '妻': 0 };
+    personalObj[names.husbandName] = 0;
+    personalObj[names.wifeName] = 0;
+    map[m] = { month: m, shared: 0, personal: personalObj, budget: resolveBudget(m) };
     order.push(m);
   }
   getAllTransactions().forEach(tx => {
     const bucket = map[tx.date.slice(0, 7)];
     if (!bucket) return;
-    if (tx.isShared) bucket.shared += tx.amount;
-    else if (tx.payer === '夫' || tx.payer === '妻') bucket.personal[tx.payer] += tx.amount;
+    if (tx.isShared) {
+      bucket.shared += tx.amount;
+    } else {
+      const slot = resolvePayerSlot(tx.payer, config);
+      if (slot === 'husband') {
+        bucket.personal.husband += tx.amount;
+        bucket.personal['夫'] += tx.amount;
+        bucket.personal[names.husbandName] = bucket.personal.husband;
+      } else if (slot === 'wife') {
+        bucket.personal.wife += tx.amount;
+        bucket.personal['妻'] += tx.amount;
+        bucket.personal[names.wifeName] = bucket.personal.wife;
+      }
+    }
   });
   return order.map(m => map[m]);
 }
@@ -934,8 +1021,14 @@ function deleteShoppingItem(id) {
 // 振込・予算計算
 // ==========================================
 
-function paidKey(month, payer) {
-  return 'paid_' + month + '_' + payer;
+function paidKey(month, slot) {
+  return 'paid_' + month + '_' + slot;
+}
+
+function isSlotPaid(config, monthStr, slot) {
+  const legacyWho = slot === 'husband' ? '夫' : '妻';
+  if (config[paidKey(monthStr, slot)] !== undefined) return toBool(config[paidKey(monthStr, slot)]);
+  return toBool(config[paidKey(monthStr, legacyWho)]);
 }
 
 function calculateTransfers(targetMonth) {
@@ -945,22 +1038,23 @@ function calculateTransfers(targetMonth) {
 
   const hBase = Number(config.husbandBaseContribution) || 60000;
   const wBase = Number(config.wifeBaseContribution) || 60000;
-  const acc = { '夫': { priv: 0, adv: 0 }, '妻': { priv: 0, adv: 0 } };
+  const acc = { husband: { priv: 0, adv: 0 }, wife: { priv: 0, adv: 0 } };
 
   txs.forEach(tx => {
-    if (!acc[tx.payer]) return;
-    if (!tx.isShared && tx.paymentType === 'shared_card') acc[tx.payer].priv += tx.amount;
-    if (tx.isShared && tx.paymentType === 'advanced_by_user') acc[tx.payer].adv += tx.amount;
+    const slot = resolvePayerSlot(tx.payer, config);
+    if (slot !== 'husband' && slot !== 'wife') return;
+    if (!tx.isShared && tx.paymentType === 'shared_card') acc[slot].priv += tx.amount;
+    if (tx.isShared && tx.paymentType === 'advanced_by_user') acc[slot].adv += tx.amount;
   });
 
-  const build = (base, who) => ({
+  const build = (base, slot) => ({
     baseContribution: base,
-    privateOnSharedCard: acc[who].priv,
-    advancedForShared: acc[who].adv,
-    totalTransfer: Math.max(0, base + acc[who].priv - acc[who].adv),
-    isPaid: toBool(config[paidKey(monthStr, who)])
+    privateOnSharedCard: acc[slot].priv,
+    advancedForShared: acc[slot].adv,
+    totalTransfer: Math.max(0, base + acc[slot].priv - acc[slot].adv),
+    isPaid: isSlotPaid(config, monthStr, slot)
   });
-  return { month: monthStr, husband: build(hBase, '夫'), wife: build(wBase, '妻') };
+  return { month: monthStr, husband: build(hBase, 'husband'), wife: build(wBase, 'wife') };
 }
 
 function resolveBudget(monthStr) {
@@ -1131,7 +1225,9 @@ function getConfigData() {
   if (_memCache.config) return _memCache.config;
   const sheet = getSheet(SHEET_NAMES.CONFIG);
   const config = {
-    husbandBaseContribution: 60000, wifeBaseContribution: 60000, husbandUserId: '', wifeUserId: ''
+    husbandBaseContribution: 60000, wifeBaseContribution: 60000,
+    husbandUserId: '', wifeUserId: '',
+    husbandName: 'メンバー1', wifeName: 'メンバー2'
   };
   if (!sheet || sheet.getLastRow() <= 1) return config;
   sheet.getRange(2, 1, sheet.getLastRow() - 1, 2).getValues().forEach(r => {
@@ -1142,15 +1238,21 @@ function getConfigData() {
 }
 
 function updateTransferStatus(data, actor) {
-  if (!/^\d{4}-\d{2}$/.test(String(data.month || '')) || (data.payer !== '夫' && data.payer !== '妻')) {
+  const config = getConfigData();
+  const slot = resolvePayerSlot(data && (data.slot || data.payer), config);
+  if (!/^\d{4}-\d{2}$/.test(String(data.month || '')) || (slot !== 'husband' && slot !== 'wife')) {
     return { success: false, error: '入力値が正しくありません' };
   }
   return withLock(() => {
-    const key = paidKey(data.month, data.payer);
-    const beforePaid = toBool(getConfigData()[key]);
+    clearMemCache();
+    const cfg = getConfigData();
+    const names = getMemberNames(cfg);
+    const displayPayer = slot === 'husband' ? names.husbandName : names.wifeName;
+    const key = paidKey(data.month, slot);
+    const beforePaid = isSlotPaid(cfg, data.month, slot);
     const nextPaid = toBool(data.isPaid);
     setConfigValue(key, nextPaid);
-    writeAudit(actor, '更新', '振込状況', data.month + ':' + data.payer, { payer: data.payer, isPaid: beforePaid }, { payer: data.payer, isPaid: nextPaid });
+    writeAudit(actor, '更新', '振込状況', data.month + ':' + displayPayer, { payer: displayPayer, isPaid: beforePaid }, { payer: displayPayer, isPaid: nextPaid });
     return { success: true };
   });
 }
@@ -1162,13 +1264,53 @@ function updateBaseContribution(data, actor) {
     return { success: false, error: '基本拠出額が正しくありません' };
   }
   return withLock(() => {
+    clearMemCache();
     const before = getConfigData();
-    const prevObj = { husband: Number(before.husbandBaseContribution) || 60000, wife: Number(before.wifeBaseContribution) || 60000 };
+    const beforeNames = getMemberNames(before);
+    const hName = data.husbandName !== undefined ? String(data.husbandName || '').trim().slice(0, 15) : beforeNames.husbandName;
+    const wName = data.wifeName !== undefined ? String(data.wifeName || '').trim().slice(0, 15) : beforeNames.wifeName;
+    if (!hName || !wName) {
+      return { success: false, error: 'ふたりの表示名を1〜15文字で入力してください' };
+    }
+    if (hName === wName) {
+      return { success: false, error: 'ふたりの表示名は異なる名前にしてください' };
+    }
+    if (['共同', 'all', '未認証', '自動計上'].indexOf(hName) !== -1 || ['共同', 'all', '未認証', '自動計上'].indexOf(wName) !== -1) {
+      return { success: false, error: 'システム予約語（共同 など）は表示名に使用できません' };
+    }
+    const prevObj = {
+      husbandName: beforeNames.husbandName,
+      wifeName: beforeNames.wifeName,
+      husband: Number(before.husbandBaseContribution) || 60000,
+      wife: Number(before.wifeBaseContribution) || 60000
+    };
     setConfigValue('husbandBaseContribution', hv);
     setConfigValue('wifeBaseContribution', wv);
-    writeAudit(actor, '更新', '基本拠出額', 'base', prevObj, { husband: hv, wife: wv });
+    setConfigValue('husbandName', safeSheetStr(hName));
+    setConfigValue('wifeName', safeSheetStr(wName));
+    if (beforeNames.husbandName !== hName) renamePayerInSheets(beforeNames.husbandName, hName);
+    if (beforeNames.wifeName !== wName) renamePayerInSheets(beforeNames.wifeName, wName);
+    writeAudit(actor, '更新', 'メンバー・基本拠出設定', 'base', prevObj, { husbandName: hName, wifeName: wName, husband: hv, wife: wv });
     return { success: true };
   });
+}
+
+function renamePayerInSheets(oldName, newName) {
+  if (!oldName || !newName || oldName === newName) return;
+  const txSheet = getSheet(SHEET_NAMES.TRANSACTIONS);
+  if (txSheet && txSheet.getLastRow() > 1) {
+    const numRows = txSheet.getLastRow() - 1;
+    const payers = txSheet.getRange(2, TX.PAYER + 1, numRows, 1).getValues();
+    let changed = false;
+    for (let i = 0; i < payers.length; i++) {
+      if (cleanSheetStr(payers[i][0]) === oldName) {
+        payers[i][0] = safeSheetStr(newName);
+        changed = true;
+      }
+    }
+    if (changed) txSheet.getRange(2, TX.PAYER + 1, numRows, 1).setValues(payers);
+  }
+  delete _memCache.transactions;
 }
 
 // ==========================================
@@ -1382,8 +1524,11 @@ function searchPrices(query, actor) {
   // レシートIDごとの公開可否マップを作成（他人の私物レシートを除外）
   const privateOtherReceipts = {};
   if (actor && actor.name) {
+    const config = getConfigData();
+    const actorSlot = resolvePayerSlot(actor.name, config);
     getAllTransactions().forEach(tx => {
-      if (tx.receiptId && !tx.isShared && tx.payer !== actor.name) {
+      const txSlot = resolvePayerSlot(tx.payer, config);
+      if (tx.receiptId && !tx.isShared && txSlot !== actorSlot && tx.payer !== actor.name) {
         privateOtherReceipts[tx.receiptId] = true;
       }
     });
@@ -1483,7 +1628,7 @@ function setupSpreadsheet() {
   const existingKeys = configSheet.getLastRow() > 1
     ? configSheet.getRange(2, 1, configSheet.getLastRow() - 1, 1).getValues().map(r => String(r[0]))
     : [];
-  [['husbandBaseContribution', 60000], ['wifeBaseContribution', 60000], ['husbandUserId', ''], ['wifeUserId', '']]
+  [['husbandBaseContribution', 60000], ['wifeBaseContribution', 60000], ['husbandUserId', ''], ['wifeUserId', ''], ['husbandName', 'メンバー1'], ['wifeName', 'メンバー2']]
     .forEach(r => { if (existingKeys.indexOf(r[0]) === -1) configSheet.appendRow(r); });
 
   console.log('✅ スプレッドシートの初期化/更新が完了しました（既存データは保持されています）');

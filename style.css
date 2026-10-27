@@ -1,0 +1,49 @@
+/* 夫婦・家族向け共同家計簿 カスタムCSS */
+
+@layer utilities {
+  .pb-safe {
+    padding-bottom: env(safe-area-inset-bottom, 1rem);
+  }
+}
+
+/* スクロールバーの非表示（モバイルライクな外観） */
+::-webkit-scrollbar {
+  width: 0px;
+  background: transparent;
+}
+
+/* タップハイライトの無効化 */
+* {
+  -webkit-tap-highlight-color: transparent;
+}
+
+/* モーダル表示アニメーション */
+#expenseModal:not(.hidden) > div,
+#buySyncModal:not(.hidden) > div {
+  animation: slideUp 0.25s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+}
+
+@keyframes slideUp {
+  from {
+    transform: translateY(100%);
+    opacity: 0;
+  }
+  to {
+    transform: translateY(0);
+    opacity: 1;
+  }
+}
+
+/* アラート・バッジ用の微弱パルスアニメーション */
+.badge-pulse {
+  animation: pulseSlow 2s cubic-bezier(0.4, 0, 0.6, 1) infinite;
+}
+
+@keyframes pulseSlow {
+  0%, 100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.6;
+  }
+}
