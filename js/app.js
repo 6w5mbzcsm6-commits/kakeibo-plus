@@ -1076,7 +1076,11 @@ async function handleReceiptFile(file) {
     const imageBase64 = await resizeImageToBase64(file);
     showToast('🤖 AIがレシートを読み取り中です（5〜10秒ほどお待ちください）…', { loading: true });
     const res = await api('scanReceipt', { imageBase64, mimeType: 'image/jpeg' });
-    if (!res.success) { closeReceiptModal(); handleApiError(res); return; }
+    if (!res || !res.success || !res.receipt) {
+      closeReceiptModal();
+      handleApiError(res || { error: 'レシートデータの取得に失敗しました' });
+      return;
+    }
     fillReceiptForm(res.receipt);
     showToast('✨ レシートを読み取りました！内容を確認してください');
   } catch (err) {
@@ -1088,14 +1092,15 @@ async function handleReceiptFile(file) {
 }
 
 function fillReceiptForm(r) {
-  scannedTotal = r.total || 0;
-  $('receiptStore').value = r.store || '';
-  $('receiptDate').value = r.date || localDateStr();
-  $('receiptCategory').innerHTML = categoryOptionsHtml(guessCategoryByStore(r.store || ''));
+  const receipt = r || {};
+  scannedTotal = Number(receipt.total) || 0;
+  $('receiptStore').value = receipt.store || '';
+  $('receiptDate').value = receipt.date || localDateStr();
+  $('receiptCategory').innerHTML = categoryOptionsHtml(guessCategoryByStore(receipt.store || ''));
   $('receiptIsShared').value = 'true';
   $('receiptPaymentType').value = 'shared_card';
   $('receiptPayer').value = memberName(state.currentSlot);
-  const items = r.items && r.items.length ? r.items : [{ name: '', quantity: 1, price: 0 }];
+  const items = Array.isArray(receipt.items) && receipt.items.length ? receipt.items : [{ name: '', quantity: 1, price: 0 }];
   $('receiptItemRows').innerHTML =
     '<div class="flex gap-1.5 text-[10px] text-slate-400 px-0.5"><span class="flex-1">品名</span><span class="w-12 text-center">数量</span><span class="w-20 text-right">金額(行合計)</span><span class="w-6"></span></div>' +
     items.map(receiptRowHtml).join('');
