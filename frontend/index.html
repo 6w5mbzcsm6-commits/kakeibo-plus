@@ -795,10 +795,11 @@
     </div>
   </div>
 
-  <!-- トースト通知 -->
-  <div id="toast" class="hidden fixed top-5 left-1/2 -translate-x-1/2 z-50 bg-slate-900/90 text-white text-xs font-bold px-4 py-2.5 rounded-full shadow-lg flex items-center gap-2 backdrop-blur-sm transition-opacity duration-300">
-    <i data-lucide="check" class="w-4 h-4 text-brand-400"></i>
-    <span id="toastMessage">保存しました</span>
+  <!-- トースト通知（通常完了 ＆ 処理中スピナー対応） -->
+  <div id="toast" class="hidden fixed top-5 left-1/2 -translate-x-1/2 z-[60] bg-slate-900/95 text-white text-xs font-bold px-4 py-2.5 rounded-full shadow-xl flex items-center gap-2 backdrop-blur-sm transition-opacity duration-300 max-w-[90vw]">
+    <div id="toastSpinner" class="hidden w-4 h-4 border-2 border-white/30 border-t-brand-400 rounded-full animate-spin shrink-0"></div>
+    <i id="toastIcon" data-lucide="check" class="w-4 h-4 text-brand-400 shrink-0"></i>
+    <span id="toastMessage" class="truncate">保存しました</span>
   </div>
 
   <!-- アプリ本体スクリプト -->

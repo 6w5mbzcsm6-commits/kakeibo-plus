@@ -1356,7 +1356,13 @@ function scanReceipt(data, actor) {
   if (['image/jpeg', 'image/png', 'image/webp'].indexOf(mime) === -1) return { success: false, error: '対応していない画像形式です' };
   if (!b64 || b64.length > 7000000) return { success: false, error: '画像が空、または大きすぎます（縮小して再試行してください）' };
 
-  const model = SCRIPT_PROPERTIES.getProperty('GEMINI_MODEL') || 'gemini-2.5-flash';
+  const userModel = (SCRIPT_PROPERTIES.getProperty('GEMINI_MODEL') || '').trim();
+  const modelsToTry = [];
+  [userModel, 'gemini-2.5-flash', 'gemini-2.0-flash', 'gemini-1.5-flash'].forEach(m => {
+    const clean = String(m || '').replace(/^models\//i, '').trim();
+    if (clean && modelsToTry.indexOf(clean) === -1) modelsToTry.push(clean);
+  });
+
   const prompt =
     'これは日本のレシート画像です。店名、購入日、明細を読み取ってください。\n' +
     '- price は「その行の税込合計金額（数量×単価）」の整数円。値引き・割引行は負の整数で別の明細にする。\n' +
@@ -1390,19 +1396,55 @@ function scanReceipt(data, actor) {
     }
   };
 
-  const res = UrlFetchApp.fetch(
-    'https://generativelanguage.googleapis.com/v1beta/models/' + encodeURIComponent(model) + ':generateContent',
-    {
-      method: 'post',
-      contentType: 'application/json',
-      headers: { 'x-goog-api-key': apiKey },
-      payload: JSON.stringify(body),
-      muteHttpExceptions: true
+  let res = null;
+  let code = 0;
+  let lastTriedModel = modelsToTry[0];
+  for (let i = 0; i < modelsToTry.length; i++) {
+    lastTriedModel = modelsToTry[i];
+    res = UrlFetchApp.fetch(
+      'https://generativelanguage.googleapis.com/v1beta/models/' + encodeURIComponent(lastTriedModel) + ':generateContent',
+      {
+        method: 'post',
+        contentType: 'application/json',
+        headers: { 'x-goog-api-key': apiKey.trim() },
+        payload: JSON.stringify(body),
+        muteHttpExceptions: true
+      }
+    );
+    code = res.getResponseCode();
+    if (code === 200) break;
+    console.warn('Gemini try failed (' + lastTriedModel + '): ' + code + ' ' + res.getContentText());
+    if (code !== 404) break; // 404（モデル名不一致・未対応）は次の候補モデルで自動リトライ
+  }
+
+  if (code !== 200) {
+    let detail = '';
+    try {
+      const errJson = JSON.parse(res.getContentText());
+      if (errJson && errJson.error && errJson.error.message) detail = errJson.error.message;
+    } catch (_) {}
+    if (code === 404) {
+      return {
+        success: false,
+        error: 'AIモデル（' + lastTriedModel + '）が見つかりません(404)。GASのスクリプトプロパティ GEMINI_MODEL を空欄にするか gemini-2.5-flash に変更してください'
+      };
     }
-  );
-  if (res.getResponseCode() !== 200) {
-    console.error('Gemini error: ' + res.getContentText());
-    return { success: false, error: 'AI読み取りに失敗しました（' + res.getResponseCode() + '）。時間をおいて再試行してください' };
+    if (code === 400 || code === 403) {
+      return {
+        success: false,
+        error: 'GEMINI_API_KEY が無効か権限がありません(' + code + ')。Google AI Studioで発行したキーか確認してください'
+      };
+    }
+    if (code === 429) {
+      return {
+        success: false,
+        error: 'AIの利用上限(429)に達しました。1分ほど待ってから再試行してください'
+      };
+    }
+    return {
+      success: false,
+      error: 'AI読み取りに失敗しました（' + code + (detail ? ': ' + detail.slice(0, 60) : '') + '）'
+    };
   }
 
   let parsed;

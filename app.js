@@ -457,6 +457,7 @@ async function submitRegisterMember(slot) {
   const registerCode = $('registerCodeInput').value.trim();
   $('registerHusbandBtn').disabled = true;
   $('registerWifeBtn').disabled = true;
+  showToast('メンバー登録しています…', { loading: true });
   const res = await api('registerMember', { slot, name, role: slot === 'wife' ? '妻' : '夫', registerCode });
   if (!res.success) {
     showToast(res.error || '登録に失敗しました');
@@ -466,7 +467,7 @@ async function submitRegisterMember(slot) {
   $('registerMemberModal').classList.add('hidden');
   hideBanner();
   showToast(res.message || `「${name}」として登録しました！`);
-  await loadInitialData();
+  await loadInitialData(state.viewMonth, { silent: true });
 }
 
 function showBanner(msg, kind) {
@@ -481,9 +482,10 @@ function hideBanner() { $('mockBanner').classList.add('hidden'); }
 /**
  * 書き込み → 同一リクエスト（1往復）で最新データを受け取って画面更新（旧GASへのフォールバック付き）
  */
-async function writeAndRefresh(action, data, successMsg) {
+async function writeAndRefresh(action, data, successMsg, loadingMsg) {
   if (state.busy) return { success: false };
   state.busy = true;
+  if (loadingMsg) showToast(loadingMsg, { loading: true });
   try {
     const res = await api(action, data, { returnInitialData: true, viewMonth: state.viewMonth });
     if (!res.success) { handleApiError(res); return res; }
@@ -494,6 +496,7 @@ async function writeAndRefresh(action, data, successMsg) {
       await loadInitialData(state.viewMonth, { skipCache: true });
     }
     if (successMsg) showToast(successMsg);
+    else hideToast();
     return res;
   } finally {
     state.busy = false;
@@ -501,6 +504,7 @@ async function writeAndRefresh(action, data, successMsg) {
 }
 
 async function loadInitialData(month, opts = {}) {
+  const isMonthSwitch = Boolean(month && month !== state.viewMonth);
   if (month) state.viewMonth = month;
   const targetMonth = state.viewMonth;
 
@@ -513,13 +517,18 @@ async function loadInitialData(month, opts = {}) {
 
   state.isMockMode = false;
   // キャッシュがあれば即座（0.02秒）に先行描画し、裏で最新データを取得して差分更新
+  let usedCache = false;
   if (!opts.skipCache) {
     const cached = loadInitCache(targetMonth);
     if (cached && cached.month === targetMonth) {
+      usedCache = true;
       applyData(cached);
     } else {
       renderMonthNav();
     }
+  }
+  if (!usedCache && !opts.silent) {
+    showToast(isMonthSwitch ? `${targetMonth.replace('-', '年')}月のデータを読み込み中…` : '最新データを同期しています…', { loading: true });
   }
 
   const res = await api('getInitialData', { month: targetMonth });
@@ -529,6 +538,7 @@ async function loadInitialData(month, opts = {}) {
     if (res.code !== 'UNREGISTERED' && res.code !== 'AUTH') showBanner('サーバーに接続できません。再読み込みしてください', 'error');
     return;
   }
+  if (!usedCache && !opts.silent) hideToast();
   hideBanner();
   saveInitCache(res);
   applyData(res);
@@ -908,8 +918,10 @@ function auditRowHtml(log) {
 async function loadAuditLog() {
   const box = $('auditLogList');
   box.innerHTML = '<div class="py-3 text-center text-xs text-slate-400">読み込み中…</div>';
+  showToast('変更履歴を読み込み中…', { loading: true });
   const res = await api('getAuditLog', { limit: 50 });
   if (!res.success) { box.innerHTML = ''; handleApiError(res); return; }
+  hideToast();
   box.innerHTML = res.logs.length ? res.logs.map(auditRowHtml).join('') : '<div class="py-3 text-center text-xs text-slate-400">履歴はまだありません</div>';
 }
 
@@ -919,8 +931,10 @@ async function openTxHistory(id) {
   $('auditDetailTitle').textContent = `変更履歴: ${tx ? (masked ? '🔒 私物支出 (マスキング中)' : tx.title) : ''}`;
   $('auditDetailBody').innerHTML = '<div class="py-4 text-center text-slate-400">読み込み中…</div>';
   $('auditDetailModal').classList.remove('hidden');
+  showToast('履歴を取得中…', { loading: true });
   const res = await api('getAuditLog', { targetId: id, limit: 50 });
   if (!res.success) { $('auditDetailModal').classList.add('hidden'); handleApiError(res); return; }
+  hideToast();
   const created = tx ? `<div class="py-2 text-[11px] text-slate-500">現在の登録者: <b>${esc(tx.createdBy)}</b>（${esc(shortDateTime(tx.createdAt))}）</div>` : '';
   $('auditDetailBody').innerHTML = created + (res.logs.length ? res.logs.map(auditRowHtml).join('') : '<div class="py-4 text-center text-slate-400">記録なし</div>');
   lucide.createIcons();
@@ -936,8 +950,10 @@ async function handlePriceSearch(e) {
   const box = $('priceSearchResult');
   box.classList.remove('hidden');
   box.innerHTML = '<div class="text-xs text-slate-400 text-center py-2">検索中…</div>';
+  showToast(`「${q}」の価格履歴を検索中…`, { loading: true });
   const res = await api('searchPrices', { query: q });
   if (!res.success) { box.classList.add('hidden'); handleApiError(res); return; }
+  hideToast();
   if (!res.count) {
     box.innerHTML = `<div class="text-xs text-slate-400 text-center py-2">「${esc(q)}」の購入履歴はまだありません。レシートを読み取ると記録されます📷</div>`;
     return;
@@ -979,7 +995,7 @@ function receiptRowHtml(it) {
   return `<div class="flex gap-1.5 items-center" data-row>
     <input type="text" class="rc-name flex-1 min-w-0 bg-slate-50 border border-slate-200 rounded-lg px-2 py-1.5 text-xs" value="${esc(it.name)}" maxlength="50" aria-label="品名">
     <input type="number" class="rc-qty w-12 bg-slate-50 border border-slate-200 rounded-lg px-1.5 py-1.5 text-xs text-center" value="${esc(it.quantity)}" min="1" max="99" inputmode="numeric" aria-label="数量">
-    <input type="number" class="rc-price w-20 bg-slate-50 border border-slate-200 rounded-lg px-1.5 py-1.5 text-xs text-right" value="${esc(it.price)}" inputmode="numeric" aria-label="金額">
+    <input type="number" class="rc-price w-20 bg-slate-50 border border-slate-200 rounded-lg px-1.5 py-1.5 text-xs text-right" value="${esc(it.price)}" aria-label="金額（値引きはマイナス）">
     <button type="button" data-action="remove-receipt-row" class="p-1 text-slate-300 hover:text-rose-500" aria-label="行を削除"><i data-lucide="x" class="w-4 h-4"></i></button></div>`;
 }
 
@@ -1025,11 +1041,14 @@ async function handleReceiptFile(file) {
   $('receiptModal').classList.remove('hidden');
   $('receiptForm').classList.add('hidden');
   $('receiptLoading').classList.remove('hidden');
+  showToast('📷 レシート画像を最適化しています…', { loading: true });
   try {
     const imageBase64 = await resizeImageToBase64(file);
+    showToast('🤖 AIがレシートを読み取り中です（5〜10秒ほどお待ちください）…', { loading: true });
     const res = await api('scanReceipt', { imageBase64, mimeType: 'image/jpeg' });
     if (!res.success) { closeReceiptModal(); handleApiError(res); return; }
     fillReceiptForm(res.receipt);
+    showToast('✨ レシートを読み取りました！内容を確認してください');
   } catch (err) {
     closeReceiptModal();
     showToast(err.message || 'レシートの読み取りに失敗しました');
@@ -1075,8 +1094,7 @@ async function handleReceiptSubmit(e) {
     payer: $('receiptPayer').value, items
   };
   closeReceiptModal();
-  showToast('レシートを保存しています…');
-  await writeAndRefresh('saveReceipt', payload, 'レシートを保存しました（明細も記録）');
+  await writeAndRefresh('saveReceipt', payload, 'レシートを保存しました（明細も記録）', '🧾 レシートと明細を保存しています…');
 }
 
 // ==========================================
@@ -1147,7 +1165,6 @@ async function handleExpenseSubmit(e) {
 
   // 楽観的UI更新: モーダルを即座に閉じ、画面上のリストにも即時反映して体感待ち時間をゼロにする
   closeExpenseModal();
-  showToast(id ? '支出を更新しています…' : '支出を記録しました！');
   if (!id && payload.date.startsWith(state.viewMonth)) {
     state.transactions.unshift({
       ...payload, id: 'temp_' + Date.now(), createdBy: state.currentUser, createdAt: mockNow(), updatedBy: '', updatedAt: '', receiptId: ''
@@ -1162,7 +1179,12 @@ async function handleExpenseSubmit(e) {
     Object.assign(existing, payload, { updatedBy: state.currentUser, updatedAt: mockNow() });
     renderAll();
   }
-  await writeAndRefresh(id ? 'updateTransaction' : 'addTransaction', payload, id ? '支出を更新しました（履歴に記録）' : '支出を記録しました');
+  await writeAndRefresh(
+    id ? 'updateTransaction' : 'addTransaction',
+    payload,
+    id ? '支出を更新しました（履歴に記録）' : '支出を記録しました',
+    id ? '支出を更新しています…' : '支出を保存しています…'
+  );
 }
 
 async function handleExpenseDelete() {
@@ -1173,7 +1195,7 @@ async function handleExpenseDelete() {
   closeExpenseModal();
   state.transactions = state.transactions.filter(t => t.id !== id);
   renderAll();
-  await writeAndRefresh('deleteTransaction', { id }, '削除しました（履歴に記録）');
+  await writeAndRefresh('deleteTransaction', { id }, '削除しました（履歴に記録）', '支出を削除しています…');
 }
 
 // ==========================================
@@ -1233,12 +1255,12 @@ async function handleBuySyncSubmit(e) {
   item.isCompleted = true;
   renderShoppingList();
   lucide.createIcons();
-  showToast('買い物完了＆支出に登録しています…');
+  showToast('買い物完了＆支出に登録しています…', { loading: true });
   await api('updateShoppingItem', { id, title: item.title, category: item.category, isCompleted: true });
   await writeAndRefresh('addTransaction', {
     date: localDateStr(), title: item.title, amount, category: item.category || '食費', isShared: true,
     paymentType: $('buySyncPaymentType').value, payer: state.currentUser, memo: '買い物リストから連動登録'
-  }, '買い物完了＆支出に登録しました！');
+  }, '買い物完了＆支出に登録しました！', '買い物完了＆支出に登録しています…');
 }
 
 async function deleteShoppingItemById(id) {
@@ -1294,10 +1316,9 @@ async function handleFixedSubmit(e) {
   const category = $('fixedExpenseCategory').value;
   const isActive = $('fixedExpenseActive').checked;
   closeFixedModal();
-  showToast(id ? '固定費を更新しています…' : '固定費を追加しています…');
   await writeAndRefresh('updateFixedExpense', {
     id, title, amount, billingDay, category, isActive
-  }, id ? '固定費を更新しました' : '固定費を追加しました');
+  }, id ? '固定費を更新しました' : '固定費を追加しました', id ? '固定費を更新しています…' : '固定費を追加しています…');
 }
 
 async function handleFixedDelete() {
@@ -1309,7 +1330,7 @@ async function handleFixedDelete() {
   state.fixedExpenses = state.fixedExpenses.filter(f => f.id !== id);
   renderFixedExpenses();
   lucide.createIcons();
-  await writeAndRefresh('deleteFixedExpense', { id }, '固定費を削除しました');
+  await writeAndRefresh('deleteFixedExpense', { id }, '固定費を削除しました', '固定費を削除しています…');
 }
 
 // ==========================================
@@ -1318,7 +1339,7 @@ async function handleFixedDelete() {
 async function handleSaveBudget() {
   const val = parseInt($('settingBudgetInput').value, 10);
   if (!Number.isInteger(val) || val <= 0) { showToast('有効な予算額を入力してください'); return; }
-  await writeAndRefresh('updateMonthlyBudget', { month: state.viewMonth, amount: val, note: '' }, `${state.viewMonth.replace('-', '年')}月の予算を保存しました`);
+  await writeAndRefresh('updateMonthlyBudget', { month: state.viewMonth, amount: val, note: '' }, `${state.viewMonth.replace('-', '年')}月の予算を保存しました`, '予算を保存しています…');
 }
 
 async function handleBaseChange() {
@@ -1333,7 +1354,7 @@ async function handleBaseChange() {
   const husband = parseInt($('settingHusbandBase').value, 10);
   const wife = parseInt($('settingWifeBase').value, 10);
   if (!Number.isInteger(husband) || !Number.isInteger(wife) || husband < 0 || wife < 0) { showToast('基本拠出額を正しく入力してください'); return; }
-  await writeAndRefresh('updateBaseContribution', { husband, wife, husbandName, wifeName }, '表示名・基本拠出額を保存しました');
+  await writeAndRefresh('updateBaseContribution', { husband, wife, husbandName, wifeName }, '表示名・基本拠出額を保存しました', '設定を保存しています…');
 }
 
 async function toggleTransferStatus(slot) {
@@ -1344,7 +1365,7 @@ async function toggleTransferStatus(slot) {
   t.isPaid = nextPaid;
   renderTransferCard();
   lucide.createIcons();
-  await writeAndRefresh('updateTransferStatus', { month: state.viewMonth, slot, payer: label, isPaid: nextPaid }, `${label}の振込ステータスを更新しました`);
+  await writeAndRefresh('updateTransferStatus', { month: state.viewMonth, slot, payer: label, isPaid: nextPaid }, `${label}の振込ステータスを更新しました`, '振込ステータスを更新しています…');
 }
 
 // ==========================================
@@ -1372,12 +1393,25 @@ window.switchTab = function (tabName) {
   lucide.createIcons();
 };
 
-function showToast(msg) {
+function showToast(msg, opts = {}) {
   const toast = $('toast');
+  if (!toast) return;
+  const loading = !!opts.loading;
   $('toastMessage').textContent = msg;
+  if ($('toastSpinner')) $('toastSpinner').classList.toggle('hidden', !loading);
+  if ($('toastIcon')) $('toastIcon').classList.toggle('hidden', loading);
   toast.classList.remove('hidden');
   clearTimeout(showToast.timer);
-  showToast.timer = setTimeout(() => toast.classList.add('hidden'), 2600);
+  if (!loading) {
+    showToast.timer = setTimeout(() => toast.classList.add('hidden'), opts.duration || 2800);
+  }
+}
+
+function hideToast() {
+  const toast = $('toast');
+  if (!toast) return;
+  clearTimeout(showToast.timer);
+  toast.classList.add('hidden');
 }
 
 function setupEventListeners() {
