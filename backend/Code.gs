@@ -24,6 +24,7 @@
 // 設定・定数
 // ==========================================
 const SCRIPT_PROPERTIES = PropertiesService.getScriptProperties();
+const APP_VERSION = 'v2.2.0'; // バックエンドバージョン
 const TZ = 'Asia/Tokyo';
 const MAX_HISTORY_MONTHS = 36; // 過去3年分
 const DEFAULT_BUDGET = 240000;
@@ -759,6 +760,7 @@ function getInitialData(targetMonth, actor) {
 
   return {
     success: true,
+    version: APP_VERSION,
     month: month,
     actor: { name: actor.name, slot: actorSlot, verified: !!actor.verified },
     transactions: transactions,

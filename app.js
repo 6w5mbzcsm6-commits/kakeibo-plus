@@ -9,6 +9,7 @@
  */
 
 const APP_CONFIG = window.PAIRBUDGET_CONFIG || {};
+const FRONTEND_VERSION = 'v2.2.0';
 const MAX_HISTORY_MONTHS = 36;
 const FIELD_LABELS = {
   date: '日付', title: '品名', amount: '金額', category: 'カテゴリ', isShared: '共同',
@@ -616,6 +617,7 @@ function applyData(data) {
   state.monthlyTotals = data.monthlyTotals || [];
   state.summary = data.summary || state.summary;
   state.transfers = data.transfers || state.transfers;
+  state.backendVersion = data.version || (state.isMockMode ? 'demo' : 'v2.1以下 (未更新)');
   if (data.config) {
     state.config = {
       husbandBaseContribution: Number(data.config.husbandBaseContribution) || 60000,
@@ -914,6 +916,12 @@ function renderSettings() {
   $('settingWifeBase').value = state.config.wifeBaseContribution;
   $('privacyMaskToggle').checked = state.privacyMask;
   $('settingGasUrl').value = state.gasApiUrl;
+
+  // バージョン表示
+  if ($('frontVersionLabel')) $('frontVersionLabel').textContent = FRONTEND_VERSION;
+  if ($('backVersionLabel')) {
+    $('backVersionLabel').textContent = state.backendVersion || (state.isMockMode ? 'demo' : '未取得');
+  }
 }
 
 // ==========================================
