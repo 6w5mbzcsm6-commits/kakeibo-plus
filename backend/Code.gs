@@ -1372,12 +1372,47 @@ function scanReceipt(data, actor) {
   if (['image/jpeg', 'image/png', 'image/webp'].indexOf(mime) === -1) return { success: false, error: '対応していない画像形式です' };
   if (!b64 || b64.length > 7000000) return { success: false, error: '画像が空、または大きすぎます（縮小して再試行してください）' };
 
+  const cleanApiKey = apiKey.trim();
   const userModel = (SCRIPT_PROPERTIES.getProperty('GEMINI_MODEL') || '').trim();
+
+  // 1. まず APIキーに紐づく有効なモデル一覧を自動取得し、画像認識（generateContent）に対応した最新モデルを動的検出する
+  let validModels = [];
+  try {
+    const listRes = UrlFetchApp.fetch(
+      'https://generativelanguage.googleapis.com/v1beta/models?key=' + encodeURIComponent(cleanApiKey),
+      { method: 'get', muteHttpExceptions: true }
+    );
+    if (listRes.getResponseCode() === 200) {
+      const listJson = JSON.parse(listRes.getContentText());
+      if (listJson && Array.isArray(listJson.models)) {
+        validModels = listJson.models
+          .filter(m => (m.supportedGenerationMethods || []).indexOf('generateContent') !== -1)
+          .map(m => String(m.name || '').replace(/^models\//i, '').trim())
+          .filter(Boolean);
+      }
+    } else {
+      console.warn('Gemini models list response: ' + listRes.getResponseCode() + ' ' + listRes.getContentText());
+    }
+  } catch (err) {
+    console.warn('Failed to list Gemini models: ' + err.message);
+  }
+
+  // 2. 優先度順に試行するモデル候補リストを構築
   const modelsToTry = [];
-  [userModel, 'gemini-2.5-flash', 'gemini-2.0-flash', 'gemini-1.5-flash'].forEach(m => {
+  const addCandidate = (m) => {
     const clean = String(m || '').replace(/^models\//i, '').trim();
     if (clean && modelsToTry.indexOf(clean) === -1) modelsToTry.push(clean);
-  });
+  };
+
+  // ユーザー指定があれば最優先
+  if (userModel) addCandidate(userModel);
+
+  // 動的取得できたモデルのうち、flash / flash-lite 系を優先して追加
+  validModels.filter(m => /flash/i.test(m)).forEach(addCandidate);
+  validModels.forEach(addCandidate);
+
+  // 念のためのフォールバック既知モデル
+  ['gemini-2.5-flash', 'gemini-2.0-flash', 'gemini-2.0-flash-exp', 'gemini-1.5-flash', 'gemini-1.5-pro'].forEach(addCandidate);
 
   const prompt =
     'これは日本のレシート画像です。店名、購入日、明細を読み取ってください。\n' +
@@ -1415,40 +1450,42 @@ function scanReceipt(data, actor) {
   let res = null;
   let code = 0;
   let lastTriedModel = modelsToTry[0];
+  let lastErrorDetail = '';
   for (let i = 0; i < modelsToTry.length; i++) {
     lastTriedModel = modelsToTry[i];
-    res = UrlFetchApp.fetch(
-      'https://generativelanguage.googleapis.com/v1beta/models/' + encodeURIComponent(lastTriedModel) + ':generateContent',
-      {
-        method: 'post',
-        contentType: 'application/json',
-        headers: { 'x-goog-api-key': apiKey.trim() },
-        payload: JSON.stringify(body),
-        muteHttpExceptions: true
-      }
-    );
+    // ヘッダー（x-goog-api-key）とクエリパラメータ（?key=）の両方に対応したURL形式
+    const targetUrl = 'https://generativelanguage.googleapis.com/v1beta/models/' +
+      encodeURIComponent(lastTriedModel) + ':generateContent?key=' + encodeURIComponent(cleanApiKey);
+    res = UrlFetchApp.fetch(targetUrl, {
+      method: 'post',
+      contentType: 'application/json',
+      headers: { 'x-goog-api-key': cleanApiKey },
+      payload: JSON.stringify(body),
+      muteHttpExceptions: true
+    });
     code = res.getResponseCode();
     if (code === 200) break;
-    console.warn('Gemini try failed (' + lastTriedModel + '): ' + code + ' ' + res.getContentText());
-    if (code !== 404) break; // 404（モデル名不一致・未対応）は次の候補モデルで自動リトライ
+    lastErrorDetail = res.getContentText();
+    console.warn('Gemini try failed (' + lastTriedModel + '): ' + code + ' ' + lastErrorDetail);
+    if (code !== 404) break; // 404以外の認証エラー(400/403)やレート制限(429)は直ちに中断
   }
 
   if (code !== 200) {
     let detail = '';
     try {
-      const errJson = JSON.parse(res.getContentText());
+      const errJson = JSON.parse(lastErrorDetail || (res && res.getContentText()) || '{}');
       if (errJson && errJson.error && errJson.error.message) detail = errJson.error.message;
     } catch (_) {}
     if (code === 404) {
       return {
         success: false,
-        error: 'AIモデル（' + lastTriedModel + '）が見つかりません(404)。GASのスクリプトプロパティ GEMINI_MODEL を空欄にするか gemini-2.5-flash に変更してください'
+        error: 'Gemini APIキーで利用可能なAIモデルが見つかりません(404)。Google AI Studioで作成したAPIキーかご確認ください。' + (detail ? '（詳細: ' + detail.slice(0, 80) + '）' : '')
       };
     }
     if (code === 400 || code === 403) {
       return {
         success: false,
-        error: 'GEMINI_API_KEY が無効か権限がありません(' + code + ')。Google AI Studioで発行したキーか確認してください'
+        error: 'GEMINI_API_KEY が無効か権限がありません(' + code + ')。Google AI Studioで発行したキーか確認してください。' + (detail ? '（' + detail.slice(0, 80) + '）' : '')
       };
     }
     if (code === 429) {
