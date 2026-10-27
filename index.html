@@ -402,10 +402,16 @@
 
   </main>
 
-  <!-- クイック支出追加 フローティングボタン (FAB) -->
-  <button id="openExpenseModalBtn" class="fixed right-5 bottom-20 z-40 bg-brand-500 hover:bg-brand-600 active:scale-95 text-white w-14 h-14 rounded-full shadow-xl flex items-center justify-center transition-transform">
-    <i data-lucide="plus" class="w-7 h-7"></i>
-  </button>
+  <!-- クイック操作 フローティングボタン群 (レシートAI-OCR & 支出追加) -->
+  <div class="fixed right-5 bottom-20 z-40 flex flex-col items-end gap-2.5">
+    <label for="receiptFileInput" id="quickScanReceiptBtn" class="bg-white hover:bg-brand-50 active:scale-95 text-brand-700 border-2 border-brand-500 px-3.5 py-2 rounded-full shadow-lg flex items-center gap-1.5 text-xs font-extrabold cursor-pointer transition-transform select-none" aria-label="レシートを読み取る">
+      <i data-lucide="camera" class="w-4 h-4 text-brand-600 pointer-events-none"></i>
+      <span class="pointer-events-none">レシート読取</span>
+    </label>
+    <button id="openExpenseModalBtn" class="bg-brand-500 hover:bg-brand-600 active:scale-95 text-white w-14 h-14 rounded-full shadow-xl flex items-center justify-center transition-transform" aria-label="支出を記録">
+      <i data-lucide="plus" class="w-7 h-7 pointer-events-none"></i>
+    </button>
+  </div>
 
   <!-- ボトムナビゲーションバー -->
   <nav class="fixed bottom-0 left-0 right-0 bg-white border-t border-slate-200 z-40 px-3 py-1.5 shadow-lg">
@@ -442,10 +448,11 @@
       </div>
 
       <!-- レシート読み取り（AI-OCR） -->
-      <label id="scanReceiptLabel" class="mt-3.5 flex items-center justify-center gap-2 bg-brand-50 border-2 border-dashed border-brand-500 text-brand-700 rounded-xl py-3 text-sm font-bold cursor-pointer hover:bg-brand-100">
-        <i data-lucide="camera" class="w-5 h-5"></i> レシートを撮影・選択して自動入力
-        <input type="file" id="receiptFileInput" accept="image/*" class="hidden">
+      <label for="receiptFileInput" id="scanReceiptLabel" class="mt-3.5 flex items-center justify-center gap-2 bg-brand-50 border-2 border-dashed border-brand-500 text-brand-700 rounded-xl py-3 text-sm font-bold cursor-pointer hover:bg-brand-100 active:scale-98 select-none">
+        <i data-lucide="camera" class="w-5 h-5 pointer-events-none"></i>
+        <span class="pointer-events-none">レシートを撮影・選択して自動入力</span>
       </label>
+      <input type="file" id="receiptFileInput" accept="image/*" class="sr-only">
       <p class="text-[10px] text-slate-400 mt-1">※ 画像はGoogleのAI(Gemini)に送信されます。カード番号・氏名が写らないよう撮影してください。</p>
 
       <form id="expenseForm" class="space-y-3.5 mt-3.5">
@@ -788,10 +795,11 @@
     </div>
   </div>
 
-  <!-- トースト通知 -->
-  <div id="toast" class="hidden fixed top-5 left-1/2 -translate-x-1/2 z-50 bg-slate-900/90 text-white text-xs font-bold px-4 py-2.5 rounded-full shadow-lg flex items-center gap-2 backdrop-blur-sm transition-opacity duration-300">
-    <i data-lucide="check" class="w-4 h-4 text-brand-400"></i>
-    <span id="toastMessage">保存しました</span>
+  <!-- トースト通知（通常完了 ＆ 処理中スピナー対応） -->
+  <div id="toast" class="hidden fixed top-5 left-1/2 -translate-x-1/2 z-[60] bg-slate-900/95 text-white text-xs font-bold px-4 py-2.5 rounded-full shadow-xl flex items-center gap-2 backdrop-blur-sm transition-opacity duration-300 max-w-[90vw]">
+    <div id="toastSpinner" class="hidden w-4 h-4 border-2 border-white/30 border-t-brand-400 rounded-full animate-spin shrink-0"></div>
+    <i id="toastIcon" data-lucide="check" class="w-4 h-4 text-brand-400 shrink-0"></i>
+    <span id="toastMessage" class="truncate">保存しました</span>
   </div>
 
   <!-- アプリ本体スクリプト -->

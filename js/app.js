@@ -373,21 +373,41 @@ function mockSearchPrices(query) {
 }
 
 // ==========================================
-// 通信
+// 通信 & キャッシュ
 // ==========================================
-async function callGas(action, data) {
+function cacheKeyForMonth(month) {
+  return `pairbudget_init_v2_${month}`;
+}
+
+function saveInitCache(data) {
+  if (!data || !data.month || state.isMockMode) return;
+  try {
+    localStorage.setItem(cacheKeyForMonth(data.month), JSON.stringify(data));
+  } catch (_) { /* 容量超過時は無視 */ }
+}
+
+function loadInitCache(month) {
+  try {
+    const raw = localStorage.getItem(cacheKeyForMonth(month));
+    return raw ? JSON.parse(raw) : null;
+  } catch (_) {
+    return null;
+  }
+}
+
+async function callGas(action, data, extra = {}) {
   const idToken = state.liffReady ? liff.getIDToken() : null;
   const res = await fetch(state.gasApiUrl, {
     method: 'POST',
     headers: { 'Content-Type': 'text/plain' }, // CORSプリフライト回避
-    body: JSON.stringify({ action, data: data || {}, idToken })
+    body: JSON.stringify({ action, data: data || {}, idToken, ...extra })
   });
   return res.json();
 }
 
-async function api(action, data = {}) {
+async function api(action, data = {}, extra = {}) {
   try {
-    return state.isMockMode ? await mockApi(action, data) : await callGas(action, data);
+    return state.isMockMode ? await mockApi(action, data) : await callGas(action, data, extra);
   } catch (err) {
     console.warn('API通信エラー:', action, err);
     return { success: false, error: '通信に失敗しました。電波の良い場所で再試行してください' };
@@ -437,6 +457,7 @@ async function submitRegisterMember(slot) {
   const registerCode = $('registerCodeInput').value.trim();
   $('registerHusbandBtn').disabled = true;
   $('registerWifeBtn').disabled = true;
+  showToast('メンバー登録しています…', { loading: true });
   const res = await api('registerMember', { slot, name, role: slot === 'wife' ? '妻' : '夫', registerCode });
   if (!res.success) {
     showToast(res.error || '登録に失敗しました');
@@ -446,7 +467,7 @@ async function submitRegisterMember(slot) {
   $('registerMemberModal').classList.add('hidden');
   hideBanner();
   showToast(res.message || `「${name}」として登録しました！`);
-  await loadInitialData();
+  await loadInitialData(state.viewMonth, { silent: true });
 }
 
 function showBanner(msg, kind) {
@@ -459,40 +480,67 @@ function showBanner(msg, kind) {
 function hideBanner() { $('mockBanner').classList.add('hidden'); }
 
 /**
- * 書き込み → 成功なら最新データを再取得して画面更新
+ * 書き込み → 同一リクエスト（1往復）で最新データを受け取って画面更新（旧GASへのフォールバック付き）
  */
-async function writeAndRefresh(action, data, successMsg) {
+async function writeAndRefresh(action, data, successMsg, loadingMsg) {
   if (state.busy) return { success: false };
   state.busy = true;
+  if (loadingMsg) showToast(loadingMsg, { loading: true });
   try {
-    const res = await api(action, data);
+    const res = await api(action, data, { returnInitialData: true, viewMonth: state.viewMonth });
     if (!res.success) { handleApiError(res); return res; }
-    await loadInitialData();
+    if (res.initialData && res.initialData.success) {
+      saveInitCache(res.initialData);
+      applyData(res.initialData);
+    } else {
+      await loadInitialData(state.viewMonth, { skipCache: true });
+    }
     if (successMsg) showToast(successMsg);
+    else hideToast();
     return res;
   } finally {
     state.busy = false;
   }
 }
 
-async function loadInitialData(month) {
+async function loadInitialData(month, opts = {}) {
+  const isMonthSwitch = Boolean(month && month !== state.viewMonth);
   if (month) state.viewMonth = month;
+  const targetMonth = state.viewMonth;
 
   if (!state.gasApiUrl) {
     state.isMockMode = true;
     showBanner('デモモードで動作中（GAS URL未設定・データは保存されません）', 'warn');
-    applyData(await mockApi('getInitialData', { month: state.viewMonth }));
+    applyData(await mockApi('getInitialData', { month: targetMonth }));
     return;
   }
 
   state.isMockMode = false;
-  const res = await api('getInitialData', { month: state.viewMonth });
+  // キャッシュがあれば即座（0.02秒）に先行描画し、裏で最新データを取得して差分更新
+  let usedCache = false;
+  if (!opts.skipCache) {
+    const cached = loadInitCache(targetMonth);
+    if (cached && cached.month === targetMonth) {
+      usedCache = true;
+      applyData(cached);
+    } else {
+      renderMonthNav();
+    }
+  }
+  if (!usedCache && !opts.silent) {
+    showToast(isMonthSwitch ? `${targetMonth.replace('-', '年')}月のデータを読み込み中…` : '最新データを同期しています…', { loading: true });
+  }
+
+  const res = await api('getInitialData', { month: targetMonth });
+  if (state.viewMonth !== targetMonth) return; // 月送り連打時の古いレスポンスを破棄
   if (!res.success) {
     handleApiError(res);
     if (res.code !== 'UNREGISTERED' && res.code !== 'AUTH') showBanner('サーバーに接続できません。再読み込みしてください', 'error');
     return;
   }
+  if (!usedCache && !opts.silent) hideToast();
   hideBanner();
+  saveInitCache(res);
   applyData(res);
 }
 
@@ -870,8 +918,10 @@ function auditRowHtml(log) {
 async function loadAuditLog() {
   const box = $('auditLogList');
   box.innerHTML = '<div class="py-3 text-center text-xs text-slate-400">読み込み中…</div>';
+  showToast('変更履歴を読み込み中…', { loading: true });
   const res = await api('getAuditLog', { limit: 50 });
   if (!res.success) { box.innerHTML = ''; handleApiError(res); return; }
+  hideToast();
   box.innerHTML = res.logs.length ? res.logs.map(auditRowHtml).join('') : '<div class="py-3 text-center text-xs text-slate-400">履歴はまだありません</div>';
 }
 
@@ -881,8 +931,10 @@ async function openTxHistory(id) {
   $('auditDetailTitle').textContent = `変更履歴: ${tx ? (masked ? '🔒 私物支出 (マスキング中)' : tx.title) : ''}`;
   $('auditDetailBody').innerHTML = '<div class="py-4 text-center text-slate-400">読み込み中…</div>';
   $('auditDetailModal').classList.remove('hidden');
+  showToast('履歴を取得中…', { loading: true });
   const res = await api('getAuditLog', { targetId: id, limit: 50 });
   if (!res.success) { $('auditDetailModal').classList.add('hidden'); handleApiError(res); return; }
+  hideToast();
   const created = tx ? `<div class="py-2 text-[11px] text-slate-500">現在の登録者: <b>${esc(tx.createdBy)}</b>（${esc(shortDateTime(tx.createdAt))}）</div>` : '';
   $('auditDetailBody').innerHTML = created + (res.logs.length ? res.logs.map(auditRowHtml).join('') : '<div class="py-4 text-center text-slate-400">記録なし</div>');
   lucide.createIcons();
@@ -898,8 +950,10 @@ async function handlePriceSearch(e) {
   const box = $('priceSearchResult');
   box.classList.remove('hidden');
   box.innerHTML = '<div class="text-xs text-slate-400 text-center py-2">検索中…</div>';
+  showToast(`「${q}」の価格履歴を検索中…`, { loading: true });
   const res = await api('searchPrices', { query: q });
   if (!res.success) { box.classList.add('hidden'); handleApiError(res); return; }
+  hideToast();
   if (!res.count) {
     box.innerHTML = `<div class="text-xs text-slate-400 text-center py-2">「${esc(q)}」の購入履歴はまだありません。レシートを読み取ると記録されます📷</div>`;
     return;
@@ -919,7 +973,7 @@ async function handlePriceSearch(e) {
 // ==========================================
 // レシートAI-OCR
 // ==========================================
-function resizeImageToBase64(file, maxSide = 1600, quality = 0.85) {
+function resizeImageToBase64(file, maxSide = 1024, quality = 0.78) {
   return new Promise((resolve, reject) => {
     const url = URL.createObjectURL(file);
     const img = new Image();
@@ -932,7 +986,7 @@ function resizeImageToBase64(file, maxSide = 1600, quality = 0.85) {
       URL.revokeObjectURL(url);
       resolve(canvas.toDataURL('image/jpeg', quality).split(',')[1]);
     };
-    img.onerror = () => { URL.revokeObjectURL(url); reject(new Error('画像を読み込めませんでした')); };
+    img.onerror = () => { URL.revokeObjectURL(url); reject(new Error('画像を読み込めませんでした（対応形式: JPEG / PNG / WebP）')); };
     img.src = url;
   });
 }
@@ -941,7 +995,7 @@ function receiptRowHtml(it) {
   return `<div class="flex gap-1.5 items-center" data-row>
     <input type="text" class="rc-name flex-1 min-w-0 bg-slate-50 border border-slate-200 rounded-lg px-2 py-1.5 text-xs" value="${esc(it.name)}" maxlength="50" aria-label="品名">
     <input type="number" class="rc-qty w-12 bg-slate-50 border border-slate-200 rounded-lg px-1.5 py-1.5 text-xs text-center" value="${esc(it.quantity)}" min="1" max="99" inputmode="numeric" aria-label="数量">
-    <input type="number" class="rc-price w-20 bg-slate-50 border border-slate-200 rounded-lg px-1.5 py-1.5 text-xs text-right" value="${esc(it.price)}" inputmode="numeric" aria-label="金額">
+    <input type="number" class="rc-price w-20 bg-slate-50 border border-slate-200 rounded-lg px-1.5 py-1.5 text-xs text-right" value="${esc(it.price)}" aria-label="金額（値引きはマイナス）">
     <button type="button" data-action="remove-receipt-row" class="p-1 text-slate-300 hover:text-rose-500" aria-label="行を削除"><i data-lucide="x" class="w-4 h-4"></i></button></div>`;
 }
 
@@ -976,25 +1030,30 @@ function guessCategoryByStore(store) {
 
 async function handleReceiptFile(file) {
   if (!file) return;
-  if (!/^image\//.test(file.type)) { showToast('画像ファイルを選んでください'); return; }
-  // 初回のみ：画像の送信先についての同意を取る
-  if (!state.isMockMode && localStorage.getItem('pairbudget_ocr_consent') !== 'true') {
-    const ok = window.confirm('レシート画像は、読み取りのためGoogleのAI（Gemini）に送信されます。\n・当アプリのサーバーには保存されません\n・無料枠では、送信内容がGoogleのサービス改善に使われる場合があります\n・カード番号や氏名が写らないようにしてください\n\n同意して続けますか？');
-    if (!ok) { $('receiptFileInput').value = ''; return; }
-    localStorage.setItem('pairbudget_ocr_consent', 'true');
+  if (file.type && !/^image\//i.test(file.type)) {
+    showToast('画像ファイルを選んでください');
+    $('receiptFileInput').value = '';
+    return;
   }
+  // LINE内ブラウザ(LIFF WebView)では input[type=file] の change イベント内で window.confirm() がブロックされ
+  // false を返してモーダルが開かなくなるため、ネイティブ confirm は使わず即座に読み取りモーダルを開く
   closeExpenseModal();
   $('receiptModal').classList.remove('hidden');
   $('receiptForm').classList.add('hidden');
   $('receiptLoading').classList.remove('hidden');
+  showToast('📷 レシート画像を最適化しています…', { loading: true });
   try {
     const imageBase64 = await resizeImageToBase64(file);
+    showToast('🤖 AIがレシートを読み取り中です（5〜10秒ほどお待ちください）…', { loading: true });
     const res = await api('scanReceipt', { imageBase64, mimeType: 'image/jpeg' });
     if (!res.success) { closeReceiptModal(); handleApiError(res); return; }
     fillReceiptForm(res.receipt);
+    showToast('✨ レシートを読み取りました！内容を確認してください');
   } catch (err) {
     closeReceiptModal();
     showToast(err.message || 'レシートの読み取りに失敗しました');
+  } finally {
+    $('receiptFileInput').value = '';
   }
 }
 
@@ -1029,15 +1088,13 @@ async function handleReceiptSubmit(e) {
   if (items.some(r => !Number.isInteger(r.price) || r.price === 0)) { showToast('金額が空または0の行があります'); return; }
   if (items.reduce((s, r) => s + r.price, 0) <= 0) { showToast('合計金額が0円以下です'); return; }
 
-  const btn = $('receiptSaveBtn');
-  btn.disabled = true;
-  const res = await writeAndRefresh('saveReceipt', {
+  const payload = {
     store: $('receiptStore').value.trim(), date: $('receiptDate').value, category: $('receiptCategory').value,
     isShared: $('receiptIsShared').value === 'true', paymentType: $('receiptPaymentType').value,
     payer: $('receiptPayer').value, items
-  }, 'レシートを保存しました（明細も記録）');
-  btn.disabled = false;
-  if (res.success) closeReceiptModal();
+  };
+  closeReceiptModal();
+  await writeAndRefresh('saveReceipt', payload, 'レシートを保存しました（明細も記録）', '🧾 レシートと明細を保存しています…');
 }
 
 // ==========================================
@@ -1105,8 +1162,29 @@ async function handleExpenseSubmit(e) {
   };
   const existing = id ? state.transactions.find(t => t.id === id) : null;
   if (existing) payload.memo = existing.memo;
-  const res = await writeAndRefresh(id ? 'updateTransaction' : 'addTransaction', payload, id ? '支出を更新しました（履歴に記録）' : '支出を記録しました');
-  if (res.success) closeExpenseModal();
+
+  // 楽観的UI更新: モーダルを即座に閉じ、画面上のリストにも即時反映して体感待ち時間をゼロにする
+  closeExpenseModal();
+  if (!id && payload.date.startsWith(state.viewMonth)) {
+    state.transactions.unshift({
+      ...payload, id: 'temp_' + Date.now(), createdBy: state.currentUser, createdAt: mockNow(), updatedBy: '', updatedAt: '', receiptId: ''
+    });
+    if (payload.isShared) {
+      state.summary.totalExpense += payload.amount;
+      state.summary.remaining = state.summary.budget - state.summary.totalExpense;
+      state.summary.progressRate = Math.min(100, Math.round((state.summary.totalExpense / state.summary.budget) * 100));
+    }
+    renderAll();
+  } else if (existing) {
+    Object.assign(existing, payload, { updatedBy: state.currentUser, updatedAt: mockNow() });
+    renderAll();
+  }
+  await writeAndRefresh(
+    id ? 'updateTransaction' : 'addTransaction',
+    payload,
+    id ? '支出を更新しました（履歴に記録）' : '支出を記録しました',
+    id ? '支出を更新しています…' : '支出を保存しています…'
+  );
 }
 
 async function handleExpenseDelete() {
@@ -1114,8 +1192,10 @@ async function handleExpenseDelete() {
   const tx = state.transactions.find(t => t.id === id);
   if (!tx) return;
   if (!window.confirm(`「${tx.title}」${yen(tx.amount)} を削除しますか？\n（削除の記録は変更履歴に残ります）`)) return;
-  const res = await writeAndRefresh('deleteTransaction', { id }, '削除しました（履歴に記録）');
-  if (res.success) closeExpenseModal();
+  closeExpenseModal();
+  state.transactions = state.transactions.filter(t => t.id !== id);
+  renderAll();
+  await writeAndRefresh('deleteTransaction', { id }, '削除しました（履歴に記録）', '支出を削除しています…');
 }
 
 // ==========================================
@@ -1133,8 +1213,8 @@ async function handleAddShoppingSubmit(e) {
   lucide.createIcons();
   showToast('買い物リストに追加しました');
   const res = await api('addShoppingItem', { title, category: '日用品' });
-  if (!res.success) { handleApiError(res); await loadInitialData(); }
-  else if (!state.isMockMode) loadInitialData(); // サーバー側のIDに同期
+  if (!res.success) { handleApiError(res); await loadInitialData(state.viewMonth, { skipCache: true }); }
+  else if (res.id) { item.id = res.id; }
 }
 
 function openBuySyncModal(id) {
@@ -1171,14 +1251,16 @@ async function handleBuySyncSubmit(e) {
   const amount = parseInt($('buySyncAmount').value, 10);
   if (!Number.isInteger(amount) || amount <= 0) { showToast('1円以上の金額を入力してください'); return; }
 
-  const res = await writeAndRefresh('addTransaction', {
+  $('buySyncModal').classList.add('hidden');
+  item.isCompleted = true;
+  renderShoppingList();
+  lucide.createIcons();
+  showToast('買い物完了＆支出に登録しています…', { loading: true });
+  await api('updateShoppingItem', { id, title: item.title, category: item.category, isCompleted: true });
+  await writeAndRefresh('addTransaction', {
     date: localDateStr(), title: item.title, amount, category: item.category || '食費', isShared: true,
     paymentType: $('buySyncPaymentType').value, payer: state.currentUser, memo: '買い物リストから連動登録'
-  }, '買い物完了＆支出に登録しました！');
-  if (res.success) {
-    $('buySyncModal').classList.add('hidden');
-    await completeShoppingItem(id);
-  }
+  }, '買い物完了＆支出に登録しました！', '買い物完了＆支出に登録しています…');
 }
 
 async function deleteShoppingItemById(id) {
@@ -1231,12 +1313,12 @@ async function handleFixedSubmit(e) {
   if (!title) { showToast('項目名を入力してください'); return; }
   if (!Number.isInteger(amount) || amount <= 0) { showToast('月額を1円以上で入力してください'); return; }
   if (!Number.isInteger(billingDay) || billingDay < 1 || billingDay > 31) { showToast('引落日は1〜31日で入力してください'); return; }
-  const res = await writeAndRefresh('updateFixedExpense', {
-    id, title, amount, billingDay,
-    category: $('fixedExpenseCategory').value,
-    isActive: $('fixedExpenseActive').checked
-  }, id ? '固定費を更新しました' : '固定費を追加しました');
-  if (res.success) closeFixedModal();
+  const category = $('fixedExpenseCategory').value;
+  const isActive = $('fixedExpenseActive').checked;
+  closeFixedModal();
+  await writeAndRefresh('updateFixedExpense', {
+    id, title, amount, billingDay, category, isActive
+  }, id ? '固定費を更新しました' : '固定費を追加しました', id ? '固定費を更新しています…' : '固定費を追加しています…');
 }
 
 async function handleFixedDelete() {
@@ -1244,8 +1326,11 @@ async function handleFixedDelete() {
   const item = state.fixedExpenses.find(f => f.id === id);
   if (!item) return;
   if (!window.confirm(`固定費「${item.title}」（${yen(item.amount)}）を削除しますか？`)) return;
-  const res = await writeAndRefresh('deleteFixedExpense', { id }, '固定費を削除しました');
-  if (res.success) closeFixedModal();
+  closeFixedModal();
+  state.fixedExpenses = state.fixedExpenses.filter(f => f.id !== id);
+  renderFixedExpenses();
+  lucide.createIcons();
+  await writeAndRefresh('deleteFixedExpense', { id }, '固定費を削除しました', '固定費を削除しています…');
 }
 
 // ==========================================
@@ -1254,7 +1339,7 @@ async function handleFixedDelete() {
 async function handleSaveBudget() {
   const val = parseInt($('settingBudgetInput').value, 10);
   if (!Number.isInteger(val) || val <= 0) { showToast('有効な予算額を入力してください'); return; }
-  await writeAndRefresh('updateMonthlyBudget', { month: state.viewMonth, amount: val, note: '' }, `${state.viewMonth.replace('-', '年')}月の予算を保存しました`);
+  await writeAndRefresh('updateMonthlyBudget', { month: state.viewMonth, amount: val, note: '' }, `${state.viewMonth.replace('-', '年')}月の予算を保存しました`, '予算を保存しています…');
 }
 
 async function handleBaseChange() {
@@ -1269,13 +1354,18 @@ async function handleBaseChange() {
   const husband = parseInt($('settingHusbandBase').value, 10);
   const wife = parseInt($('settingWifeBase').value, 10);
   if (!Number.isInteger(husband) || !Number.isInteger(wife) || husband < 0 || wife < 0) { showToast('基本拠出額を正しく入力してください'); return; }
-  await writeAndRefresh('updateBaseContribution', { husband, wife, husbandName, wifeName }, '表示名・基本拠出額を保存しました');
+  await writeAndRefresh('updateBaseContribution', { husband, wife, husbandName, wifeName }, '表示名・基本拠出額を保存しました', '設定を保存しています…');
 }
 
 async function toggleTransferStatus(slot) {
   const t = slot === 'husband' ? state.transfers.husband : state.transfers.wife;
+  const nextPaid = !t.isPaid;
   const label = memberName(slot);
-  await writeAndRefresh('updateTransferStatus', { month: state.viewMonth, slot, payer: label, isPaid: !t.isPaid }, `${label}の振込ステータスを更新しました`);
+  // 楽観的UI更新でタップ直後にバッジを切り替え
+  t.isPaid = nextPaid;
+  renderTransferCard();
+  lucide.createIcons();
+  await writeAndRefresh('updateTransferStatus', { month: state.viewMonth, slot, payer: label, isPaid: nextPaid }, `${label}の振込ステータスを更新しました`, '振込ステータスを更新しています…');
 }
 
 // ==========================================
@@ -1303,12 +1393,25 @@ window.switchTab = function (tabName) {
   lucide.createIcons();
 };
 
-function showToast(msg) {
+function showToast(msg, opts = {}) {
   const toast = $('toast');
+  if (!toast) return;
+  const loading = !!opts.loading;
   $('toastMessage').textContent = msg;
+  if ($('toastSpinner')) $('toastSpinner').classList.toggle('hidden', !loading);
+  if ($('toastIcon')) $('toastIcon').classList.toggle('hidden', loading);
   toast.classList.remove('hidden');
   clearTimeout(showToast.timer);
-  showToast.timer = setTimeout(() => toast.classList.add('hidden'), 2600);
+  if (!loading) {
+    showToast.timer = setTimeout(() => toast.classList.add('hidden'), opts.duration || 2800);
+  }
+}
+
+function hideToast() {
+  const toast = $('toast');
+  if (!toast) return;
+  clearTimeout(showToast.timer);
+  toast.classList.add('hidden');
 }
 
 function setupEventListeners() {
@@ -1405,10 +1508,15 @@ async function initLiff() {
     await liff.init({ liffId: rawLiffId });
     if (!liff.isLoggedIn()) { liff.login(); return 'redirect'; }
     state.liffReady = true;
-    try {
-      const profile = await liff.getProfile();
-      if (profile && profile.displayName) state.liffDisplayName = String(profile.displayName).trim().slice(0, 15);
-    } catch (_) { /* プロフィール取得失敗時は手入力 */ }
+    // プロフィール取得はバックグラウンドで行い、初期データ取得をブロックしない
+    liff.getProfile().then(profile => {
+      if (profile && profile.displayName) {
+        state.liffDisplayName = String(profile.displayName).trim().slice(0, 15);
+        if ($('registerNameInput') && !$('registerNameInput').value) {
+          $('registerNameInput').value = state.liffDisplayName;
+        }
+      }
+    }).catch(() => {});
   } catch (err) {
     console.warn('LIFF初期化エラー:', err);
     showToast('LINEログインの初期化に失敗しました');
@@ -1418,6 +1526,9 @@ async function initLiff() {
 document.addEventListener('DOMContentLoaded', async () => {
   lucide.createIcons();
   setupEventListeners();
+  // 起動直後にローカルキャッシュがあれば即座に描画して白画面待ちをゼロにする
+  const cached = loadInitCache(state.viewMonth);
+  if (cached && state.gasApiUrl) applyData(cached);
   if ((await initLiff()) === 'redirect') return;
-  await loadInitialData();
+  await loadInitialData(state.viewMonth, { skipCache: !!cached });
 });
