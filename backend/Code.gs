@@ -205,27 +205,35 @@ function isDemoAllowed() {
 }
 
 /**
- * LIFFのIDトークンをLINEサーバーで検証し、LINEユーザーIDを返す。失敗時は空文字。
+ * LIFFのIDトークンをLINEサーバーで検証し、{ sub, error } を返す。
+ * channelId の前後空白や LIFF ID 形式（1234567890-xxx）が入力されていた場合も自動で先頭チャネルID数字を抽出する。
  */
-function verifyIdToken(idToken, channelId) {
-  if (!idToken || !channelId) return '';
+function verifyIdTokenDetail(idToken, rawChannelId) {
+  const cleanChannelId = String(rawChannelId || '').trim().replace(/^https?:\/\/liff\.line\.me\//i, '').split('-')[0].trim();
+  if (!idToken || !cleanChannelId) return { sub: '', error: 'IDトークンまたはLIFF_CHANNEL_IDが空です' };
   const cache = CacheService.getScriptCache();
-  const digest = Utilities.computeDigest(Utilities.DigestAlgorithm.SHA_256, idToken);
+  const digest = Utilities.computeDigest(Utilities.DigestAlgorithm.SHA_256, idToken + ':' + cleanChannelId);
   const key = 'idt_' + Utilities.base64EncodeWebSafe(digest);
   const cached = cache.get(key);
-  if (cached) return cached;
+  if (cached) return { sub: cached, error: '' };
 
   const res = UrlFetchApp.fetch('https://api.line.me/oauth2/v2.1/verify', {
     method: 'post',
-    payload: { id_token: idToken, client_id: channelId },
+    payload: { id_token: idToken, client_id: cleanChannelId },
     muteHttpExceptions: true
   });
-  if (res.getResponseCode() !== 200) return '';
-  const body = JSON.parse(res.getContentText());
-  if (!body.sub) return '';
+  const body = safeJsonParse(res.getContentText()) || {};
+  if (res.getResponseCode() !== 200 || !body.sub) {
+    const desc = String(body.error_description || body.error || ('HTTP ' + res.getResponseCode()));
+    return { sub: '', error: desc };
+  }
   const ttl = Math.max(1, Math.min(3000, Number(body.exp) - Math.floor(Date.now() / 1000)));
   cache.put(key, body.sub, ttl);
-  return body.sub;
+  return { sub: body.sub, error: '' };
+}
+
+function verifyIdToken(idToken, channelId) {
+  return verifyIdTokenDetail(idToken, channelId).sub;
 }
 
 /**
@@ -283,12 +291,20 @@ function resolveActor(idToken) {
     };
   }
   if (!idToken) {
-    return { allowed: false, code: 'AUTH', error: 'LINEログインが必要です。LINEアプリ内から開いてください。' };
+    return { allowed: false, code: 'AUTH', error: 'LINEのIDトークンが取得できませんでした（LINE DevelopersのLIFF設定で「openid」スコープがONか確認してください）' };
   }
-  const userId = verifyIdToken(idToken, channelId);
-  if (!userId) {
-    return { allowed: false, code: 'AUTH', error: 'ログインの有効期限が切れました。再読み込みしてください。' };
+  const v = verifyIdTokenDetail(idToken, channelId);
+  if (!v.sub) {
+    const isClientMismatch = /client_id|audience|channel/i.test(v.error);
+    return {
+      allowed: false,
+      code: isClientMismatch ? 'SETUP_REQUIRED' : 'AUTH',
+      error: isClientMismatch
+        ? 'GASの LIFF_CHANNEL_ID 設定がLINEチャネルID（2012227672）と一致していません（詳細: ' + v.error + '）'
+        : 'ログインの有効期限が切れました（' + v.error + '）。画面を再読み込みしてください。'
+    };
   }
+  const userId = v.sub;
   const name = memberNameFromUserId(userId);
   if (!name) {
     const config = getConfigData();
