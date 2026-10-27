@@ -414,10 +414,37 @@ async function api(action, data = {}, extra = {}) {
   }
 }
 
+function reLoginLiff() {
+  if (typeof liff === 'undefined') return;
+  try {
+    if (liff.isLoggedIn() && !liff.isInClient()) {
+      liff.logout();
+    }
+  } catch (_) {}
+  // クエリパラメータやハッシュを取り除いたクリーンなURLへリダイレクト
+  const cleanUrl = window.location.origin + window.location.pathname;
+  liff.login({ redirectUri: cleanUrl });
+}
+
 function handleApiError(res) {
-  if (res.code === 'AUTH' && state.liffReady) {
-    showToast('ログインの有効期限が切れました。再ログインします');
-    setTimeout(() => liff.login(), 1200);
+  if (res.code === 'AUTH') {
+    // 自動リダイレクトすると原因が分からず画面がチカチカするため、
+    // 自動リダイレクトを一切行わず、画面上部バナーにエラーと再ログインボタンを表示する
+    const reason = res.error || 'LINEログインの認証に失敗しました';
+    showBanner(`${reason} 👉 [ここをタップして再ログイン]`, 'error');
+    const banner = $('mockBanner');
+    if (banner) {
+      banner.style.cursor = 'pointer';
+      banner.onclick = () => {
+        reLoginLiff();
+      };
+    }
+    showToast(reason, { duration: 6000 });
+    return;
+  }
+  if (res.code === 'SETUP_REQUIRED') {
+    showBanner(res.error || 'GASのスクリプトプロパティ設定を確認してください', 'error');
+    showToast(res.error || '設定エラーが発生しました', { duration: 6000 });
     return;
   }
   if (res.code === 'UNREGISTERED') {
@@ -535,9 +562,12 @@ async function loadInitialData(month, opts = {}) {
   if (state.viewMonth !== targetMonth) return; // 月送り連打時の古いレスポンスを破棄
   if (!res.success) {
     handleApiError(res);
-    if (res.code !== 'UNREGISTERED' && res.code !== 'AUTH') showBanner('サーバーに接続できません。再読み込みしてください', 'error');
+    if (res.code !== 'UNREGISTERED' && res.code !== 'AUTH' && res.code !== 'SETUP_REQUIRED') {
+      showBanner('サーバーに接続できません。再読み込みしてください', 'error');
+    }
     return;
   }
+  sessionStorage.removeItem('pairbudget_reauth_ts');
   if (!usedCache && !opts.silent) hideToast();
   hideBanner();
   saveInitCache(res);
@@ -1506,7 +1536,12 @@ async function initLiff() {
   if (!rawLiffId || typeof liff === 'undefined') return;
   try {
     await liff.init({ liffId: rawLiffId });
-    if (!liff.isLoggedIn()) { liff.login(); return 'redirect'; }
+    if (!liff.isLoggedIn()) {
+      // ログインしていない場合のみLINE認証へ遷移
+      const cleanUrl = window.location.origin + window.location.pathname;
+      liff.login({ redirectUri: cleanUrl });
+      return 'redirect';
+    }
     state.liffReady = true;
     // プロフィール取得はバックグラウンドで行い、初期データ取得をブロックしない
     liff.getProfile().then(profile => {
