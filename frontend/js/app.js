@@ -1193,9 +1193,10 @@ function setupEventListeners() {
 }
 
 async function initLiff() {
-  if (!APP_CONFIG.LIFF_ID || typeof liff === 'undefined') return;
+  const rawLiffId = String(APP_CONFIG.LIFF_ID || '').trim().replace(/^https?:\/\/liff\.line\.me\//i, '').replace(/\/+$/, '');
+  if (!rawLiffId || typeof liff === 'undefined') return;
   try {
-    await liff.init({ liffId: APP_CONFIG.LIFF_ID });
+    await liff.init({ liffId: rawLiffId });
     if (!liff.isLoggedIn()) { liff.login(); return 'redirect'; }
     state.liffReady = true;
   } catch (err) {
