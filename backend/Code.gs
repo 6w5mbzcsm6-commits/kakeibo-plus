@@ -179,7 +179,10 @@ function getSpreadsheet() {
 }
 
 function getSheet(name) {
-  return getSpreadsheet().getSheetByName(name);
+  if (!_memCache._sheets) _memCache._sheets = {};
+  if (_memCache._sheets[name] !== undefined) return _memCache._sheets[name];
+  _memCache._sheets[name] = getSpreadsheet().getSheetByName(name);
+  return _memCache._sheets[name];
 }
 
 function findRowIndexById(sheet, id, col) {
@@ -507,6 +510,12 @@ function doPost(e) {
       case 'searchPrices': result = searchPrices(data.query, actor); break;
       case 'getAuditLog': result = getAuditLog(data, actor); break;
       default: result = { success: false, error: '未定義のアクション: ' + postData.action };
+    }
+    // 書き込みアクションで returnInitialData が指定されている場合、同一リクエスト内で最新データを一括返却（通信往復を半減）
+    if (result && result.success && postData.returnInitialData && postData.action !== 'getInitialData') {
+      const updatedName = memberNameFromUserId(actor.userId) || actor.name;
+      const freshActor = { allowed: true, verified: actor.verified, name: updatedName, userId: actor.userId };
+      result.initialData = getInitialData(postData.viewMonth || data.month, freshActor);
     }
     return jsonOut(result);
   } catch (error) {
@@ -970,9 +979,10 @@ function getMonthlyTotals(count) {
 // ==========================================
 
 function getShoppingList() {
+  if (_memCache.shoppingList) return _memCache.shoppingList;
   const sheet = getSheet(SHEET_NAMES.SHOPPING_LIST);
   if (!sheet || sheet.getLastRow() <= 1) return [];
-  return sheet.getRange(2, 1, sheet.getLastRow() - 1, 6).getValues().filter(r => r[0]).map(row => ({
+  _memCache.shoppingList = sheet.getRange(2, 1, sheet.getLastRow() - 1, 6).getValues().filter(r => r[0]).map(row => ({
     id: String(row[0]),
     title: cleanSheetStr(row[1]),
     category: cleanSheetStr(row[2]),
@@ -980,6 +990,7 @@ function getShoppingList() {
     requestedBy: cleanSheetStr(row[4]),
     createdAt: fmtDate(row[5])
   }));
+  return _memCache.shoppingList;
 }
 
 function addShoppingItem(item, actor) {
@@ -1128,9 +1139,10 @@ function updateMonthlyBudget(data, actor) {
 }
 
 function getFixedExpenses() {
+  if (_memCache.fixedExpenses) return _memCache.fixedExpenses;
   const sheet = getSheet(SHEET_NAMES.FIXED_EXPENSES);
   if (!sheet || sheet.getLastRow() <= 1) return [];
-  return sheet.getRange(2, 1, sheet.getLastRow() - 1, 7).getValues().filter(r => r[0]).map(r => ({
+  _memCache.fixedExpenses = sheet.getRange(2, 1, sheet.getLastRow() - 1, 7).getValues().filter(r => r[0]).map(r => ({
     id: String(r[0]),
     title: cleanSheetStr(r[1]),
     amount: Number(r[2]) || 0,
@@ -1139,6 +1151,7 @@ function getFixedExpenses() {
     isActive: toBool(r[5]),
     payer: cleanSheetStr(r[6] || '共同カード')
   }));
+  return _memCache.fixedExpenses;
 }
 
 function updateFixedExpense(item, actor) {
@@ -1593,6 +1606,7 @@ function ensureSheet(name, headers, color, textColumns) {
   if (!sheet) {
     sheet = ss.insertSheet(name);
     created = true;
+    if (_memCache._sheets) _memCache._sheets[name] = sheet;
   }
   sheet.getRange(1, 1, 1, headers.length).setValues([headers])
     .setBackground(color).setFontColor('#FFFFFF').setFontWeight('bold');

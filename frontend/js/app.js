@@ -373,21 +373,41 @@ function mockSearchPrices(query) {
 }
 
 // ==========================================
-// 通信
+// 通信 & キャッシュ
 // ==========================================
-async function callGas(action, data) {
+function cacheKeyForMonth(month) {
+  return `pairbudget_init_v2_${month}`;
+}
+
+function saveInitCache(data) {
+  if (!data || !data.month || state.isMockMode) return;
+  try {
+    localStorage.setItem(cacheKeyForMonth(data.month), JSON.stringify(data));
+  } catch (_) { /* 容量超過時は無視 */ }
+}
+
+function loadInitCache(month) {
+  try {
+    const raw = localStorage.getItem(cacheKeyForMonth(month));
+    return raw ? JSON.parse(raw) : null;
+  } catch (_) {
+    return null;
+  }
+}
+
+async function callGas(action, data, extra = {}) {
   const idToken = state.liffReady ? liff.getIDToken() : null;
   const res = await fetch(state.gasApiUrl, {
     method: 'POST',
     headers: { 'Content-Type': 'text/plain' }, // CORSプリフライト回避
-    body: JSON.stringify({ action, data: data || {}, idToken })
+    body: JSON.stringify({ action, data: data || {}, idToken, ...extra })
   });
   return res.json();
 }
 
-async function api(action, data = {}) {
+async function api(action, data = {}, extra = {}) {
   try {
-    return state.isMockMode ? await mockApi(action, data) : await callGas(action, data);
+    return state.isMockMode ? await mockApi(action, data) : await callGas(action, data, extra);
   } catch (err) {
     console.warn('API通信エラー:', action, err);
     return { success: false, error: '通信に失敗しました。電波の良い場所で再試行してください' };
@@ -459,15 +479,20 @@ function showBanner(msg, kind) {
 function hideBanner() { $('mockBanner').classList.add('hidden'); }
 
 /**
- * 書き込み → 成功なら最新データを再取得して画面更新
+ * 書き込み → 同一リクエスト（1往復）で最新データを受け取って画面更新（旧GASへのフォールバック付き）
  */
 async function writeAndRefresh(action, data, successMsg) {
   if (state.busy) return { success: false };
   state.busy = true;
   try {
-    const res = await api(action, data);
+    const res = await api(action, data, { returnInitialData: true, viewMonth: state.viewMonth });
     if (!res.success) { handleApiError(res); return res; }
-    await loadInitialData();
+    if (res.initialData && res.initialData.success) {
+      saveInitCache(res.initialData);
+      applyData(res.initialData);
+    } else {
+      await loadInitialData(state.viewMonth, { skipCache: true });
+    }
     if (successMsg) showToast(successMsg);
     return res;
   } finally {
@@ -475,24 +500,37 @@ async function writeAndRefresh(action, data, successMsg) {
   }
 }
 
-async function loadInitialData(month) {
+async function loadInitialData(month, opts = {}) {
   if (month) state.viewMonth = month;
+  const targetMonth = state.viewMonth;
 
   if (!state.gasApiUrl) {
     state.isMockMode = true;
     showBanner('デモモードで動作中（GAS URL未設定・データは保存されません）', 'warn');
-    applyData(await mockApi('getInitialData', { month: state.viewMonth }));
+    applyData(await mockApi('getInitialData', { month: targetMonth }));
     return;
   }
 
   state.isMockMode = false;
-  const res = await api('getInitialData', { month: state.viewMonth });
+  // キャッシュがあれば即座（0.02秒）に先行描画し、裏で最新データを取得して差分更新
+  if (!opts.skipCache) {
+    const cached = loadInitCache(targetMonth);
+    if (cached && cached.month === targetMonth) {
+      applyData(cached);
+    } else {
+      renderMonthNav();
+    }
+  }
+
+  const res = await api('getInitialData', { month: targetMonth });
+  if (state.viewMonth !== targetMonth) return; // 月送り連打時の古いレスポンスを破棄
   if (!res.success) {
     handleApiError(res);
     if (res.code !== 'UNREGISTERED' && res.code !== 'AUTH') showBanner('サーバーに接続できません。再読み込みしてください', 'error');
     return;
   }
   hideBanner();
+  saveInitCache(res);
   applyData(res);
 }
 
@@ -919,7 +957,7 @@ async function handlePriceSearch(e) {
 // ==========================================
 // レシートAI-OCR
 // ==========================================
-function resizeImageToBase64(file, maxSide = 1600, quality = 0.85) {
+function resizeImageToBase64(file, maxSide = 1024, quality = 0.78) {
   return new Promise((resolve, reject) => {
     const url = URL.createObjectURL(file);
     const img = new Image();
@@ -932,7 +970,7 @@ function resizeImageToBase64(file, maxSide = 1600, quality = 0.85) {
       URL.revokeObjectURL(url);
       resolve(canvas.toDataURL('image/jpeg', quality).split(',')[1]);
     };
-    img.onerror = () => { URL.revokeObjectURL(url); reject(new Error('画像を読み込めませんでした')); };
+    img.onerror = () => { URL.revokeObjectURL(url); reject(new Error('画像を読み込めませんでした（対応形式: JPEG / PNG / WebP）')); };
     img.src = url;
   });
 }
@@ -976,13 +1014,13 @@ function guessCategoryByStore(store) {
 
 async function handleReceiptFile(file) {
   if (!file) return;
-  if (!/^image\//.test(file.type)) { showToast('画像ファイルを選んでください'); return; }
-  // 初回のみ：画像の送信先についての同意を取る
-  if (!state.isMockMode && localStorage.getItem('pairbudget_ocr_consent') !== 'true') {
-    const ok = window.confirm('レシート画像は、読み取りのためGoogleのAI（Gemini）に送信されます。\n・当アプリのサーバーには保存されません\n・無料枠では、送信内容がGoogleのサービス改善に使われる場合があります\n・カード番号や氏名が写らないようにしてください\n\n同意して続けますか？');
-    if (!ok) { $('receiptFileInput').value = ''; return; }
-    localStorage.setItem('pairbudget_ocr_consent', 'true');
+  if (file.type && !/^image\//i.test(file.type)) {
+    showToast('画像ファイルを選んでください');
+    $('receiptFileInput').value = '';
+    return;
   }
+  // LINE内ブラウザ(LIFF WebView)では input[type=file] の change イベント内で window.confirm() がブロックされ
+  // false を返してモーダルが開かなくなるため、ネイティブ confirm は使わず即座に読み取りモーダルを開く
   closeExpenseModal();
   $('receiptModal').classList.remove('hidden');
   $('receiptForm').classList.add('hidden');
@@ -995,6 +1033,8 @@ async function handleReceiptFile(file) {
   } catch (err) {
     closeReceiptModal();
     showToast(err.message || 'レシートの読み取りに失敗しました');
+  } finally {
+    $('receiptFileInput').value = '';
   }
 }
 
@@ -1029,15 +1069,14 @@ async function handleReceiptSubmit(e) {
   if (items.some(r => !Number.isInteger(r.price) || r.price === 0)) { showToast('金額が空または0の行があります'); return; }
   if (items.reduce((s, r) => s + r.price, 0) <= 0) { showToast('合計金額が0円以下です'); return; }
 
-  const btn = $('receiptSaveBtn');
-  btn.disabled = true;
-  const res = await writeAndRefresh('saveReceipt', {
+  const payload = {
     store: $('receiptStore').value.trim(), date: $('receiptDate').value, category: $('receiptCategory').value,
     isShared: $('receiptIsShared').value === 'true', paymentType: $('receiptPaymentType').value,
     payer: $('receiptPayer').value, items
-  }, 'レシートを保存しました（明細も記録）');
-  btn.disabled = false;
-  if (res.success) closeReceiptModal();
+  };
+  closeReceiptModal();
+  showToast('レシートを保存しています…');
+  await writeAndRefresh('saveReceipt', payload, 'レシートを保存しました（明細も記録）');
 }
 
 // ==========================================
@@ -1105,8 +1144,25 @@ async function handleExpenseSubmit(e) {
   };
   const existing = id ? state.transactions.find(t => t.id === id) : null;
   if (existing) payload.memo = existing.memo;
-  const res = await writeAndRefresh(id ? 'updateTransaction' : 'addTransaction', payload, id ? '支出を更新しました（履歴に記録）' : '支出を記録しました');
-  if (res.success) closeExpenseModal();
+
+  // 楽観的UI更新: モーダルを即座に閉じ、画面上のリストにも即時反映して体感待ち時間をゼロにする
+  closeExpenseModal();
+  showToast(id ? '支出を更新しています…' : '支出を記録しました！');
+  if (!id && payload.date.startsWith(state.viewMonth)) {
+    state.transactions.unshift({
+      ...payload, id: 'temp_' + Date.now(), createdBy: state.currentUser, createdAt: mockNow(), updatedBy: '', updatedAt: '', receiptId: ''
+    });
+    if (payload.isShared) {
+      state.summary.totalExpense += payload.amount;
+      state.summary.remaining = state.summary.budget - state.summary.totalExpense;
+      state.summary.progressRate = Math.min(100, Math.round((state.summary.totalExpense / state.summary.budget) * 100));
+    }
+    renderAll();
+  } else if (existing) {
+    Object.assign(existing, payload, { updatedBy: state.currentUser, updatedAt: mockNow() });
+    renderAll();
+  }
+  await writeAndRefresh(id ? 'updateTransaction' : 'addTransaction', payload, id ? '支出を更新しました（履歴に記録）' : '支出を記録しました');
 }
 
 async function handleExpenseDelete() {
@@ -1114,8 +1170,10 @@ async function handleExpenseDelete() {
   const tx = state.transactions.find(t => t.id === id);
   if (!tx) return;
   if (!window.confirm(`「${tx.title}」${yen(tx.amount)} を削除しますか？\n（削除の記録は変更履歴に残ります）`)) return;
-  const res = await writeAndRefresh('deleteTransaction', { id }, '削除しました（履歴に記録）');
-  if (res.success) closeExpenseModal();
+  closeExpenseModal();
+  state.transactions = state.transactions.filter(t => t.id !== id);
+  renderAll();
+  await writeAndRefresh('deleteTransaction', { id }, '削除しました（履歴に記録）');
 }
 
 // ==========================================
@@ -1133,8 +1191,8 @@ async function handleAddShoppingSubmit(e) {
   lucide.createIcons();
   showToast('買い物リストに追加しました');
   const res = await api('addShoppingItem', { title, category: '日用品' });
-  if (!res.success) { handleApiError(res); await loadInitialData(); }
-  else if (!state.isMockMode) loadInitialData(); // サーバー側のIDに同期
+  if (!res.success) { handleApiError(res); await loadInitialData(state.viewMonth, { skipCache: true }); }
+  else if (res.id) { item.id = res.id; }
 }
 
 function openBuySyncModal(id) {
@@ -1171,14 +1229,16 @@ async function handleBuySyncSubmit(e) {
   const amount = parseInt($('buySyncAmount').value, 10);
   if (!Number.isInteger(amount) || amount <= 0) { showToast('1円以上の金額を入力してください'); return; }
 
-  const res = await writeAndRefresh('addTransaction', {
+  $('buySyncModal').classList.add('hidden');
+  item.isCompleted = true;
+  renderShoppingList();
+  lucide.createIcons();
+  showToast('買い物完了＆支出に登録しています…');
+  await api('updateShoppingItem', { id, title: item.title, category: item.category, isCompleted: true });
+  await writeAndRefresh('addTransaction', {
     date: localDateStr(), title: item.title, amount, category: item.category || '食費', isShared: true,
     paymentType: $('buySyncPaymentType').value, payer: state.currentUser, memo: '買い物リストから連動登録'
   }, '買い物完了＆支出に登録しました！');
-  if (res.success) {
-    $('buySyncModal').classList.add('hidden');
-    await completeShoppingItem(id);
-  }
 }
 
 async function deleteShoppingItemById(id) {
@@ -1231,12 +1291,13 @@ async function handleFixedSubmit(e) {
   if (!title) { showToast('項目名を入力してください'); return; }
   if (!Number.isInteger(amount) || amount <= 0) { showToast('月額を1円以上で入力してください'); return; }
   if (!Number.isInteger(billingDay) || billingDay < 1 || billingDay > 31) { showToast('引落日は1〜31日で入力してください'); return; }
-  const res = await writeAndRefresh('updateFixedExpense', {
-    id, title, amount, billingDay,
-    category: $('fixedExpenseCategory').value,
-    isActive: $('fixedExpenseActive').checked
+  const category = $('fixedExpenseCategory').value;
+  const isActive = $('fixedExpenseActive').checked;
+  closeFixedModal();
+  showToast(id ? '固定費を更新しています…' : '固定費を追加しています…');
+  await writeAndRefresh('updateFixedExpense', {
+    id, title, amount, billingDay, category, isActive
   }, id ? '固定費を更新しました' : '固定費を追加しました');
-  if (res.success) closeFixedModal();
 }
 
 async function handleFixedDelete() {
@@ -1244,8 +1305,11 @@ async function handleFixedDelete() {
   const item = state.fixedExpenses.find(f => f.id === id);
   if (!item) return;
   if (!window.confirm(`固定費「${item.title}」（${yen(item.amount)}）を削除しますか？`)) return;
-  const res = await writeAndRefresh('deleteFixedExpense', { id }, '固定費を削除しました');
-  if (res.success) closeFixedModal();
+  closeFixedModal();
+  state.fixedExpenses = state.fixedExpenses.filter(f => f.id !== id);
+  renderFixedExpenses();
+  lucide.createIcons();
+  await writeAndRefresh('deleteFixedExpense', { id }, '固定費を削除しました');
 }
 
 // ==========================================
@@ -1274,8 +1338,13 @@ async function handleBaseChange() {
 
 async function toggleTransferStatus(slot) {
   const t = slot === 'husband' ? state.transfers.husband : state.transfers.wife;
+  const nextPaid = !t.isPaid;
   const label = memberName(slot);
-  await writeAndRefresh('updateTransferStatus', { month: state.viewMonth, slot, payer: label, isPaid: !t.isPaid }, `${label}の振込ステータスを更新しました`);
+  // 楽観的UI更新でタップ直後にバッジを切り替え
+  t.isPaid = nextPaid;
+  renderTransferCard();
+  lucide.createIcons();
+  await writeAndRefresh('updateTransferStatus', { month: state.viewMonth, slot, payer: label, isPaid: nextPaid }, `${label}の振込ステータスを更新しました`);
 }
 
 // ==========================================
@@ -1405,10 +1474,15 @@ async function initLiff() {
     await liff.init({ liffId: rawLiffId });
     if (!liff.isLoggedIn()) { liff.login(); return 'redirect'; }
     state.liffReady = true;
-    try {
-      const profile = await liff.getProfile();
-      if (profile && profile.displayName) state.liffDisplayName = String(profile.displayName).trim().slice(0, 15);
-    } catch (_) { /* プロフィール取得失敗時は手入力 */ }
+    // プロフィール取得はバックグラウンドで行い、初期データ取得をブロックしない
+    liff.getProfile().then(profile => {
+      if (profile && profile.displayName) {
+        state.liffDisplayName = String(profile.displayName).trim().slice(0, 15);
+        if ($('registerNameInput') && !$('registerNameInput').value) {
+          $('registerNameInput').value = state.liffDisplayName;
+        }
+      }
+    }).catch(() => {});
   } catch (err) {
     console.warn('LIFF初期化エラー:', err);
     showToast('LINEログインの初期化に失敗しました');
@@ -1418,6 +1492,9 @@ async function initLiff() {
 document.addEventListener('DOMContentLoaded', async () => {
   lucide.createIcons();
   setupEventListeners();
+  // 起動直後にローカルキャッシュがあれば即座に描画して白画面待ちをゼロにする
+  const cached = loadInitCache(state.viewMonth);
+  if (cached && state.gasApiUrl) applyData(cached);
   if ((await initLiff()) === 'redirect') return;
-  await loadInitialData();
+  await loadInitialData(state.viewMonth, { skipCache: !!cached });
 });
