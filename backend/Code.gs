@@ -497,6 +497,7 @@ function doPost(e) {
       case 'deleteShoppingItem': result = deleteShoppingItem(data.id, actor); break;
       case 'updateMonthlyBudget': result = updateMonthlyBudget(data, actor); break;
       case 'updateFixedExpense': result = updateFixedExpense(data, actor); break;
+      case 'deleteFixedExpense': result = deleteFixedExpense(data.id, actor); break;
       case 'updateCategory': result = updateCategory(data, actor); break;
       case 'updateRule': result = updateRule(data, actor); break;
       case 'updateTransferStatus': result = updateTransferStatus(data, actor); break;
@@ -1160,6 +1161,18 @@ function updateFixedExpense(item, actor) {
       writeAudit(actor, existing ? '更新' : '追加', '固定費', id, existing, { title: title, amount: amount, category: category, billingDay: billingDay, isActive: isActive });
     }
     return { success: true, id: id };
+  });
+}
+
+function deleteFixedExpense(id, actor) {
+  return withLock(() => {
+    const sheet = getSheet(SHEET_NAMES.FIXED_EXPENSES);
+    const idx = findRowIndexById(sheet, id, 1);
+    if (idx < 0) return { success: false, error: '削除対象の固定費が見つかりません' };
+    const existing = getFixedExpenses().find(f => f.id === String(id)) || null;
+    sheet.deleteRow(idx);
+    if (actor) writeAudit(actor, '削除', '固定費', id, existing, null);
+    return { success: true };
   });
 }
 
