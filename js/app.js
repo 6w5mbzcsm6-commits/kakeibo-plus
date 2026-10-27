@@ -108,7 +108,7 @@ function displayPayerName(payer) {
 // ==========================================
 // デモ用モックDB（GAS未設定時のみ使用）
 // ==========================================
-const mockDb = { transactions: [], receiptItems: [], shopping: [], audit: [], budgets: {}, paid: {}, seeded: false };
+const mockDb = { transactions: [], receiptItems: [], shopping: [], fixed: [], audit: [], budgets: {}, paid: {}, seeded: false };
 const MOCK_CATEGORIES = [
   { name: '食費', color: '#10B981', icon: 'utensils' }, { name: '日用品', color: '#3B82F6', icon: 'shopping-bag' },
   { name: '外食', color: '#F59E0B', icon: 'coffee' }, { name: '住居費', color: '#6366F1', icon: 'home' },
@@ -128,6 +128,7 @@ function mockId() { return 'm_' + Date.now().toString(36) + Math.random().toStri
 function seedMockDb() {
   if (mockDb.seeded) return;
   mockDb.seeded = true;
+  mockDb.fixed = MOCK_FIXED.map(f => ({ ...f }));
   const cur = localMonthStr();
   const rnd = n => ((n * 9301 + 49297) % 233280) / 233280; // 決定的な疑似乱数
   const addTx = (date, title, amount, category, isShared, paymentType, payer, receiptId = '') => {
@@ -213,7 +214,7 @@ function mockBuildInitial(month) {
   return {
     success: true, month, actor: { name: state.currentUser, slot: state.currentSlot, verified: false }, transactions: txs,
     receiptItems: mockDb.receiptItems.filter(it => it.date.startsWith(month)),
-    shoppingList: mockDb.shopping, monthlyBudgets: [], fixedExpenses: MOCK_FIXED, categories: MOCK_CATEGORIES, rules: MOCK_RULES,
+    shoppingList: mockDb.shopping, monthlyBudgets: [], fixedExpenses: mockDb.fixed, categories: MOCK_CATEGORIES, rules: MOCK_RULES,
     config: { husbandBaseContribution: hb, wifeBaseContribution: wb, husbandName: hName, wifeName: wName },
     transfers: { husband: tr(hb, 'husband'), wife: tr(wb, 'wife') },
     summary: { budget, totalExpense: total, remaining, progressRate: Math.min(100, Math.round(total / budget * 100)),
@@ -298,6 +299,26 @@ async function mockApi(action, data) {
       const prev = mockDb.budgets[data.month];
       mockDb.budgets[data.month] = data.amount;
       mockAudit(prev !== undefined ? '更新' : '追加', '月別予算', data.month, prev !== undefined ? { amount: prev } : null, { amount: data.amount });
+      return { success: true };
+    }
+    case 'updateFixedExpense': {
+      const id = data.id || mockId();
+      const idx = mockDb.fixed.findIndex(f => f.id === id);
+      const next = { id, title: data.title, amount: Number(data.amount), category: data.category || 'その他', billingDay: Number(data.billingDay) || 1, isActive: data.isActive !== false };
+      if (idx >= 0) {
+        mockAudit('更新', '固定費', id, { ...mockDb.fixed[idx] }, next);
+        mockDb.fixed[idx] = next;
+      } else {
+        mockDb.fixed.push(next);
+        mockAudit('追加', '固定費', id, null, next);
+      }
+      return { success: true, id };
+    }
+    case 'deleteFixedExpense': {
+      const idx = mockDb.fixed.findIndex(f => f.id === data.id);
+      if (idx < 0) return { success: false, error: '削除対象の固定費が見つかりません' };
+      const [removed] = mockDb.fixed.splice(idx, 1);
+      mockAudit('削除', '固定費', removed.id, removed, null);
       return { success: true };
     }
     case 'updateTransferStatus': {
@@ -751,13 +772,16 @@ function renderShoppingList() {
 function renderFixedExpenses() {
   const total = state.fixedExpenses.reduce((s, f) => s + (f.isActive ? Number(f.amount) : 0), 0);
   $('fixedExpensesTotal').textContent = `合計: ${yen(total)}（年間 ${yen(total * 12)}）`;
-  $('fixedExpensesList').innerHTML = state.fixedExpenses.map(f => `
-    <div class="flex items-center justify-between p-2.5 rounded-xl bg-slate-50 border border-slate-100 text-xs">
+  $('fixedExpensesList').innerHTML = state.fixedExpenses.length ? state.fixedExpenses.map(f => `
+    <div data-action="edit-fixed" data-id="${esc(f.id)}" class="flex items-center justify-between p-2.5 rounded-xl bg-slate-50 hover:bg-slate-100 border border-slate-100 text-xs cursor-pointer transition-colors ${f.isActive ? '' : 'opacity-50'}">
       <div><span class="font-bold text-slate-800">${esc(f.title)}</span>
       <span class="text-[10px] text-slate-400 block">毎月${esc(f.billingDay)}日引落 (${esc(f.category)})</span></div>
-      <div class="text-right"><span class="font-black text-slate-900">${yen(f.amount)}</span>
-      <span class="text-[9px] text-purple-600 font-bold block">自動計上</span></div>
-    </div>`).join('');
+      <div class="flex items-center gap-2">
+        <div class="text-right"><span class="font-black text-slate-900">${yen(f.amount)}</span>
+        <span class="text-[9px] ${f.isActive ? 'text-purple-600' : 'text-slate-400'} font-bold block">${f.isActive ? '自動計上 ON' : '停止中 OFF'}</span></div>
+        <i data-lucide="edit-3" class="w-3.5 h-3.5 text-slate-300"></i>
+      </div>
+    </div>`).join('') : '<div class="py-4 text-center text-xs text-slate-400">固定費はまだ登録されていません</div>';
 }
 
 function categoryOptionsHtml(selected) {
@@ -768,6 +792,7 @@ function renderCategoryDropdown() {
   const keepFilter = $('historyCategoryFilter').value;
   $('expenseCategory').innerHTML = categoryOptionsHtml();
   $('receiptCategory').innerHTML = categoryOptionsHtml();
+  if ($('fixedExpenseCategory')) $('fixedExpenseCategory').innerHTML = categoryOptionsHtml();
   $('historyCategoryFilter').innerHTML = '<option value="all">全カテゴリ</option>' + categoryOptionsHtml();
   $('historyCategoryFilter').value = state.categories.some(c => c.name === keepFilter) ? keepFilter : 'all';
 }
@@ -1166,6 +1191,64 @@ async function deleteShoppingItemById(id) {
 }
 
 // ==========================================
+// 固定費の追加・編集・削除
+// ==========================================
+function openFixedModal(editItem) {
+  $('fixedExpenseForm').reset();
+  if (editItem) {
+    $('fixedModalTitle').textContent = '固定費を編集';
+    $('fixedExpenseId').value = editItem.id;
+    $('fixedExpenseTitle').value = editItem.title;
+    $('fixedExpenseAmount').value = editItem.amount;
+    $('fixedExpenseDay').value = editItem.billingDay || 1;
+    if (editItem.category && !Array.from($('fixedExpenseCategory').options).some(o => o.value === editItem.category)) {
+      $('fixedExpenseCategory').insertAdjacentHTML('beforeend', `<option value="${esc(editItem.category)}">${esc(editItem.category)}</option>`);
+    }
+    $('fixedExpenseCategory').value = editItem.category;
+    $('fixedExpenseActive').checked = editItem.isActive !== false;
+    $('fixedExpenseDeleteBtn').classList.remove('hidden');
+  } else {
+    $('fixedModalTitle').textContent = '固定費を追加';
+    $('fixedExpenseId').value = '';
+    $('fixedExpenseDay').value = 27;
+    $('fixedExpenseActive').checked = true;
+    $('fixedExpenseDeleteBtn').classList.add('hidden');
+  }
+  $('fixedExpenseModal').classList.remove('hidden');
+  lucide.createIcons();
+}
+
+function closeFixedModal() {
+  $('fixedExpenseModal').classList.add('hidden');
+}
+
+async function handleFixedSubmit(e) {
+  e.preventDefault();
+  const id = $('fixedExpenseId').value;
+  const title = $('fixedExpenseTitle').value.trim();
+  const amount = parseInt($('fixedExpenseAmount').value, 10);
+  const billingDay = parseInt($('fixedExpenseDay').value, 10);
+  if (!title) { showToast('項目名を入力してください'); return; }
+  if (!Number.isInteger(amount) || amount <= 0) { showToast('月額を1円以上で入力してください'); return; }
+  if (!Number.isInteger(billingDay) || billingDay < 1 || billingDay > 31) { showToast('引落日は1〜31日で入力してください'); return; }
+  const res = await writeAndRefresh('updateFixedExpense', {
+    id, title, amount, billingDay,
+    category: $('fixedExpenseCategory').value,
+    isActive: $('fixedExpenseActive').checked
+  }, id ? '固定費を更新しました' : '固定費を追加しました');
+  if (res.success) closeFixedModal();
+}
+
+async function handleFixedDelete() {
+  const id = $('fixedExpenseId').value;
+  const item = state.fixedExpenses.find(f => f.id === id);
+  if (!item) return;
+  if (!window.confirm(`固定費「${item.title}」（${yen(item.amount)}）を削除しますか？`)) return;
+  const res = await writeAndRefresh('deleteFixedExpense', { id }, '固定費を削除しました');
+  if (res.success) closeFixedModal();
+}
+
+// ==========================================
 // 設定
 // ==========================================
 async function handleSaveBudget() {
@@ -1259,6 +1342,10 @@ function setupEventListeners() {
   $('priceSearchForm').addEventListener('submit', handlePriceSearch);
   $('loadAuditBtn').addEventListener('click', loadAuditLog);
   $('auditDetailCloseBtn').addEventListener('click', () => $('auditDetailModal').classList.add('hidden'));
+  if ($('openFixedModalBtn')) $('openFixedModalBtn').addEventListener('click', () => openFixedModal(null));
+  if ($('fixedModalCloseBtn')) $('fixedModalCloseBtn').addEventListener('click', closeFixedModal);
+  if ($('fixedExpenseForm')) $('fixedExpenseForm').addEventListener('submit', handleFixedSubmit);
+  if ($('fixedExpenseDeleteBtn')) $('fixedExpenseDeleteBtn').addEventListener('click', handleFixedDelete);
 
   $('trendRangeButtons').addEventListener('click', e => {
     const btn = e.target.closest('[data-range]');
@@ -1299,6 +1386,7 @@ function setupEventListeners() {
     const id = el.dataset.id;
     switch (el.dataset.action) {
       case 'edit-tx': { const tx = state.transactions.find(t => t.id === id); if (tx) openExpenseModal(tx); break; }
+      case 'edit-fixed': { const fx = state.fixedExpenses.find(f => f.id === id); if (fx) openFixedModal(fx); break; }
       case 'tx-history': e.preventDefault(); openTxHistory(id); break;
       case 'delete-shop': deleteShoppingItemById(id); break;
       case 'remove-receipt-row': el.closest('[data-row]').remove(); updateReceiptTotal(); break;
