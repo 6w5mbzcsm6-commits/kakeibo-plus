@@ -375,24 +375,54 @@ function mockSearchPrices(query) {
 // ==========================================
 // 通信 & キャッシュ
 // ==========================================
+const CACHE_PREFIX = 'pairbudget_init_v2_';
+const CACHE_MAX_AGE_MS = 7 * 24 * 60 * 60 * 1000; // 7日間アクセスがなければ自動破棄
+
 function cacheKeyForMonth(month) {
-  return `pairbudget_init_v2_${month}`;
+  return `${CACHE_PREFIX}${month}`;
 }
 
 function saveInitCache(data) {
   if (!data || !data.month || state.isMockMode) return;
   try {
-    localStorage.setItem(cacheKeyForMonth(data.month), JSON.stringify(data));
+    const payload = {
+      savedAt: Date.now(),
+      data: data
+    };
+    localStorage.setItem(cacheKeyForMonth(data.month), JSON.stringify(payload));
   } catch (_) { /* 容量超過時は無視 */ }
 }
 
 function loadInitCache(month) {
   try {
     const raw = localStorage.getItem(cacheKeyForMonth(month));
-    return raw ? JSON.parse(raw) : null;
+    if (!raw) return null;
+    const parsed = JSON.parse(raw);
+    // 旧キャッシュ構造との互換チェック
+    if (parsed && parsed.data && parsed.savedAt) {
+      if (Date.now() - parsed.savedAt > CACHE_MAX_AGE_MS) {
+        localStorage.removeItem(cacheKeyForMonth(month));
+        return null;
+      }
+      return parsed.data;
+    }
+    return parsed;
   } catch (_) {
     return null;
   }
+}
+
+function clearAllLocalCache() {
+  try {
+    const keysToRemove = [];
+    for (let i = 0; i < localStorage.length; i++) {
+      const k = localStorage.key(i);
+      if (k && (k.startsWith(CACHE_PREFIX) || k.startsWith('pairbudget_init_'))) {
+        keysToRemove.push(k);
+      }
+    }
+    keysToRemove.forEach(k => localStorage.removeItem(k));
+  } catch (_) {}
 }
 
 async function callGas(action, data, extra = {}) {
@@ -416,6 +446,7 @@ async function api(action, data = {}, extra = {}) {
 
 function reLoginLiff() {
   if (typeof liff === 'undefined') return;
+  clearAllLocalCache(); // ログアウト・再認証時は端末内のキャッシュを安全に破棄
   try {
     if (liff.isLoggedIn() && !liff.isInClient()) {
       liff.logout();
