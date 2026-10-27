@@ -1375,13 +1375,15 @@ function scanReceipt(data, actor) {
   const cleanApiKey = apiKey.trim();
   const userModel = (SCRIPT_PROPERTIES.getProperty('GEMINI_MODEL') || '').trim();
 
-  // 1. まず APIキーに紐づく有効なモデル一覧を自動取得し、画像認識（generateContent）に対応した最新モデルを動的検出する
+  // 1. まず APIキーに紐づく有効なモデル一覧を自動取得する
+  // 新しい「AQ.」キー（Auth Key）および従来の「AIza」キーの両方に対応するため、URLクエリ（?key=）ではなくヘッダー（x-goog-api-key）で送信
   let validModels = [];
   try {
-    const listRes = UrlFetchApp.fetch(
-      'https://generativelanguage.googleapis.com/v1beta/models?key=' + encodeURIComponent(cleanApiKey),
-      { method: 'get', muteHttpExceptions: true }
-    );
+    const listRes = UrlFetchApp.fetch('https://generativelanguage.googleapis.com/v1beta/models', {
+      method: 'get',
+      headers: { 'x-goog-api-key': cleanApiKey },
+      muteHttpExceptions: true
+    });
     if (listRes.getResponseCode() === 200) {
       const listJson = JSON.parse(listRes.getContentText());
       if (listJson && Array.isArray(listJson.models)) {
@@ -1404,15 +1406,10 @@ function scanReceipt(data, actor) {
     if (clean && modelsToTry.indexOf(clean) === -1) modelsToTry.push(clean);
   };
 
-  // ユーザー指定があれば最優先
   if (userModel) addCandidate(userModel);
-
-  // 動的取得できたモデルのうち、flash / flash-lite 系を優先して追加
   validModels.filter(m => /flash/i.test(m)).forEach(addCandidate);
   validModels.forEach(addCandidate);
-
-  // 念のためのフォールバック既知モデル
-  ['gemini-2.5-flash', 'gemini-2.0-flash', 'gemini-2.0-flash-exp', 'gemini-1.5-flash', 'gemini-1.5-pro'].forEach(addCandidate);
+  ['gemini-2.5-flash', 'gemini-2.0-flash', 'gemini-1.5-flash', 'gemini-1.5-pro'].forEach(addCandidate);
 
   const prompt =
     'これは日本のレシート画像です。店名、購入日、明細を読み取ってください。\n' +
@@ -1453,9 +1450,9 @@ function scanReceipt(data, actor) {
   let lastErrorDetail = '';
   for (let i = 0; i < modelsToTry.length; i++) {
     lastTriedModel = modelsToTry[i];
-    // ヘッダー（x-goog-api-key）とクエリパラメータ（?key=）の両方に対応したURL形式
+    // 新しい「AQ.」キー（Auth Key）では URLパラメータ ?key= を付与すると404で弾かれるため、純粋なエンドポイントにヘッダー（x-goog-api-key）で送信
     const targetUrl = 'https://generativelanguage.googleapis.com/v1beta/models/' +
-      encodeURIComponent(lastTriedModel) + ':generateContent?key=' + encodeURIComponent(cleanApiKey);
+      encodeURIComponent(lastTriedModel) + ':generateContent';
     res = UrlFetchApp.fetch(targetUrl, {
       method: 'post',
       contentType: 'application/json',
