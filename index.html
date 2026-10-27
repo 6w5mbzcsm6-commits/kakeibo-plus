@@ -13,7 +13,7 @@
   <!-- LINE LIFF SDK -->
   <script charset="utf-8" src="https://static.line-scdn.net/liff/edge/2/sdk.js"></script>
   <!-- Custom CSS -->
-  <link rel="stylesheet" href="style.css">
+  <link rel="stylesheet" href="css/style.css">
   <script>
     tailwind.config = {
       theme: {
@@ -96,15 +96,15 @@
         </button>
       </div>
 
-      <!-- 夫婦振込ステータス並列表示 -->
+      <!-- 2人の振込ステータス並列表示 -->
       <div class="grid grid-cols-2 gap-3">
-        <!-- 夫の振込カード -->
+        <!-- メンバー1の振込カード -->
         <div class="bg-slate-800/80 rounded-xl p-3 border border-slate-700">
           <div class="flex items-center justify-between mb-1.5">
-            <span class="text-xs font-bold text-blue-400 flex items-center gap-1">
-              <i data-lucide="user" class="w-3 h-3"></i> 夫の振込
+            <span class="text-xs font-bold text-blue-400 flex items-center gap-1 truncate">
+              <i data-lucide="user" class="w-3 h-3 shrink-0"></i> <span id="husbandNameLabel" class="truncate">メンバー1</span>の振込
             </span>
-            <span id="husbandStatusBadge" class="text-[10px] px-1.5 py-0.5 rounded-full bg-amber-500/20 text-amber-300 font-medium">未完了</span>
+            <span id="husbandStatusBadge" class="text-[10px] px-1.5 py-0.5 rounded-full bg-amber-500/20 text-amber-300 font-medium shrink-0">未完了</span>
           </div>
           <div class="text-lg font-black text-white" id="husbandAmount">¥60,000</div>
           <div class="text-[10px] text-slate-400 mt-1 space-y-0.5" id="husbandBreakdown">
@@ -116,13 +116,13 @@
           </button>
         </div>
 
-        <!-- 妻の振込カード -->
+        <!-- メンバー2の振込カード -->
         <div class="bg-slate-800/80 rounded-xl p-3 border border-slate-700">
           <div class="flex items-center justify-between mb-1.5">
-            <span class="text-xs font-bold text-pink-400 flex items-center gap-1">
-              <i data-lucide="user" class="w-3 h-3"></i> 妻の振込
+            <span class="text-xs font-bold text-pink-400 flex items-center gap-1 truncate">
+              <i data-lucide="user" class="w-3 h-3 shrink-0"></i> <span id="wifeNameLabel" class="truncate">メンバー2</span>の振込
             </span>
-            <span id="wifeStatusBadge" class="text-[10px] px-1.5 py-0.5 rounded-full bg-amber-500/20 text-amber-300 font-medium">未完了</span>
+            <span id="wifeStatusBadge" class="text-[10px] px-1.5 py-0.5 rounded-full bg-amber-500/20 text-amber-300 font-medium shrink-0">未完了</span>
           </div>
           <div class="text-lg font-black text-white" id="wifeAmount">¥60,000</div>
           <div class="text-[10px] text-slate-400 mt-1 space-y-0.5" id="wifeBreakdown">
@@ -267,9 +267,10 @@
           <option value="all">全カテゴリ</option>
         </select>
         <select id="historyPayerFilter" class="bg-slate-50 border border-slate-200 text-xs rounded-lg px-2.5 py-1.5 focus:outline-none">
-          <option value="all">全支払者</option>
-          <option value="夫">夫</option>
-          <option value="妻">妻</option>
+          <option value="all">全メンバー</option>
+          <option value="husband" id="filterPayerHusband">メンバー1</option>
+          <option value="wife" id="filterPayerWife">メンバー2</option>
+          <option value="shared">共同</option>
         </select>
       </section>
 
@@ -328,21 +329,37 @@
         </div>
       </section>
 
-      <!-- 振込基準額設定 -->
+      <!-- ふたりの表示名・基本振込額設定 -->
       <section class="bg-white rounded-2xl p-4 shadow-sm border border-slate-100 space-y-3">
         <h3 class="text-sm font-bold text-slate-800 flex items-center gap-1.5">
-          <i data-lucide="users" class="w-4 h-4 text-brand-500"></i> 基本振込額（拠出設定）
+          <i data-lucide="users" class="w-4 h-4 text-brand-500"></i> ふたりの表示名・基本拠出額
         </h3>
+        <p class="text-[11px] text-slate-400">お好きなニックネームや毎月の基本拠出額を自由に設定できます。</p>
         <div class="grid grid-cols-2 gap-3">
-          <div>
-            <label class="text-xs font-medium text-blue-600 block mb-1">夫の基本拠出</label>
-            <input type="number" id="settingHusbandBase" class="w-full bg-slate-50 border border-slate-200 rounded-xl px-3 py-2 text-sm" value="60000">
+          <div class="space-y-2 p-2.5 rounded-xl bg-blue-50/50 border border-blue-100">
+            <div>
+              <label for="settingHusbandName" class="text-[11px] font-bold text-blue-600 block mb-1">🔵 メンバー1の表示名</label>
+              <input type="text" id="settingHusbandName" maxlength="15" placeholder="例: たろう" class="w-full bg-white border border-slate-200 rounded-lg px-2.5 py-1.5 text-xs font-bold text-slate-800" value="メンバー1">
+            </div>
+            <div>
+              <label for="settingHusbandBase" class="text-[11px] font-medium text-slate-600 block mb-1">基本拠出額 (円)</label>
+              <input type="number" id="settingHusbandBase" class="w-full bg-white border border-slate-200 rounded-lg px-2.5 py-1.5 text-xs" value="60000">
+            </div>
           </div>
-          <div>
-            <label class="text-xs font-medium text-pink-600 block mb-1">妻の基本拠出</label>
-            <input type="number" id="settingWifeBase" class="w-full bg-slate-50 border border-slate-200 rounded-xl px-3 py-2 text-sm" value="60000">
+          <div class="space-y-2 p-2.5 rounded-xl bg-pink-50/50 border border-pink-100">
+            <div>
+              <label for="settingWifeName" class="text-[11px] font-bold text-pink-600 block mb-1">🩷 メンバー2の表示名</label>
+              <input type="text" id="settingWifeName" maxlength="15" placeholder="例: はなこ" class="w-full bg-white border border-slate-200 rounded-lg px-2.5 py-1.5 text-xs font-bold text-slate-800" value="メンバー2">
+            </div>
+            <div>
+              <label for="settingWifeBase" class="text-[11px] font-medium text-slate-600 block mb-1">基本拠出額 (円)</label>
+              <input type="number" id="settingWifeBase" class="w-full bg-white border border-slate-200 rounded-lg px-2.5 py-1.5 text-xs" value="60000">
+            </div>
           </div>
         </div>
+        <button id="saveMemberSettingsBtn" class="w-full bg-slate-900 hover:bg-slate-800 text-white py-2 rounded-xl text-xs font-bold">
+          表示名・基本拠出額を保存
+        </button>
       </section>
 
       <!-- プライバシーマスキング設定 -->
@@ -492,15 +509,15 @@
           <label class="text-xs font-bold text-slate-600 block mb-1">誰が買ったか</label>
           <div class="grid grid-cols-3 gap-2">
             <label class="border border-slate-200 rounded-xl p-2 flex items-center gap-2 cursor-pointer">
-              <input type="radio" name="expensePayer" value="夫" checked class="text-blue-500">
-              <span class="text-xs font-bold text-blue-600">夫</span>
+              <input type="radio" name="expensePayer" id="expensePayerHusband" value="メンバー1" checked class="text-blue-500">
+              <span id="expensePayerHusbandLabel" class="text-xs font-bold text-blue-600 truncate">メンバー1</span>
             </label>
             <label class="border border-slate-200 rounded-xl p-2 flex items-center gap-2 cursor-pointer">
-              <input type="radio" name="expensePayer" value="妻" class="text-pink-500">
-              <span class="text-xs font-bold text-pink-600">妻</span>
+              <input type="radio" name="expensePayer" id="expensePayerWife" value="メンバー2" class="text-pink-500">
+              <span id="expensePayerWifeLabel" class="text-xs font-bold text-pink-600 truncate">メンバー2</span>
             </label>
             <label class="border border-slate-200 rounded-xl p-2 flex items-center gap-2 cursor-pointer">
-              <input type="radio" name="expensePayer" value="共同" class="text-emerald-500">
+              <input type="radio" name="expensePayer" id="expensePayerShared" value="共同" class="text-emerald-500">
               <span class="text-xs font-bold text-emerald-600">共同</span>
             </label>
           </div>
@@ -658,8 +675,8 @@
           <div class="col-span-2">
             <label class="text-xs font-bold text-slate-600 block mb-1">誰が買ったか</label>
             <select id="receiptPayer" class="w-full bg-slate-50 border border-slate-200 rounded-xl px-2 py-2 text-xs">
-              <option value="夫">夫</option>
-              <option value="妻">妻</option>
+              <option value="メンバー1" id="receiptPayerHusband">メンバー1</option>
+              <option value="メンバー2" id="receiptPayerWife">メンバー2</option>
               <option value="共同">共同</option>
             </select>
           </div>
@@ -683,13 +700,18 @@
     </div>
   </div>
 
-  <!-- 6. 初回メンバー登録モーダル（LIFF検証済みIDトークンによる安全な登録） -->
+  <!-- 6. 初回メンバー登録モーダル（LIFF検証済みIDトークン＋自由な表示名による安全な登録） -->
   <div id="registerMemberModal" class="hidden fixed inset-0 z-50 bg-black/60 backdrop-blur-sm flex items-center justify-center p-4">
     <div class="bg-white w-full max-w-sm rounded-3xl p-5 shadow-2xl space-y-3">
       <div class="text-center">
         <div class="w-12 h-12 bg-brand-100 text-brand-600 rounded-full flex items-center justify-center mx-auto mb-2 text-2xl">🌱</div>
-        <h3 class="text-base font-bold text-slate-900">初回アカウント登録</h3>
-        <p class="text-xs text-slate-500 mt-1">現在のLINEアカウントを「夫」または「妻」として登録します（登録済みの枠は上書きできません）。</p>
+        <h3 class="text-base font-bold text-slate-900">初回メンバー登録</h3>
+        <p class="text-xs text-slate-500 mt-1">家計簿で表示するあなたの名前（ニックネーム）を入力して、登録する枠を選んでください。</p>
+      </div>
+      <div>
+        <label for="registerNameInput" class="text-xs font-bold text-slate-600 block mb-1">あなたの表示名（ニックネーム・15文字以内）</label>
+        <input type="text" id="registerNameInput" maxlength="15" placeholder="例: なおや / りん"
+               class="w-full bg-slate-50 border border-slate-200 rounded-xl px-3 py-2 text-sm font-bold text-slate-800 focus:outline-none focus:ring-2 focus:ring-brand-500">
       </div>
       <div>
         <label for="registerCodeInput" class="text-xs font-bold text-slate-600 block mb-1">合言葉（設定している場合のみ）</label>
@@ -697,11 +719,11 @@
                class="w-full bg-slate-50 border border-slate-200 rounded-xl px-3 py-2 text-xs focus:outline-none">
       </div>
       <div class="grid grid-cols-2 gap-2 pt-1">
-        <button type="button" id="registerHusbandBtn" class="bg-blue-600 hover:bg-blue-500 disabled:opacity-40 text-white font-bold py-2.5 rounded-xl text-xs">
-          👨 夫として登録
+        <button type="button" id="registerHusbandBtn" class="bg-blue-600 hover:bg-blue-500 disabled:opacity-40 text-white font-bold py-2.5 px-2 rounded-xl text-xs truncate">
+          🔵 メンバー1枠で登録
         </button>
-        <button type="button" id="registerWifeBtn" class="bg-pink-600 hover:bg-pink-500 disabled:opacity-40 text-white font-bold py-2.5 rounded-xl text-xs">
-          👩 妻として登録
+        <button type="button" id="registerWifeBtn" class="bg-pink-600 hover:bg-pink-500 disabled:opacity-40 text-white font-bold py-2.5 px-2 rounded-xl text-xs truncate">
+          🩷 メンバー2枠で登録
         </button>
       </div>
     </div>
@@ -714,7 +736,7 @@
   </div>
 
   <!-- アプリ本体スクリプト -->
-  <script src="config.js"></script>
-  <script src="app.js"></script>
+  <script src="js/config.js"></script>
+  <script src="js/app.js"></script>
 </body>
 </html>

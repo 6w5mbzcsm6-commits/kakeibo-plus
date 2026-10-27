@@ -13,8 +13,8 @@ const MAX_HISTORY_MONTHS = 36;
 const FIELD_LABELS = {
   date: '日付', title: '品名', amount: '金額', category: 'カテゴリ', isShared: '共同',
   paymentType: '決済手段', payer: '支払者', memo: 'メモ',
-  husband: '夫の基本拠出', wife: '妻の基本拠出', isPaid: '振込状況',
-  billingDay: '引落日', isActive: '有効', keyword: 'キーワード', color: 'カラー', role: '役割',
+  husband: 'メンバー1基本拠出', wife: 'メンバー2基本拠出', husbandName: 'メンバー1表示名', wifeName: 'メンバー2表示名',
+  isPaid: '振込状況', billingDay: '引落日', isActive: '有効', keyword: 'キーワード', color: 'カラー', role: '表示名',
   store: '店名', total: '合計', itemCount: '品数'
 };
 const PAYMENT_LABELS = { shared_card: '共同カード', advanced_by_user: '個人立替', personal_cash: '個人自腹' };
@@ -49,7 +49,9 @@ function shortDateTime(s) { // 'yyyy-MM-dd HH:mm:ss' -> 'M/D HH:mm'
 const state = {
   viewMonth: localMonthStr(),
   activeScope: 'shared',
-  currentUser: '夫',
+  currentUser: 'メンバー1',
+  currentSlot: 'husband',
+  liffDisplayName: '',
   actorVerified: false,
   isMockMode: false,
   liffReady: false,
@@ -65,7 +67,7 @@ const state = {
     husband: { baseContribution: 60000, privateOnSharedCard: 0, advancedForShared: 0, totalTransfer: 60000, isPaid: false },
     wife: { baseContribution: 60000, privateOnSharedCard: 0, advancedForShared: 0, totalTransfer: 60000, isPaid: false }
   },
-  config: { husbandBaseContribution: 60000, wifeBaseContribution: 60000 },
+  config: { husbandBaseContribution: 60000, wifeBaseContribution: 60000, husbandName: 'メンバー1', wifeName: 'メンバー2' },
   transactions: [],
   receiptItems: [],
   monthlyTotals: [],
@@ -74,6 +76,34 @@ const state = {
   categories: [],
   rules: []
 };
+
+function memberName(slot) {
+  return slot === 'wife' ? (state.config.wifeName || 'メンバー2') : (state.config.husbandName || 'メンバー1');
+}
+
+function resolvePayerSlot(payer) {
+  const p = String(payer || '').trim();
+  if (!p) return null;
+  if (p === '共同' || p === 'shared') return 'shared';
+  if (p === state.config.husbandName || p === '夫' || p === 'メンバー1' || p === 'husband') return 'husband';
+  if (p === state.config.wifeName || p === '妻' || p === 'メンバー2' || p === 'wife') return 'wife';
+  return null;
+}
+
+function isSameMember(payerA, payerB) {
+  const sA = resolvePayerSlot(payerA);
+  const sB = resolvePayerSlot(payerB);
+  if (sA && sB) return sA === sB;
+  return payerA === payerB;
+}
+
+function displayPayerName(payer) {
+  const slot = resolvePayerSlot(payer);
+  if (slot === 'husband') return memberName('husband');
+  if (slot === 'wife') return memberName('wife');
+  if (slot === 'shared') return '共同';
+  return payer || '';
+}
 
 // ==========================================
 // デモ用モックDB（GAS未設定時のみ使用）
@@ -152,31 +182,40 @@ function mockBuildInitial(month) {
   const daysLeft = isCurrent ? Math.max(1, lastDay - new Date().getDate() + 1) : 0;
   const remaining = budget - total;
 
-  const acc = { '夫': { priv: 0, adv: 0 }, '妻': { priv: 0, adv: 0 } };
+  const acc = { husband: { priv: 0, adv: 0 }, wife: { priv: 0, adv: 0 } };
   txs.forEach(t => {
-    if (!acc[t.payer]) return;
-    if (!t.isShared && t.paymentType === 'shared_card') acc[t.payer].priv += t.amount;
-    if (t.isShared && t.paymentType === 'advanced_by_user') acc[t.payer].adv += t.amount;
+    const slot = resolvePayerSlot(t.payer);
+    if (slot !== 'husband' && slot !== 'wife') return;
+    if (!t.isShared && t.paymentType === 'shared_card') acc[slot].priv += t.amount;
+    if (t.isShared && t.paymentType === 'advanced_by_user') acc[slot].adv += t.amount;
   });
   const hb = state.config.husbandBaseContribution, wb = state.config.wifeBaseContribution;
-  const tr = (base, who) => ({ baseContribution: base, privateOnSharedCard: acc[who].priv, advancedForShared: acc[who].adv,
-    totalTransfer: Math.max(0, base + acc[who].priv - acc[who].adv), isPaid: !!mockDb.paid[month + who] });
+  const hName = memberName('husband'), wName = memberName('wife');
+  const tr = (base, slot) => ({ baseContribution: base, privateOnSharedCard: acc[slot].priv, advancedForShared: acc[slot].adv,
+    totalTransfer: Math.max(0, base + acc[slot].priv - acc[slot].adv), isPaid: !!mockDb.paid[month + slot] });
 
   const totals = [];
   for (let i = MAX_HISTORY_MONTHS - 1; i >= 0; i--) {
     const mm = shiftMonth(localMonthStr(), -i);
-    const row = { month: mm, shared: 0, personal: { '夫': 0, '妻': 0 }, budget: mockDb.budgets[mm] || 240000 };
+    const row = { month: mm, shared: 0, personal: { husband: 0, wife: 0, [hName]: 0, [wName]: 0 }, budget: mockDb.budgets[mm] || 240000 };
     mockDb.transactions.filter(t => t.date.startsWith(mm)).forEach(t => {
-      if (t.isShared) row.shared += t.amount; else if (row.personal[t.payer] !== undefined) row.personal[t.payer] += t.amount;
+      if (t.isShared) row.shared += t.amount;
+      else {
+        const slot = resolvePayerSlot(t.payer);
+        if (slot === 'husband' || slot === 'wife') {
+          row.personal[slot] += t.amount;
+          row.personal[memberName(slot)] = row.personal[slot];
+        }
+      }
     });
     totals.push(row);
   }
   return {
-    success: true, month, actor: { name: state.currentUser, verified: false }, transactions: txs,
+    success: true, month, actor: { name: state.currentUser, slot: state.currentSlot, verified: false }, transactions: txs,
     receiptItems: mockDb.receiptItems.filter(it => it.date.startsWith(month)),
     shoppingList: mockDb.shopping, monthlyBudgets: [], fixedExpenses: MOCK_FIXED, categories: MOCK_CATEGORIES, rules: MOCK_RULES,
-    config: { husbandBaseContribution: hb, wifeBaseContribution: wb },
-    transfers: { husband: tr(hb, '夫'), wife: tr(wb, '妻') },
+    config: { husbandBaseContribution: hb, wifeBaseContribution: wb, husbandName: hName, wifeName: wName },
+    transfers: { husband: tr(hb, 'husband'), wife: tr(wb, 'wife') },
     summary: { budget, totalExpense: total, remaining, progressRate: Math.min(100, Math.round(total / budget * 100)),
       daysLeft, dailyAllowance: isCurrent ? Math.max(0, Math.floor(remaining / daysLeft)) : 0, isCurrentMonth: isCurrent },
     monthlyTotals: totals
@@ -262,16 +301,25 @@ async function mockApi(action, data) {
       return { success: true };
     }
     case 'updateTransferStatus': {
-      const prev = !!mockDb.paid[data.month + data.payer];
-      mockDb.paid[data.month + data.payer] = data.isPaid;
-      mockAudit('更新', '振込状況', `${data.month}:${data.payer}`, { isPaid: prev }, { isPaid: data.isPaid });
+      const slot = resolvePayerSlot(data.slot || data.payer) || 'husband';
+      const prev = !!mockDb.paid[data.month + slot];
+      mockDb.paid[data.month + slot] = data.isPaid;
+      mockAudit('更新', '振込状況', `${data.month}:${memberName(slot)}`, { isPaid: prev }, { isPaid: data.isPaid });
       return { success: true };
     }
     case 'updateBaseContribution': {
-      const before = { husband: state.config.husbandBaseContribution, wife: state.config.wifeBaseContribution };
+      const before = {
+        husbandName: state.config.husbandName, wifeName: state.config.wifeName,
+        husband: state.config.husbandBaseContribution, wife: state.config.wifeBaseContribution
+      };
       state.config.husbandBaseContribution = data.husband;
       state.config.wifeBaseContribution = data.wife;
-      mockAudit('更新', '基本拠出額', 'baseContribution', before, { husband: data.husband, wife: data.wife });
+      if (data.husbandName) state.config.husbandName = data.husbandName;
+      if (data.wifeName) state.config.wifeName = data.wifeName;
+      state.currentUser = memberName(state.currentSlot);
+      mockAudit('更新', 'メンバー・基本拠出設定', 'baseContribution', before, {
+        husbandName: state.config.husbandName, wifeName: state.config.wifeName, husband: data.husband, wife: data.wife
+      });
       return { success: true };
     }
     default: return { success: true };
@@ -288,7 +336,7 @@ function mockSearchPrices(query) {
   if (!q) return { success: false, error: '検索する品名を入力してください' };
   const matched = mockDb.receiptItems.filter(it =>
     it.price > 0 && it.unitPrice > 0 &&
-    (it.isShared !== false || it.payer === state.currentUser) &&
+    (it.isShared !== false || isSameMember(it.payer, state.currentUser)) &&
     normalizeName(it.name).includes(q)
   ).sort((a, b) => (a.date < b.date ? 1 : -1));
   if (!matched.length) return { success: true, query, count: 0, stats: null, byStore: [], history: [] };
@@ -342,16 +390,33 @@ function handleApiError(res) {
 function openRegisterModal(availableRoles) {
   const canHusband = Array.isArray(availableRoles) ? availableRoles.includes('夫') : (availableRoles && typeof availableRoles === 'object' ? !!availableRoles.husband : true);
   const canWife = Array.isArray(availableRoles) ? availableRoles.includes('妻') : (availableRoles && typeof availableRoles === 'object' ? !!availableRoles.wife : true);
+  const hName = (availableRoles && availableRoles.husbandName) || memberName('husband');
+  const wName = (availableRoles && availableRoles.wifeName) || memberName('wife');
   $('registerHusbandBtn').disabled = !canHusband;
   $('registerWifeBtn').disabled = !canWife;
+  $('registerHusbandBtn').textContent = canHusband ? '🔵 枠1（ブルー）で登録' : `🔵 ${hName}（登録済）`;
+  $('registerWifeBtn').textContent = canWife ? '🩷 枠2（ピンク）で登録' : `🩷 ${wName}（登録済）`;
+  if ($('registerNameInput') && !$('registerNameInput').value && state.liffDisplayName) {
+    $('registerNameInput').value = state.liffDisplayName;
+  }
   $('registerMemberModal').classList.remove('hidden');
 }
 
-async function submitRegisterMember(role) {
+async function submitRegisterMember(slot) {
+  const name = ($('registerNameInput') ? $('registerNameInput').value : '').trim();
+  if (!name) {
+    showToast('あなたの表示名（ニックネーム）を入力してください');
+    if ($('registerNameInput')) $('registerNameInput').focus();
+    return;
+  }
+  if (['共同', 'all', '未認証', '自動計上'].includes(name)) {
+    showToast(`「${name}」は表示名に使用できません`);
+    return;
+  }
   const registerCode = $('registerCodeInput').value.trim();
   $('registerHusbandBtn').disabled = true;
   $('registerWifeBtn').disabled = true;
-  const res = await api('registerMember', { role, registerCode });
+  const res = await api('registerMember', { slot, name, role: slot === 'wife' ? '妻' : '夫', registerCode });
   if (!res.success) {
     showToast(res.error || '登録に失敗しました');
     openRegisterModal(res.availableRoles);
@@ -359,7 +424,7 @@ async function submitRegisterMember(role) {
   }
   $('registerMemberModal').classList.add('hidden');
   hideBanner();
-  showToast(res.message || `${role}として登録しました！`);
+  showToast(res.message || `「${name}」として登録しました！`);
   await loadInitialData();
 }
 
@@ -421,10 +486,20 @@ function applyData(data) {
   state.monthlyTotals = data.monthlyTotals || [];
   state.summary = data.summary || state.summary;
   state.transfers = data.transfers || state.transfers;
-  if (data.config) state.config = data.config;
+  if (data.config) {
+    state.config = {
+      husbandBaseContribution: Number(data.config.husbandBaseContribution) || 60000,
+      wifeBaseContribution: Number(data.config.wifeBaseContribution) || 60000,
+      husbandName: data.config.husbandName || 'メンバー1',
+      wifeName: data.config.wifeName || 'メンバー2'
+    };
+  }
   if (data.actor && data.actor.verified) {
     state.currentUser = data.actor.name;
+    state.currentSlot = data.actor.slot || resolvePayerSlot(data.actor.name) || 'husband';
     state.actorVerified = true;
+  } else {
+    state.currentUser = memberName(state.currentSlot);
   }
   renderAll();
 }
@@ -434,6 +509,7 @@ function applyData(data) {
 // ==========================================
 function renderAll() {
   renderMonthNav();
+  renderMemberLabels();
   renderCategoryDropdown();
   renderTransferCard();
   renderBudgetSummary();
@@ -444,6 +520,27 @@ function renderAll() {
   renderFixedExpenses();
   renderSettings();
   lucide.createIcons();
+}
+
+function renderMemberLabels() {
+  const hName = memberName('husband');
+  const wName = memberName('wife');
+  if ($('husbandNameLabel')) $('husbandNameLabel').textContent = hName;
+  if ($('wifeNameLabel')) $('wifeNameLabel').textContent = wName;
+  if ($('filterPayerHusband')) $('filterPayerHusband').textContent = hName;
+  if ($('filterPayerWife')) $('filterPayerWife').textContent = wName;
+  if ($('expensePayerHusband')) $('expensePayerHusband').value = hName;
+  if ($('expensePayerHusbandLabel')) $('expensePayerHusbandLabel').textContent = hName;
+  if ($('expensePayerWife')) $('expensePayerWife').value = wName;
+  if ($('expensePayerWifeLabel')) $('expensePayerWifeLabel').textContent = wName;
+  if ($('receiptPayerHusband')) {
+    $('receiptPayerHusband').value = hName;
+    $('receiptPayerHusband').textContent = hName;
+  }
+  if ($('receiptPayerWife')) {
+    $('receiptPayerWife').value = wName;
+    $('receiptPayerWife').textContent = wName;
+  }
 }
 
 function renderMonthNav() {
@@ -492,7 +589,7 @@ function renderBudgetSummary() {
 function scopedTransactions() {
   return state.transactions.filter(t => state.activeScope === 'shared'
     ? t.isShared
-    : (!t.isShared && t.payer === state.currentUser));
+    : (!t.isShared && isSameMember(t.payer, state.currentUser)));
 }
 
 function renderCharts() {
@@ -529,7 +626,7 @@ function renderTrendChart() {
   const labels = rows.map(r => { const [y, m] = r.month.split('-'); return state.trendRange > 12 ? `${y.slice(2)}/${Number(m)}` : `${Number(m)}月`; });
   const datasets = [{
     label: shared ? '共同の支出' : '自分の私物支出',
-    data: rows.map(r => shared ? r.shared : (r.personal[state.currentUser] || 0)),
+    data: rows.map(r => shared ? r.shared : (r.personal[state.currentSlot] ?? r.personal[state.currentUser] ?? 0)),
     borderColor: '#10B981', backgroundColor: 'rgba(16,185,129,0.12)', fill: true, tension: 0.3,
     pointRadius: state.trendRange > 12 ? 1.5 : 3, borderWidth: 2
   }];
@@ -559,7 +656,7 @@ function renderTrendChart() {
  */
 function createTransactionRow(item, isEditable) {
   const wrap = document.createElement('div');
-  const masked = !item.isShared && state.privacyMask && item.payer !== state.currentUser;
+  const masked = !item.isShared && state.privacyMask && !isSameMember(item.payer, state.currentUser);
   const title = masked ? '🔒 私物支出 (マスキング中)' : item.title;
 
   let tag = '';
@@ -567,11 +664,14 @@ function createTransactionRow(item, isEditable) {
   else if (item.isShared && item.paymentType === 'advanced_by_user') tag = '<span class="text-[9px] px-1.5 py-0.5 rounded bg-blue-100 text-blue-700 font-bold">立替</span>';
 
   const edited = item.updatedBy
-    ? `<div class="text-[10px] text-slate-500">✏️ ${esc(item.updatedBy)}が修正 ${esc(shortDateTime(item.updatedAt))}</div>`
+    ? `<div class="text-[10px] text-slate-500">✏️ ${esc(displayPayerName(item.updatedBy))}が修正 ${esc(shortDateTime(item.updatedAt))}</div>`
     : '';
-  const meta = `<div class="text-[10px] text-slate-400">登録: ${esc(item.createdBy || '不明')} ${esc(shortDateTime(item.createdAt))}</div>${edited}`;
+  const meta = `<div class="text-[10px] text-slate-400">登録: ${esc(displayPayerName(item.createdBy) || '不明')} ${esc(shortDateTime(item.createdAt))}</div>${edited}`;
 
-  const payerColor = item.payer === '夫' ? 'text-blue-500 bg-blue-50' : item.payer === '妻' ? 'text-pink-500 bg-pink-50' : 'text-slate-500 bg-slate-100';
+  const slot = resolvePayerSlot(item.payer);
+  const payerName = displayPayerName(item.payer);
+  const badgeText = payerName.slice(0, 2);
+  const payerColor = slot === 'husband' ? 'text-blue-500 bg-blue-50' : slot === 'wife' ? 'text-pink-500 bg-pink-50' : 'text-slate-500 bg-slate-100';
   const items = item.receiptId && !masked ? state.receiptItems.filter(it => it.receiptId === item.receiptId) : [];
 
   const actions = isEditable ? `
@@ -580,12 +680,12 @@ function createTransactionRow(item, isEditable) {
 
   const head = `
     <div class="flex items-center gap-2.5 min-w-0">
-      <span class="w-6 h-6 shrink-0 rounded-full ${payerColor} flex items-center justify-center text-[10px] font-bold">${esc(item.payer)}</span>
+      <span class="w-7 h-7 shrink-0 rounded-full ${payerColor} flex items-center justify-center text-[10px] font-bold" title="${esc(payerName)}">${esc(badgeText)}</span>
       <div class="min-w-0">
         <div class="flex items-center gap-1.5 flex-wrap">
           <span class="text-xs font-bold text-slate-800 break-all">${item.receiptId ? '🧾 ' : ''}${esc(title)}</span>${tag}
         </div>
-        <div class="text-[10px] text-slate-400">${esc(item.date)} ・ ${esc(item.category)}${items.length ? ` ・ ${items.length}品` : ''}</div>
+        <div class="text-[10px] text-slate-400">${esc(item.date)} ・ ${esc(payerName)} ・ ${esc(item.category)}${items.length ? ` ・ ${items.length}品` : ''}</div>
         ${meta}
       </div>
     </div>
@@ -617,7 +717,11 @@ function renderHistoryList() {
   c.innerHTML = '';
   const cat = $('historyCategoryFilter').value;
   const payer = $('historyPayerFilter').value;
-  const list = scopedTransactions().filter(t => (cat === 'all' || t.category === cat) && (payer === 'all' || t.payer === payer));
+  const list = scopedTransactions().filter(t => {
+    const catOk = cat === 'all' || t.category === cat;
+    const payerOk = payer === 'all' || resolvePayerSlot(t.payer) === payer || t.payer === payer;
+    return catOk && payerOk;
+  });
   if (!list.length) { c.innerHTML = '<div class="py-8 text-center text-xs text-slate-400">該当する支出はありません</div>'; return; }
   list.forEach(i => c.appendChild(createTransactionRow(i, true)));
 }
@@ -670,6 +774,8 @@ function renderCategoryDropdown() {
 
 function renderSettings() {
   $('settingBudgetInput').value = state.summary.budget;
+  if ($('settingHusbandName')) $('settingHusbandName').value = memberName('husband');
+  if ($('settingWifeName')) $('settingWifeName').value = memberName('wife');
   $('settingHusbandBase').value = state.config.husbandBaseContribution;
   $('settingWifeBase').value = state.config.wifeBaseContribution;
   $('privacyMaskToggle').checked = state.privacyMask;
@@ -694,7 +800,7 @@ function isMaskedAuditEntry(before, after, log) {
   const obj = after || before || {};
   const isShared = obj.isShared !== undefined ? obj.isShared : (before && before.isShared);
   const owner = obj.payer || (before && before.payer) || (log && log.actor);
-  return isShared === false && Boolean(owner) && owner !== state.currentUser;
+  return isShared === false && Boolean(owner) && !isSameMember(owner, state.currentUser);
 }
 
 function diffText(before, after, log) {
@@ -702,7 +808,7 @@ function diffText(before, after, log) {
   const maskLabel = '🔒 私物支出 (マスキング中)';
   if (!before && after) {
     if (after.role) return `登録: ${esc(after.role)}`;
-    if (after.husband !== undefined) return `夫: ${yen(after.husband)} / 妻: ${yen(after.wife)}`;
+    if (after.husband !== undefined) return `${esc(memberName('husband'))}: ${yen(after.husband)} / ${esc(memberName('wife'))}: ${yen(after.wife)}`;
     const name = masked ? maskLabel : (after.title || after.store || after.name || after.keyword || '');
     const amt = after.amount !== undefined ? yen(after.amount) : (after.total !== undefined ? yen(after.total) : '');
     return `追加: ${esc(name)} ${amt}`.trim();
@@ -746,7 +852,7 @@ async function loadAuditLog() {
 
 async function openTxHistory(id) {
   const tx = state.transactions.find(t => t.id === id);
-  const masked = tx && !tx.isShared && state.privacyMask && tx.payer !== state.currentUser;
+  const masked = tx && !tx.isShared && state.privacyMask && !isSameMember(tx.payer, state.currentUser);
   $('auditDetailTitle').textContent = `変更履歴: ${tx ? (masked ? '🔒 私物支出 (マスキング中)' : tx.title) : ''}`;
   $('auditDetailBody').innerHTML = '<div class="py-4 text-center text-slate-400">読み込み中…</div>';
   $('auditDetailModal').classList.remove('hidden');
@@ -874,7 +980,7 @@ function fillReceiptForm(r) {
   $('receiptCategory').innerHTML = categoryOptionsHtml(guessCategoryByStore(r.store || ''));
   $('receiptIsShared').value = 'true';
   $('receiptPaymentType').value = 'shared_card';
-  $('receiptPayer').value = state.currentUser === '妻' ? '妻' : '夫';
+  $('receiptPayer').value = memberName(state.currentSlot);
   const items = r.items && r.items.length ? r.items : [{ name: '', quantity: 1, price: 0 }];
   $('receiptItemRows').innerHTML =
     '<div class="flex gap-1.5 text-[10px] text-slate-400 px-0.5"><span class="flex-1">品名</span><span class="w-12 text-center">数量</span><span class="w-20 text-right">金額(行合計)</span><span class="w-6"></span></div>' +
@@ -929,7 +1035,8 @@ function openExpenseModal(editItem) {
     $('expensePaymentType').value = editItem.paymentType;
     $('expenseDate').value = editItem.date;
     document.querySelector(`input[name="expenseIsShared"][value="${editItem.isShared}"]`).checked = true;
-    const payerRadio = document.querySelector(`input[name="expensePayer"][value="${editItem.payer}"]`);
+    const targetPayer = displayPayerName(editItem.payer);
+    const payerRadio = document.querySelector(`input[name="expensePayer"][value="${CSS.escape(targetPayer)}"]`);
     if (payerRadio) payerRadio.checked = true;
     const locked = !!editItem.receiptId;
     $('expenseAmount').disabled = locked;
@@ -945,7 +1052,8 @@ function openExpenseModal(editItem) {
     lockNote.classList.add('hidden');
     del.classList.add('hidden');
     $('scanReceiptLabel').classList.remove('hidden');
-    const payerRadio = document.querySelector(`input[name="expensePayer"][value="${state.currentUser}"]`);
+    const myName = memberName(state.currentSlot);
+    const payerRadio = document.querySelector(`input[name="expensePayer"][value="${CSS.escape(myName)}"]`);
     if (payerRadio) payerRadio.checked = true;
   }
   $('expenseModal').classList.remove('hidden');
@@ -1067,15 +1175,24 @@ async function handleSaveBudget() {
 }
 
 async function handleBaseChange() {
+  const husbandName = ($('settingHusbandName') ? $('settingHusbandName').value : memberName('husband')).trim();
+  const wifeName = ($('settingWifeName') ? $('settingWifeName').value : memberName('wife')).trim();
+  if (!husbandName || !wifeName) { showToast('ふたりの表示名を入力してください'); return; }
+  if (husbandName === wifeName) { showToast('ふたりの表示名は異なる名前にしてください'); return; }
+  if (['共同', 'all', '未認証', '自動計上'].includes(husbandName) || ['共同', 'all', '未認証', '自動計上'].includes(wifeName)) {
+    showToast('「共同」などの予約語は表示名に使用できません');
+    return;
+  }
   const husband = parseInt($('settingHusbandBase').value, 10);
   const wife = parseInt($('settingWifeBase').value, 10);
   if (!Number.isInteger(husband) || !Number.isInteger(wife) || husband < 0 || wife < 0) { showToast('基本拠出額を正しく入力してください'); return; }
-  await writeAndRefresh('updateBaseContribution', { husband, wife }, '基本拠出額を保存しました（履歴に記録）');
+  await writeAndRefresh('updateBaseContribution', { husband, wife, husbandName, wifeName }, '表示名・基本拠出額を保存しました');
 }
 
-async function toggleTransferStatus(payer) {
-  const t = payer === '夫' ? state.transfers.husband : state.transfers.wife;
-  await writeAndRefresh('updateTransferStatus', { month: state.viewMonth, payer, isPaid: !t.isPaid }, `${payer}の振込ステータスを更新しました`);
+async function toggleTransferStatus(slot) {
+  const t = slot === 'husband' ? state.transfers.husband : state.transfers.wife;
+  const label = memberName(slot);
+  await writeAndRefresh('updateTransferStatus', { month: state.viewMonth, slot, payer: label, isPaid: !t.isPaid }, `${label}の振込ステータスを更新しました`);
 }
 
 // ==========================================
@@ -1118,8 +1235,8 @@ function setupEventListeners() {
   $('nextMonthBtn').addEventListener('click', () => loadInitialData(shiftMonth(state.viewMonth, 1)));
 
   $('transferHelpBtn').addEventListener('click', () => $('transferHelpModal').classList.remove('hidden'));
-  $('husbandPayToggle').addEventListener('click', () => toggleTransferStatus('夫'));
-  $('wifePayToggle').addEventListener('click', () => toggleTransferStatus('妻'));
+  $('husbandPayToggle').addEventListener('click', () => toggleTransferStatus('husband'));
+  $('wifePayToggle').addEventListener('click', () => toggleTransferStatus('wife'));
 
   $('openExpenseModalBtn').addEventListener('click', () => openExpenseModal(null));
   $('expenseForm').addEventListener('submit', handleExpenseSubmit);
@@ -1154,6 +1271,7 @@ function setupEventListeners() {
   });
 
   $('saveBudgetBtn').addEventListener('click', handleSaveBudget);
+  if ($('saveMemberSettingsBtn')) $('saveMemberSettingsBtn').addEventListener('click', handleBaseChange);
   $('settingHusbandBase').addEventListener('change', handleBaseChange);
   $('settingWifeBase').addEventListener('change', handleBaseChange);
   $('privacyMaskToggle').addEventListener('change', e => {
@@ -1165,8 +1283,8 @@ function setupEventListeners() {
     lucide.createIcons();
     showToast('プライバシー設定を更新しました');
   });
-  $('registerHusbandBtn').addEventListener('click', () => submitRegisterMember('夫'));
-  $('registerWifeBtn').addEventListener('click', () => submitRegisterMember('妻'));
+  $('registerHusbandBtn').addEventListener('click', () => submitRegisterMember('husband'));
+  $('registerWifeBtn').addEventListener('click', () => submitRegisterMember('wife'));
   $('saveGasUrlBtn').addEventListener('click', () => {
     state.gasApiUrl = $('settingGasUrl').value.trim();
     localStorage.setItem('pairbudget_gas_url', state.gasApiUrl);
@@ -1193,11 +1311,16 @@ function setupEventListeners() {
 }
 
 async function initLiff() {
-  if (!APP_CONFIG.LIFF_ID || typeof liff === 'undefined') return;
+  const rawLiffId = String(APP_CONFIG.LIFF_ID || '').trim().replace(/^https?:\/\/liff\.line\.me\//i, '').replace(/\/+$/, '');
+  if (!rawLiffId || typeof liff === 'undefined') return;
   try {
-    await liff.init({ liffId: APP_CONFIG.LIFF_ID });
+    await liff.init({ liffId: rawLiffId });
     if (!liff.isLoggedIn()) { liff.login(); return 'redirect'; }
     state.liffReady = true;
+    try {
+      const profile = await liff.getProfile();
+      if (profile && profile.displayName) state.liffDisplayName = String(profile.displayName).trim().slice(0, 15);
+    } catch (_) { /* プロフィール取得失敗時は手入力 */ }
   } catch (err) {
     console.warn('LIFF初期化エラー:', err);
     showToast('LINEログインの初期化に失敗しました');
