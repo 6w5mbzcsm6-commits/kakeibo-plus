@@ -415,45 +415,36 @@ async function api(action, data = {}, extra = {}) {
 }
 
 function reLoginLiff() {
-  if (!state.liffReady || typeof liff === 'undefined') return;
+  if (typeof liff === 'undefined') return;
   try {
-    // 期限切れのIDトークンがブラウザに残っていると liff.login() 後に再び同じ期限切れトークンで無限ループするため、
-    // 必ず liff.logout() で古いトークンを破棄してから liff.login() する
     if (liff.isLoggedIn() && !liff.isInClient()) {
       liff.logout();
     }
   } catch (_) {}
-  liff.login({ redirectUri: window.location.href.split('#')[0] });
+  // クエリパラメータやハッシュを取り除いたクリーンなURLへリダイレクト
+  const cleanUrl = window.location.origin + window.location.pathname;
+  liff.login({ redirectUri: cleanUrl });
 }
 
 function handleApiError(res) {
-  if (res.code === 'AUTH' && state.liffReady) {
-    const lastReauth = Number(sessionStorage.getItem('pairbudget_reauth_ts') || 0);
-    const now = Date.now();
-    // 20秒以内に再ログインしたばかりなのに再び AUTH エラーになった場合は無限ループを防止して理由を表示する
-    if (now - lastReauth < 20000) {
-      sessionStorage.removeItem('pairbudget_reauth_ts');
-      const reason = res.error || 'LINEログイン認証に失敗しました';
-      showBanner(`${reason}（再ログイン画面へ進むにはここをタップ）`, 'error');
-      const banner = $('mockBanner');
-      if (banner) {
-        banner.style.cursor = 'pointer';
-        banner.onclick = () => {
-          sessionStorage.setItem('pairbudget_reauth_ts', String(Date.now()));
-          reLoginLiff();
-        };
-      }
-      showToast(reason, { duration: 5000 });
-      return;
+  if (res.code === 'AUTH') {
+    // 自動リダイレクトすると原因が分からず画面がチカチカするため、
+    // 自動リダイレクトを一切行わず、画面上部バナーにエラーと再ログインボタンを表示する
+    const reason = res.error || 'LINEログインの認証に失敗しました';
+    showBanner(`${reason} 👉 [ここをタップして再ログイン]`, 'error');
+    const banner = $('mockBanner');
+    if (banner) {
+      banner.style.cursor = 'pointer';
+      banner.onclick = () => {
+        reLoginLiff();
+      };
     }
-    sessionStorage.setItem('pairbudget_reauth_ts', String( now ));
-    showToast('ログイン情報を更新しています…', { loading: true });
-    setTimeout(() => reLoginLiff(), 600);
+    showToast(reason, { duration: 6000 });
     return;
   }
   if (res.code === 'SETUP_REQUIRED') {
     showBanner(res.error || 'GASのスクリプトプロパティ設定を確認してください', 'error');
-    showToast(res.error || '設定エラーが発生しました', { duration: 5000 });
+    showToast(res.error || '設定エラーが発生しました', { duration: 6000 });
     return;
   }
   if (res.code === 'UNREGISTERED') {
@@ -1540,43 +1531,16 @@ function setupEventListeners() {
   });
 }
 
-function isIdTokenExpired(token) {
-  if (!token) return true;
-  try {
-    const parts = String(token).split('.');
-    if (parts.length < 2) return false;
-    const b64 = parts[1].replace(/-/g, '+').replace(/_/g, '/');
-    const payload = JSON.parse(atob(b64));
-    if (!payload || !payload.exp) return false;
-    // 現在時刻より有効期限(exp)が過ぎている場合は期限切れと判定
-    return (payload.exp * 1000) < (Date.now() + 5000);
-  } catch (_) {
-    return false;
-  }
-}
-
 async function initLiff() {
   const rawLiffId = String(APP_CONFIG.LIFF_ID || '').trim().replace(/^https?:\/\/liff\.line\.me\//i, '').replace(/\/+$/, '');
   if (!rawLiffId || typeof liff === 'undefined') return;
   try {
     await liff.init({ liffId: rawLiffId });
     if (!liff.isLoggedIn()) {
-      liff.login({ redirectUri: window.location.href.split('#')[0] });
+      // ログインしていない場合のみLINE認証へ遷移
+      const cleanUrl = window.location.origin + window.location.pathname;
+      liff.login({ redirectUri: cleanUrl });
       return 'redirect';
-    }
-    // 外部ブラウザ等で LIFF の「ログイン状態」だけ残り、中の IDトークンが期限切れ（1時間経過）または空になっている場合は
-    // サーバーに送る前に古いセッションを liff.logout() でクリアして再ログインする（ログアウト無限ループ防止）
-    const idToken = liff.getIDToken();
-    if (!idToken || isIdTokenExpired(idToken)) {
-      const lastReauth = Number(sessionStorage.getItem('pairbudget_reauth_ts') || 0);
-      if (Date.now() - lastReauth > 20000) {
-        sessionStorage.setItem('pairbudget_reauth_ts', String(Date.now()));
-        if (!liff.isInClient()) {
-          try { liff.logout(); } catch (_) {}
-        }
-        liff.login({ redirectUri: window.location.href.split('#')[0] });
-        return 'redirect';
-      }
     }
     state.liffReady = true;
     // プロフィール取得はバックグラウンドで行い、初期データ取得をブロックしない
