@@ -64,7 +64,7 @@ const state = {
   isMockMode: false,
   liffReady: false,
   privacyMask: localStorage.getItem('pairbudget_privacy_mask') === 'true',
-  gasApiUrl: localStorage.getItem('pairbudget_api_url') || localStorage.getItem('pairbudget_gas_url') || APP_CONFIG.API_URL || APP_CONFIG.GAS_URL || '',
+  gasApiUrl: APP_CONFIG.API_URL || localStorage.getItem('pairbudget_api_url') || '/api/budget',
   trendRange: 12,
   categoryChart: null,
   trendChart: null,
@@ -75,7 +75,15 @@ const state = {
     husband: { baseContribution: 60000, privateOnSharedCard: 0, advancedForShared: 0, totalTransfer: 60000, isPaid: false },
     wife: { baseContribution: 60000, privateOnSharedCard: 0, advancedForShared: 0, totalTransfer: 60000, isPaid: false }
   },
-  config: { husbandBaseContribution: 60000, wifeBaseContribution: 60000, husbandName: 'メンバー1', wifeName: 'メンバー2' },
+  config: {
+    husbandBaseContribution: 60000,
+    wifeBaseContribution: 60000,
+    husbandName: 'メンバー1',
+    wifeName: 'メンバー2',
+    husbandColor: localStorage.getItem('pairbudget_member1_color') || 'emerald',
+    wifeColor: localStorage.getItem('pairbudget_member2_color') || 'amber'
+  },
+  members: [], // マルチメンバー（ふたり〜シェアハウス対応）
   transactions: [],
   receiptItems: [],
   monthlyTotals: [],
@@ -83,6 +91,270 @@ const state = {
   fixedExpenses: [],
   categories: [],
   rules: []
+};
+
+// ==========================================
+// ジェンダーフリー・カラーパレット (8色)
+// ==========================================
+const MEMBER_COLOR_PALETTE = {
+  emerald: { key: 'emerald', name: 'エメラルド', hex: '#10b981', bgHex: '#10b98118', borderHex: '#10b98140' },
+  indigo:  { key: 'indigo',  name: 'インディゴ', hex: '#6366f1', bgHex: '#6366f118', borderHex: '#6366f140' },
+  amber:   { key: 'amber',   name: 'アンバー',   hex: '#f59e0b', bgHex: '#f59e0b18', borderHex: '#f59e0b40' },
+  rose:    { key: 'rose',    name: 'ローズ',     hex: '#f43f5e', bgHex: '#f43f5e18', borderHex: '#f43f5e40' },
+  violet:  { key: 'violet',  name: 'バイオレット', hex: '#8b5cf6', bgHex: '#8b5cf618', borderHex: '#8b5cf640' },
+  teal:    { key: 'teal',    name: 'ティール',   hex: '#14b8a6', bgHex: '#14b8a618', borderHex: '#14b8a640' },
+  sky:     { key: 'sky',     name: 'スカイ',     hex: '#0ea5e9', bgHex: '#0ea5e918', borderHex: '#0ea5e940' },
+  orange:  { key: 'orange',  name: 'オレンジ',   hex: '#f97316', bgHex: '#f9731618', borderHex: '#f9731640' }
+};
+
+// ==========================================
+// マルチメンバー（シェアハウス対応）状態管理
+// ==========================================
+function initMembers() {
+  const saved = localStorage.getItem('pairbudget_members');
+  if (saved) {
+    try {
+      const parsed = JSON.parse(saved);
+      if (Array.isArray(parsed) && parsed.length >= 1) {
+        state.members = parsed;
+        syncStateConfigFromMembers();
+        return;
+      }
+    } catch (_) {}
+  }
+
+  // 初期デフォルト2人（後方互換）
+  state.members = [
+    {
+      id: 'm1',
+      name: state.config.husbandName || 'メンバー1',
+      slot: 'husband',
+      color: state.config.husbandColor || localStorage.getItem('pairbudget_member1_color') || 'emerald',
+      baseContribution: Number(state.config.husbandBaseContribution) || 60000,
+      isPaid: !!state.transfers.husband?.isPaid
+    },
+    {
+      id: 'm2',
+      name: state.config.wifeName || 'メンバー2',
+      slot: 'wife',
+      color: state.config.wifeColor || localStorage.getItem('pairbudget_member2_color') || 'amber',
+      baseContribution: Number(state.config.wifeBaseContribution) || 60000,
+      isPaid: !!state.transfers.wife?.isPaid
+    }
+  ];
+  syncStateConfigFromMembers();
+}
+initMembers();
+
+function syncStateConfigFromMembers() {
+  if (!state.members || !state.members.length) return;
+  state.config.husbandName = state.members[0]?.name || 'メンバー1';
+  state.config.husbandColor = state.members[0]?.color || 'emerald';
+  state.config.husbandBaseContribution = state.members[0]?.baseContribution || 60000;
+
+  if (state.members.length > 1) {
+    state.config.wifeName = state.members[1]?.name || 'メンバー2';
+    state.config.wifeColor = state.members[1]?.color || 'amber';
+    state.config.wifeBaseContribution = state.members[1]?.baseContribution || 60000;
+  }
+}
+
+function saveMembersToStorage() {
+  try {
+    localStorage.setItem('pairbudget_members', JSON.stringify(state.members));
+    if (state.members[0]) {
+      localStorage.setItem('pairbudget_member1_color', state.members[0].color);
+    }
+    if (state.members[1]) {
+      localStorage.setItem('pairbudget_member2_color', state.members[1].color);
+    }
+  } catch (_) {}
+}
+
+function getMemberColor(slotOrName) {
+  if (!slotOrName) return MEMBER_COLOR_PALETTE.emerald;
+  const target = String(slotOrName).trim();
+  const found = (state.members || []).find(m => m.id === target || m.slot === target || m.name === target);
+  if (found && found.color && MEMBER_COLOR_PALETTE[found.color]) {
+    return MEMBER_COLOR_PALETTE[found.color];
+  }
+  if (target === 'husband') return MEMBER_COLOR_PALETTE[state.config.husbandColor] || MEMBER_COLOR_PALETTE.emerald;
+  if (target === 'wife') return MEMBER_COLOR_PALETTE[state.config.wifeColor] || MEMBER_COLOR_PALETTE.amber;
+  return MEMBER_COLOR_PALETTE.emerald;
+}
+
+function applyMemberColors() {
+  renderTransferCard();
+  updatePayerDropdowns();
+}
+
+// 支出モーダルの支払者動的チップ描画
+let currentSelectedExpensePayer = 'メンバー1';
+function renderExpensePayerChips(selectedPayer = null) {
+  const container = $('expensePayerContainer');
+  if (!container) return;
+  if (selectedPayer) currentSelectedExpensePayer = selectedPayer;
+
+  container.innerHTML = '';
+  const options = [...(state.members || []).map(m => ({ label: m.name, value: m.name, color: getMemberColor(m.color) })), { label: '共同', value: '共同', color: { hex: '#10b981', bgHex: '#10b98118' } }];
+
+  options.forEach(opt => {
+    const isSelected = opt.value === currentSelectedExpensePayer;
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    btn.className = `px-3 py-1.5 rounded-xl text-xs font-bold transition-all border flex items-center gap-1.5 ${
+      isSelected ? 'shadow-sm scale-102' : 'bg-slate-50 border-slate-200 text-slate-600 hover:bg-slate-100'
+    }`;
+    if (isSelected) {
+      btn.style.backgroundColor = opt.color.hex;
+      btn.style.borderColor = opt.color.hex;
+      btn.style.color = '#ffffff';
+    }
+    btn.innerHTML = `<span class="w-2 h-2 rounded-full ${isSelected ? 'bg-white' : ''}" style="${!isSelected ? `background-color: ${opt.color.hex}` : ''}"></span> ${esc(opt.label)}`;
+    btn.onclick = () => {
+      currentSelectedExpensePayer = opt.value;
+      renderExpensePayerChips(opt.value);
+    };
+    container.appendChild(btn);
+  });
+}
+
+// ドロップダウン（レシートモーダル＆履歴フィルタ）を動的メンバーに更新
+function updatePayerDropdowns() {
+  const receiptSelect = $('receiptPayer');
+  if (receiptSelect) {
+    const prev = receiptSelect.value;
+    receiptSelect.innerHTML = (state.members || []).map(m => `<option value="${esc(m.name)}">${esc(m.name)}</option>`).join('') + '<option value="共同">共同</option>';
+    if (prev) receiptSelect.value = prev;
+  }
+
+  const historyFilter = $('historyPayerFilter');
+  if (historyFilter) {
+    const prev = historyFilter.value;
+    historyFilter.innerHTML = '<option value="all">全メンバー</option>' + (state.members || []).map(m => `<option value="${esc(m.name)}">${esc(m.name)}</option>`).join('') + '<option value="共同">共同</option>';
+    if (prev) historyFilter.value = prev;
+  }
+}
+
+// 設定タブのメンバー管理カード一覧を描画
+function renderSettingMembersList() {
+  const container = $('settingMembersList');
+  if (!container) return;
+  container.innerHTML = '';
+
+  (state.members || []).forEach((member, idx) => {
+    const mColor = getMemberColor(member.color);
+    const card = document.createElement('div');
+    card.className = 'p-3 rounded-xl bg-slate-50 border transition-all space-y-2';
+    card.style.borderColor = `${mColor.hex}50`;
+    card.style.backgroundColor = `${mColor.hex}08`;
+
+    // カラーサークル一覧
+    const colorButtonsHtml = Object.values(MEMBER_COLOR_PALETTE).map(col => {
+      const isSelected = col.key === member.color;
+      return `<button type="button" data-member-idx="${idx}" data-color-key="${col.key}" title="${col.name}" class="w-6 h-6 rounded-full transition-transform active:scale-95 flex items-center justify-center text-white text-[10px] font-black ${
+        isSelected ? 'ring-2 ring-offset-2 ring-slate-800 scale-110 shadow-sm' : 'opacity-85 hover:opacity-100 hover:scale-105'
+      }" style="background-color: ${col.hex}">${isSelected ? '✓' : ''}</button>`;
+    }).join('');
+
+    card.innerHTML = `
+      <div class="flex items-center justify-between pb-1">
+        <span class="text-xs font-bold flex items-center gap-1.5" style="color: ${mColor.hex}">
+          <span class="w-2.5 h-2.5 rounded-full" style="background-color: ${mColor.hex}"></span>
+          メンバー ${idx + 1}
+        </span>
+        ${state.members.length > 2 ? `<button type="button" data-action="remove-member" data-id="${member.id}" class="text-rose-500 hover:text-rose-700 text-xs font-bold p-1 flex items-center gap-0.5"><i data-lucide="trash-2" class="w-3.5 h-3.5"></i> 削除</button>` : ''}
+      </div>
+      <div class="grid grid-cols-2 gap-2">
+        <div>
+          <label class="text-[10px] font-bold text-slate-500 block mb-0.5">表示名</label>
+          <input type="text" data-member-idx="${idx}" data-field="name" maxlength="15" value="${esc(member.name)}"
+                 class="w-full bg-white border border-slate-200 rounded-lg px-2.5 py-1.5 text-xs font-bold text-slate-800 focus:outline-none">
+        </div>
+        <div>
+          <label class="text-[10px] font-bold text-slate-500 block mb-0.5">基本拠出額 (円)</label>
+          <input type="number" data-member-idx="${idx}" data-field="base" value="${member.baseContribution}"
+                 class="w-full bg-white border border-slate-200 rounded-lg px-2.5 py-1.5 text-xs font-mono focus:outline-none">
+        </div>
+      </div>
+      <div>
+        <span class="text-[10px] font-bold text-slate-500 block mb-1">テーマカラー</span>
+        <div class="flex flex-wrap gap-1.5">${colorButtonsHtml}</div>
+      </div>
+    `;
+
+    // カラーピッカーイベント
+    card.querySelectorAll('button[data-color-key]').forEach(btn => {
+      btn.onclick = () => {
+        const cKey = btn.dataset.colorKey;
+        member.color = cKey;
+        saveMembersToStorage();
+        syncStateConfigFromMembers();
+        renderSettingMembersList();
+        renderTransferCard();
+        renderExpensePayerChips();
+        renderRecentTransactions();
+        renderHistoryList();
+      };
+    });
+
+    // 入力値バインド
+    card.querySelectorAll('input[data-field]').forEach(input => {
+      input.oninput = () => {
+        const field = input.dataset.field;
+        if (field === 'name') member.name = input.value.trim() || `メンバー${idx + 1}`;
+        if (field === 'base') member.baseContribution = Number(input.value) || 0;
+        syncStateConfigFromMembers();
+      };
+    });
+
+    // 削除ボタン
+    const delBtn = card.querySelector('[data-action="remove-member"]');
+    if (delBtn) {
+      delBtn.onclick = () => removeMemberSlot(member.id);
+    }
+
+    container.appendChild(card);
+  });
+  lucide.createIcons();
+}
+
+window.addNewMemberSlot = function () {
+  const count = state.members.length + 1;
+  const usedColors = state.members.map(m => m.color);
+  const nextColor = Object.keys(MEMBER_COLOR_PALETTE).find(c => !usedColors.includes(c)) || 'emerald';
+
+  state.members.push({
+    id: 'm_' + Date.now().toString(36),
+    name: `メンバー${count}`,
+    slot: `slot_${count}`,
+    color: nextColor,
+    baseContribution: 60000,
+    isPaid: false
+  });
+
+  saveMembersToStorage();
+  syncStateConfigFromMembers();
+  renderSettingMembersList();
+  renderTransferCard();
+  renderExpensePayerChips();
+  updatePayerDropdowns();
+  showToast(`「メンバー${count}」を追加しました`);
+};
+
+window.removeMemberSlot = function (id) {
+  if (state.members.length <= 2) {
+    showToast('メンバーは最低2名必要です');
+    return;
+  }
+  state.members = state.members.filter(m => m.id !== id);
+  saveMembersToStorage();
+  syncStateConfigFromMembers();
+  renderSettingMembersList();
+  renderTransferCard();
+  renderExpensePayerChips();
+  updatePayerDropdowns();
+  showToast('メンバーを削除しました');
 };
 
 function memberName(slot) {
@@ -497,47 +769,163 @@ function handleApiError(res) {
   showToast(res.error || 'エラーが発生しました');
 }
 
-function openRegisterModal(availableRoles) {
-  const canHusband = Array.isArray(availableRoles) ? availableRoles.includes('夫') : (availableRoles && typeof availableRoles === 'object' ? !!availableRoles.husband : true);
-  const canWife = Array.isArray(availableRoles) ? availableRoles.includes('妻') : (availableRoles && typeof availableRoles === 'object' ? !!availableRoles.wife : true);
-  const hName = (availableRoles && availableRoles.husbandName) || memberName('husband');
-  const wName = (availableRoles && availableRoles.wifeName) || memberName('wife');
-  $('registerHusbandBtn').disabled = !canHusband;
-  $('registerWifeBtn').disabled = !canWife;
-  $('registerHusbandBtn').textContent = canHusband ? '🔵 枠1（ブルー）で登録' : `🔵 ${hName}（登録済）`;
-  $('registerWifeBtn').textContent = canWife ? '🩷 枠2（ピンク）で登録' : `🩷 ${wName}（登録済）`;
-  if ($('registerNameInput') && !$('registerNameInput').value && state.liffDisplayName) {
-    $('registerNameInput').value = state.liffDisplayName;
+window.switchOnboardingTab = function (tab) {
+  const isCreate = tab === 'create';
+  $('onboardingCreateForm')?.classList.toggle('hidden', !isCreate);
+  $('onboardingJoinForm')?.classList.toggle('hidden', isCreate);
+  const createBtn = $('tabOnboardingCreateBtn');
+  const joinBtn = $('tabOnboardingJoinBtn');
+  if (createBtn && joinBtn) {
+    if (isCreate) {
+      createBtn.className = 'py-2 rounded-lg bg-white text-brand-700 shadow-sm transition-all flex items-center justify-center gap-1.5 font-bold';
+      joinBtn.className = 'py-2 rounded-lg text-slate-500 hover:text-slate-800 transition-all flex items-center justify-center gap-1.5 font-medium';
+    } else {
+      createBtn.className = 'py-2 rounded-lg text-slate-500 hover:text-slate-800 transition-all flex items-center justify-center gap-1.5 font-medium';
+      joinBtn.className = 'py-2 rounded-lg bg-white text-indigo-700 shadow-sm transition-all flex items-center justify-center gap-1.5 font-bold';
+    }
   }
-  $('registerMemberModal').classList.remove('hidden');
+  lucide.createIcons();
+};
+
+function openRegisterModal(opts = {}) {
+  const modal = $('registerMemberModal');
+  if (!modal) return;
+
+  // ステップ1（入力）を表示、ステップ2（完了）を非表示
+  $('onboardingStepForm')?.classList.remove('hidden');
+  $('onboardingStepComplete')?.classList.add('hidden');
+
+  // URLパラメータまたは引数の招待コードをチェック
+  let inviteCode = opts.inviteCode || '';
+  if (!inviteCode) {
+    try {
+      const urlParams = new URLSearchParams(window.location.search);
+      inviteCode = urlParams.get('invite') || '';
+    } catch (_) {}
+  }
+
+  if (inviteCode) {
+    switchOnboardingTab('join');
+    if ($('onboardingJoinCode')) $('onboardingJoinCode').value = inviteCode.toUpperCase().trim();
+  } else {
+    switchOnboardingTab('create');
+  }
+
+  // LIFF表示名があれば入力欄にセット
+  if (state.liffDisplayName) {
+    if ($('onboardingCreatorName') && !$('onboardingCreatorName').value) {
+      $('onboardingCreatorName').value = state.liffDisplayName;
+    }
+    if ($('onboardingJoinName') && !$('onboardingJoinName').value) {
+      $('onboardingJoinName').value = state.liffDisplayName;
+    }
+  }
+
+  modal.classList.remove('hidden');
+  lucide.createIcons();
 }
 
-async function submitRegisterMember(slot) {
-  const name = ($('registerNameInput') ? $('registerNameInput').value : '').trim();
-  if (!name) {
-    showToast('あなたの表示名（ニックネーム）を入力してください');
-    if ($('registerNameInput')) $('registerNameInput').focus();
+async function submitOnboardingCreate(e) {
+  if (e) e.preventDefault();
+  const userName = $('onboardingCreatorName')?.value.trim();
+  const groupName = $('onboardingGroupName')?.value.trim() || 'ふたりの家計簿';
+  if (!userName) {
+    showToast('あなたのニックネームを入力してください');
+    $('onboardingCreatorName')?.focus();
     return;
   }
-  if (['共同', 'all', '未認証', '自動計上'].includes(name)) {
-    showToast(`「${name}」は表示名に使用できません`);
-    return;
-  }
-  const registerCode = $('registerCodeInput').value.trim();
-  $('registerHusbandBtn').disabled = true;
-  $('registerWifeBtn').disabled = true;
-  showToast('メンバー登録しています…', { loading: true });
-  const res = await api('registerMember', { slot, name, role: slot === 'wife' ? '妻' : '夫', registerCode });
+  showToast('家計簿グループを作成中…', { loading: true });
+  const res = await api('createPair', { name: groupName, userName });
+  hideToast();
   if (!res.success) {
-    showToast(res.error || '登録に失敗しました');
-    openRegisterModal(res.availableRoles);
+    showToast(res.error || 'グループの作成に失敗しました');
     return;
   }
-  $('registerMemberModal').classList.add('hidden');
-  hideBanner();
-  showToast(res.message || `「${name}」として登録しました！`);
-  await loadInitialData(state.viewMonth, { silent: true });
+
+  // 作成成功: 状態とストレージを更新
+  state.pairId = res.pair.id;
+  state.pairName = res.pair.name;
+  state.inviteCode = res.pair.inviteCode;
+  state.currentUser = userName;
+  localStorage.setItem('pairbudget_pair_id', res.pair.id);
+  localStorage.setItem('pairbudget_pair_name', res.pair.name);
+  localStorage.setItem('pairbudget_invite_code', res.pair.inviteCode);
+  updatePairHeader();
+
+  // ステップ2（完了画面）を表示
+  if ($('onboardingGeneratedCode')) $('onboardingGeneratedCode').textContent = res.pair.inviteCode;
+  $('onboardingStepForm')?.classList.add('hidden');
+  $('onboardingStepComplete')?.classList.remove('hidden');
+  lucide.createIcons();
+  showToast('グループを作成しました！🎉');
 }
+
+async function submitOnboardingJoin(e) {
+  if (e) e.preventDefault();
+  const inviteCode = $('onboardingJoinCode')?.value.trim().toUpperCase();
+  const userName = $('onboardingJoinName')?.value.trim();
+  if (!inviteCode) {
+    showToast('招待コードを入力してください');
+    $('onboardingJoinCode')?.focus();
+    return;
+  }
+  if (!userName) {
+    showToast('あなたのニックネームを入力してください');
+    $('onboardingJoinName')?.focus();
+    return;
+  }
+  showToast('グループに参加中…', { loading: true });
+  const res = await api('joinPair', { inviteCode, name: userName });
+  hideToast();
+  if (!res.success) {
+    showToast(res.error || 'グループへの参加に失敗しました');
+    return;
+  }
+
+  state.pairId = res.pair.id;
+  state.pairName = res.pair.name;
+  state.inviteCode = res.pair.inviteCode;
+  state.currentUser = userName;
+  localStorage.setItem('pairbudget_pair_id', res.pair.id);
+  localStorage.setItem('pairbudget_pair_name', res.pair.name);
+  localStorage.setItem('pairbudget_invite_code', res.pair.inviteCode);
+  updatePairHeader();
+
+  $('registerMemberModal')?.classList.add('hidden');
+  hideBanner();
+  showToast(`グループ「${res.pair.name}」に参加しました！🤝`);
+  await loadInitialData(state.viewMonth, { skipCache: true });
+}
+
+window.copyOnboardingCode = function () {
+  const code = state.inviteCode || $('onboardingGeneratedCode')?.textContent.trim();
+  if (!code || code === '------') return;
+  const url = `${window.location.origin}${window.location.pathname}?invite=${code}`;
+  const text = `ふたりの家計簿に招待されました！\nグループ: ${state.pairName || 'ふたりの家計簿'}\n招待コード: ${code}\n参加はこちら: ${url}`;
+  if (navigator.clipboard && navigator.clipboard.writeText) {
+    navigator.clipboard.writeText(text).then(() => {
+      showToast('招待メッセージをコピーしました！LINE等で送信してください');
+    }).catch(() => {
+      prompt('以下の招待コードをコピーしてください:', code);
+    });
+  } else {
+    prompt('以下の招待コードをコピーしてください:', code);
+  }
+};
+
+window.shareOnboardingViaLine = function () {
+  const code = state.inviteCode || $('onboardingGeneratedCode')?.textContent.trim();
+  if (!code || code === '------') return;
+  const url = `${window.location.origin}${window.location.pathname}?invite=${code}`;
+  const text = `ふたりの家計簿に招待されました！\nグループ: ${state.pairName || 'ふたりの家計簿'}\n招待コード: ${code}\nここから参加してね👇\n${url}`;
+  window.open(`https://line.me/R/msg/text/?${encodeURIComponent(text)}`, '_blank');
+};
+
+window.finishOnboarding = function () {
+  $('registerMemberModal')?.classList.add('hidden');
+  hideBanner();
+  loadInitialData(state.viewMonth, { skipCache: true });
+};
 
 function showBanner(msg, kind) {
   const banner = $('mockBanner');
@@ -628,13 +1016,23 @@ function applyData(data) {
   state.summary = data.summary || state.summary;
   state.transfers = data.transfers || state.transfers;
   state.backendVersion = data.version || (state.isMockMode ? 'demo' : 'v2.1以下 (未更新)');
-  if (data.config) {
+  if (data.members && Array.isArray(data.members) && data.members.length > 0) {
+    state.members = data.members;
+    syncStateConfigFromMembers();
+    saveMembersToStorage();
+  } else if (data.config) {
     state.config = {
       husbandBaseContribution: Number(data.config.husbandBaseContribution) || 60000,
       wifeBaseContribution: Number(data.config.wifeBaseContribution) || 60000,
       husbandName: data.config.husbandName || 'メンバー1',
       wifeName: data.config.wifeName || 'メンバー2'
     };
+    if (state.members && state.members.length >= 2) {
+      if (data.config.husbandName) state.members[0].name = data.config.husbandName;
+      if (data.config.husbandBaseContribution) state.members[0].baseContribution = Number(data.config.husbandBaseContribution);
+      if (data.config.wifeName) state.members[1].name = data.config.wifeName;
+      if (data.config.wifeBaseContribution) state.members[1].baseContribution = Number(data.config.wifeBaseContribution);
+    }
   }
   if (data.pair) {
     state.pairId = data.pair.id;
@@ -702,26 +1100,89 @@ function renderMonthNav() {
 }
 
 function renderTransferCard() {
-  [['husband', '夫', 'blue'], ['wife', '妻', 'pink']].forEach(([key, who, color]) => {
-    const t = state.transfers[key];
-    $(`${key}Amount`).textContent = yen(t.totalTransfer);
-    $(`${key}Breakdown`).innerHTML =
-      `<div>基本: ${yen(t.baseContribution)}</div><div>私物: +${yen(t.privateOnSharedCard)} / 立替: -${yen(t.advancedForShared)}</div>`;
-    const badge = $(`${key}StatusBadge`);
-    const btn = $(`${key}PayToggle`);
-    if (t.isPaid) {
-      badge.textContent = '振込済';
-      badge.className = 'text-[10px] px-1.5 py-0.5 rounded-full bg-emerald-500/20 text-emerald-300 font-bold';
-      btn.innerHTML = '<i data-lucide="check" class="w-3.5 h-3.5"></i> 振込済み（取消）';
-      btn.className = 'mt-2.5 w-full py-1.5 rounded-lg text-xs font-bold bg-slate-700 text-slate-300 flex items-center justify-center gap-1';
-    } else {
-      badge.textContent = '未完了';
-      badge.className = 'text-[10px] px-1.5 py-0.5 rounded-full bg-amber-500/20 text-amber-300 font-medium';
-      btn.innerHTML = '<i data-lucide="check-circle" class="w-3.5 h-3.5"></i> 振込済みにする';
-      btn.className = `mt-2.5 w-full py-1.5 rounded-lg text-xs font-bold bg-${color}-600 hover:bg-${color}-500 text-white flex items-center justify-center gap-1`;
-    }
+  const container = $('transferCardsContainer');
+  if (!container) return;
+
+  const count = state.members.length;
+  container.className = count === 2
+    ? 'grid grid-cols-2 gap-3'
+    : 'grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3';
+
+  container.innerHTML = '';
+
+  state.members.forEach((member, idx) => {
+    const mColor = getMemberColor(member.color);
+    const mName = member.name;
+
+    // 当月の私物利用額（共同カードで私物を買った額）
+    const privateOnShared = state.transactions
+      .filter(t => !t.isShared && t.paymentType === 'shared_card' && isSameMember(t.payer, mName))
+      .reduce((sum, t) => sum + Number(t.amount || 0), 0);
+
+    // 当月の個人立替額（自分の財布で共同支出を立替えた額）
+    const advancedForShared = state.transactions
+      .filter(t => t.isShared && t.paymentType === 'advanced_by_user' && isSameMember(t.payer, mName))
+      .reduce((sum, t) => sum + Number(t.amount || 0), 0);
+
+    const baseContribution = Number(member.baseContribution) || 0;
+    const totalTransfer = Math.max(0, baseContribution + privateOnShared - advancedForShared);
+    const isPaid = !!member.isPaid;
+
+    const card = document.createElement('div');
+    card.className = 'bg-slate-800/80 rounded-xl p-3 border border-slate-700 transition-colors flex flex-col justify-between';
+    card.style.borderColor = `${mColor.hex}40`;
+
+    const statusBadge = isPaid
+      ? '<span class="text-[10px] px-1.5 py-0.5 rounded-full bg-emerald-500/20 text-emerald-300 font-bold shrink-0">振込済</span>'
+      : '<span class="text-[10px] px-1.5 py-0.5 rounded-full bg-amber-500/20 text-amber-300 font-medium shrink-0">未完了</span>';
+
+    const btnHtml = isPaid
+      ? `<button type="button" data-member-id="${esc(member.id)}" class="mt-2.5 w-full py-1.5 rounded-lg text-xs font-bold bg-slate-700 text-slate-300 flex items-center justify-center gap-1 transition-opacity hover:opacity-90">
+           <i data-lucide="check" class="w-3.5 h-3.5"></i> 振込済み（取消）
+         </button>`
+      : `<button type="button" data-member-id="${esc(member.id)}" class="mt-2.5 w-full py-1.5 rounded-lg text-xs font-bold text-white flex items-center justify-center gap-1 shadow-sm transition-opacity hover:opacity-90" style="background-color: ${mColor.hex}">
+           <i data-lucide="check-circle" class="w-3.5 h-3.5"></i> 振込済みにする
+         </button>`;
+
+    card.innerHTML = `
+      <div>
+        <div class="flex items-center justify-between mb-1.5">
+          <span class="text-xs font-bold flex items-center gap-1 truncate" style="color: ${mColor.hex}">
+            <i data-lucide="user" class="w-3 h-3 shrink-0"></i> <span class="truncate">${esc(mName)}</span>の振込
+          </span>
+          ${statusBadge}
+        </div>
+        <div class="text-lg font-black text-white">${yen(totalTransfer)}</div>
+        <div class="text-[10px] text-slate-400 mt-1 space-y-0.5">
+          <div>基本: ${yen(baseContribution)}</div>
+          <div>私物: +${yen(privateOnShared)} / 立替: -${yen(advancedForShared)}</div>
+        </div>
+      </div>
+      <div>${btnHtml}</div>
+    `;
+
+    // 振込ステータストグル
+    card.querySelector('button[data-member-id]')?.addEventListener('click', () => {
+      toggleMemberTransferStatus(member.id);
+    });
+
+    container.appendChild(card);
   });
+
+  lucide.createIcons();
 }
+
+window.toggleMemberTransferStatus = async function (memberId) {
+  const member = state.members.find(m => m.id === memberId);
+  if (!member) return;
+  member.isPaid = !member.isPaid;
+  saveMembersToStorage();
+  renderTransferCard();
+
+  // 後方互換API呼び出し
+  const slot = member.slot || 'husband';
+  writeAndRefresh('updateTransferStatus', { month: state.viewMonth, slot, payer: member.name, isPaid: member.isPaid }, `${member.name}の振込ステータスを更新しました`, '更新中…').catch(() => {});
+};
 
 function renderBudgetSummary() {
   const s = state.summary;
@@ -822,7 +1283,10 @@ function createTransactionRow(item, isEditable) {
   const slot = resolvePayerSlot(item.payer);
   const payerName = displayPayerName(item.payer);
   const badgeText = payerName.slice(0, 2);
-  const payerColor = slot === 'husband' ? 'text-blue-500 bg-blue-50' : slot === 'wife' ? 'text-pink-500 bg-pink-50' : 'text-slate-500 bg-slate-100';
+  const mColor = getMemberColor(slot);
+  const badgeStyle = slot === 'shared'
+    ? 'background-color: #f1f5f9; color: #64748b; border: 1px solid #e2e8f0;'
+    : `background-color: ${mColor.bgHex}; color: ${mColor.hex}; border: 1px solid ${mColor.borderHex};`;
   const items = item.receiptId && !masked ? state.receiptItems.filter(it => it.receiptId === item.receiptId) : [];
 
   const actions = isEditable ? `
@@ -831,7 +1295,7 @@ function createTransactionRow(item, isEditable) {
 
   const head = `
     <div class="flex items-center gap-2.5 min-w-0">
-      <span class="w-7 h-7 shrink-0 rounded-full ${payerColor} flex items-center justify-center text-[10px] font-bold" title="${esc(payerName)}">${esc(badgeText)}</span>
+      <span class="w-7 h-7 shrink-0 rounded-full flex items-center justify-center text-[10px] font-bold" style="${badgeStyle}" title="${esc(payerName)}">${esc(badgeText)}</span>
       <div class="min-w-0">
         <div class="flex items-center gap-1.5 flex-wrap">
           <span class="text-xs font-bold text-slate-800 break-all">${item.receiptId ? '🧾 ' : ''}${esc(title)}</span>${tag}
@@ -928,13 +1392,16 @@ function renderCategoryDropdown() {
 }
 
 function renderSettings() {
-  $('settingBudgetInput').value = state.summary.budget;
+  if ($('settingBudgetInput')) $('settingBudgetInput').value = state.summary.budget;
   if ($('settingHusbandName')) $('settingHusbandName').value = memberName('husband');
   if ($('settingWifeName')) $('settingWifeName').value = memberName('wife');
-  $('settingHusbandBase').value = state.config.husbandBaseContribution;
-  $('settingWifeBase').value = state.config.wifeBaseContribution;
-  $('privacyMaskToggle').checked = state.privacyMask;
-  $('settingGasUrl').value = state.gasApiUrl;
+  if ($('settingHusbandBase')) $('settingHusbandBase').value = state.config.husbandBaseContribution;
+  if ($('settingWifeBase')) $('settingWifeBase').value = state.config.wifeBaseContribution;
+  if ($('privacyMaskToggle')) $('privacyMaskToggle').checked = state.privacyMask;
+
+  // 動的メンバー一覧＆カラー設定を描画
+  renderSettingMembersList();
+  applyMemberColors();
 
   // バージョン表示
   if ($('frontVersionLabel')) $('frontVersionLabel').textContent = FRONTEND_VERSION;
@@ -1211,8 +1678,7 @@ function openExpenseModal(editItem) {
     $('expenseDate').value = editItem.date;
     document.querySelector(`input[name="expenseIsShared"][value="${editItem.isShared}"]`).checked = true;
     const targetPayer = displayPayerName(editItem.payer);
-    const payerRadio = document.querySelector(`input[name="expensePayer"][value="${CSS.escape(targetPayer)}"]`);
-    if (payerRadio) payerRadio.checked = true;
+    renderExpensePayerChips(targetPayer);
     const locked = !!editItem.receiptId;
     $('expenseAmount').disabled = locked;
     $('expenseTitle').disabled = locked;
@@ -1227,9 +1693,8 @@ function openExpenseModal(editItem) {
     lockNote.classList.add('hidden');
     del.classList.add('hidden');
     $('scanReceiptLabel').classList.remove('hidden');
-    const myName = memberName(state.currentSlot);
-    const payerRadio = document.querySelector(`input[name="expensePayer"][value="${CSS.escape(myName)}"]`);
-    if (payerRadio) payerRadio.checked = true;
+    const myName = state.currentUser || memberName(state.currentSlot);
+    renderExpensePayerChips(myName);
   }
   $('expenseModal').classList.remove('hidden');
   lucide.createIcons();
@@ -1250,7 +1715,7 @@ async function handleExpenseSubmit(e) {
     category: $('expenseCategory').value,
     isShared: document.querySelector('input[name="expenseIsShared"]:checked').value === 'true',
     paymentType: $('expensePaymentType').value,
-    payer: document.querySelector('input[name="expensePayer"]:checked').value,
+    payer: currentSelectedExpensePayer || document.querySelector('input[name="expensePayer"]:checked')?.value || state.currentUser || '共同',
     memo: ''
   };
   const existing = id ? state.transactions.find(t => t.id === id) : null;
@@ -1436,18 +1901,59 @@ async function handleSaveBudget() {
 }
 
 async function handleBaseChange() {
-  const husbandName = ($('settingHusbandName') ? $('settingHusbandName').value : memberName('husband')).trim();
-  const wifeName = ($('settingWifeName') ? $('settingWifeName').value : memberName('wife')).trim();
-  if (!husbandName || !wifeName) { showToast('ふたりの表示名を入力してください'); return; }
-  if (husbandName === wifeName) { showToast('ふたりの表示名は異なる名前にしてください'); return; }
-  if (['共同', 'all', '未認証', '自動計上'].includes(husbandName) || ['共同', 'all', '未認証', '自動計上'].includes(wifeName)) {
+  // 動的メンバー入力フィールドから最新値を反映
+  const container = $('settingMembersList');
+  if (container) {
+    const inputs = container.querySelectorAll('input[data-field]');
+    inputs.forEach(input => {
+      const idx = parseInt(input.dataset.memberIdx, 10);
+      const field = input.dataset.field;
+      if (state.members[idx]) {
+        if (field === 'name') state.members[idx].name = input.value.trim() || `メンバー${idx + 1}`;
+        if (field === 'base') state.members[idx].baseContribution = parseInt(input.value, 10) || 0;
+      }
+    });
+  }
+
+  // 名前の重複・予約語チェック
+  const names = (state.members || []).map(m => (m.name || '').trim());
+  if (names.some(n => !n)) {
+    showToast('メンバーの表示名を入力してください');
+    return;
+  }
+  const uniqueNames = new Set(names);
+  if (uniqueNames.size !== names.length) {
+    showToast('メンバーの表示名は重複しない名前にしてください');
+    return;
+  }
+  const reservedWords = ['共同', 'all', '未認証', '自動計上'];
+  if (names.some(n => reservedWords.includes(n))) {
     showToast('「共同」などの予約語は表示名に使用できません');
     return;
   }
-  const husband = parseInt($('settingHusbandBase').value, 10);
-  const wife = parseInt($('settingWifeBase').value, 10);
-  if (!Number.isInteger(husband) || !Number.isInteger(wife) || husband < 0 || wife < 0) { showToast('基本拠出額を正しく入力してください'); return; }
-  await writeAndRefresh('updateBaseContribution', { husband, wife, husbandName, wifeName }, '表示名・基本拠出額を保存しました', '設定を保存しています…');
+  if (state.members.some(m => !Number.isInteger(m.baseContribution) || m.baseContribution < 0)) {
+    showToast('基本拠出額を正しく入力してください');
+    return;
+  }
+
+  // メンバー設定を保存
+  saveMembersToStorage();
+  syncStateConfigFromMembers();
+  applyMemberColors();
+
+  // 後方互換パラメータ作成
+  const husband = state.members[0]?.baseContribution || 0;
+  const wife = state.members[1]?.baseContribution || 0;
+  const husbandName = state.members[0]?.name || 'メンバー1';
+  const wifeName = state.members[1]?.name || 'メンバー2';
+
+  await writeAndRefresh('updateBaseContribution', {
+    husband,
+    wife,
+    husbandName,
+    wifeName,
+    members: state.members
+  }, 'メンバー設定（表示名・基本拠出・カラー）を保存しました', '設定を保存しています…');
 }
 
 async function toggleTransferStatus(slot) {
@@ -1564,10 +2070,10 @@ function setupEventListeners() {
     renderTrendChart();
   });
 
-  $('saveBudgetBtn').addEventListener('click', handleSaveBudget);
+  if ($('saveBudgetBtn')) $('saveBudgetBtn').addEventListener('click', handleSaveBudget);
   if ($('saveMemberSettingsBtn')) $('saveMemberSettingsBtn').addEventListener('click', handleBaseChange);
-  $('settingHusbandBase').addEventListener('change', handleBaseChange);
-  $('settingWifeBase').addEventListener('change', handleBaseChange);
+  if ($('settingHusbandBase')) $('settingHusbandBase').addEventListener('change', handleBaseChange);
+  if ($('settingWifeBase')) $('settingWifeBase').addEventListener('change', handleBaseChange);
   $('privacyMaskToggle').addEventListener('change', e => {
     state.privacyMask = e.target.checked;
     localStorage.setItem('pairbudget_privacy_mask', state.privacyMask);
@@ -1577,15 +2083,8 @@ function setupEventListeners() {
     lucide.createIcons();
     showToast('プライバシー設定を更新しました');
   });
-  $('registerHusbandBtn').addEventListener('click', () => submitRegisterMember('husband'));
-  $('registerWifeBtn').addEventListener('click', () => submitRegisterMember('wife'));
-  $('saveGasUrlBtn').addEventListener('click', () => {
-    state.gasApiUrl = $('settingGasUrl').value.trim();
-    localStorage.setItem('pairbudget_api_url', state.gasApiUrl);
-    localStorage.setItem('pairbudget_gas_url', state.gasApiUrl);
-    showToast('API URLを保存しました');
-    loadInitialData();
-  });
+  $('onboardingCreateForm')?.addEventListener('submit', submitOnboardingCreate);
+  $('onboardingJoinForm')?.addEventListener('submit', submitOnboardingJoin);
 
   // モード切替・世帯ペア・臨時イベント リスナー
   $('modeBudgetBtn')?.addEventListener('click', () => switchAppMode('budget'));
@@ -2097,16 +2596,21 @@ function checkUrlInviteParam() {
     if (invite) {
       const code = invite.toUpperCase().trim();
       if ($('joinInviteCodeInput')) $('joinInviteCodeInput').value = code;
-      openPairModal();
+      openRegisterModal({ inviteCode: code });
       showToast(`招待コード「${code}」を検出しました`);
+    } else if (!localStorage.getItem('pairbudget_pair_id')) {
+      // 初回訪問時（ペア未設定）は自動でグループ作成/参加モーダルを案内
+      openRegisterModal();
     }
   } catch (_) {}
 }
 
 document.addEventListener('DOMContentLoaded', async () => {
+  initMembers();
   lucide.createIcons();
   setupEventListeners();
   updatePairHeader();
+  applyMemberColors();
   checkUrlInviteParam();
   // 起動直後にローカルキャッシュがあれば即座に描画して白画面待ちをゼロにする
   const cached = loadInitCache(state.viewMonth);

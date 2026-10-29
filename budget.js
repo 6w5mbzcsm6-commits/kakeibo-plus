@@ -311,6 +311,11 @@ async function getConfigData(supabase, pairId) {
     if (s.key === 'wifeBaseContribution') config.wifeBaseContribution = Number(s.value) || 60000;
     if (s.key === 'husbandName') config.husbandName = s.value;
     if (s.key === 'wifeName') config.wifeName = s.value;
+    if (s.key === 'membersConfig') {
+      try {
+        config.members = JSON.parse(s.value);
+      } catch (_) {}
+    }
   });
 
   (usersRes.data || []).forEach(u => {
@@ -658,6 +663,7 @@ async function handleGetInitialData(supabase, targetMonth, actor, requestedPairI
       husbandName: config.husbandName,
       wifeName: config.wifeName
     },
+    members: config.members || null,
     transfers: transfers,
     summary: summary,
     monthlyTotals: totalsOrder.map(m => totalsMap[m])
@@ -750,15 +756,14 @@ async function handleJoinPair(supabase, idToken, data) {
 
   const pairId = pair.id;
 
-  // ペア内の既存メンバー状況を確認
+  // ペア内の既存メンバー状況を確認（マルチメンバー・シェアハウス対応）
   const { data: members } = await supabase.from('users').select('*').eq('pair_id', pairId);
+  const existingCount = (members || []).length;
   const husbandTaken = (members || []).some(m => m.slot === 'husband' || m.slot === 'slot1');
   const wifeTaken = (members || []).some(m => m.slot === 'wife' || m.slot === 'slot2');
 
-  const slot = !wifeTaken ? 'wife' : (!husbandTaken ? 'husband' : '');
-  if (!slot) {
-    return { success: false, error: 'この世帯ペアは既に2名満員です。' };
-  }
+  // 空いているスロットがあれば優先的に割り当て、3人目以降も動的スロットで無制限に参加可能
+  const slot = !husbandTaken ? 'husband' : (!wifeTaken ? 'wife' : `member_${existingCount + 1}`);
 
   // IDトークン検証
   let userId = '';
@@ -1188,12 +1193,18 @@ async function handleUpdateBaseContribution(supabase, data, actor) {
   }
 
   // 設定更新
-  await Promise.all([
+  const settingsPromises = [
     supabase.from('app_settings').upsert({ pair_id: pairId, key: 'husbandBaseContribution', value: String(hv) }, { onConflict: 'pair_id, key' }),
     supabase.from('app_settings').upsert({ pair_id: pairId, key: 'wifeBaseContribution', value: String(wv) }, { onConflict: 'pair_id, key' }),
     supabase.from('app_settings').upsert({ pair_id: pairId, key: 'husbandName', value: hName }, { onConflict: 'pair_id, key' }),
     supabase.from('app_settings').upsert({ pair_id: pairId, key: 'wifeName', value: wName }, { onConflict: 'pair_id, key' })
-  ]);
+  ];
+  if (Array.isArray(data.members) && data.members.length > 0) {
+    settingsPromises.push(
+      supabase.from('app_settings').upsert({ pair_id: pairId, key: 'membersConfig', value: JSON.stringify(data.members) }, { onConflict: 'pair_id, key' })
+    );
+  }
+  await Promise.all(settingsPromises);
 
   // usersテーブルの名前も更新（スロット表記 husband/slot1, wife/slot2 両対応）
   await Promise.all([

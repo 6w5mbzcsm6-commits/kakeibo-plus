@@ -140,43 +140,9 @@
               </button>
             </div>
 
-            <!-- 2人の振込ステータス並列表示 -->
-            <div class="grid grid-cols-2 gap-3">
-              <!-- メンバー1の振込カード -->
-              <div class="bg-slate-800/80 rounded-xl p-3 border border-slate-700">
-                <div class="flex items-center justify-between mb-1.5">
-                  <span class="text-xs font-bold text-blue-400 flex items-center gap-1 truncate">
-                    <i data-lucide="user" class="w-3 h-3 shrink-0"></i> <span id="husbandNameLabel" class="truncate">メンバー1</span>の振込
-                  </span>
-                  <span id="husbandStatusBadge" class="text-[10px] px-1.5 py-0.5 rounded-full bg-amber-500/20 text-amber-300 font-medium shrink-0">未完了</span>
-                </div>
-                <div class="text-lg font-black text-white" id="husbandAmount">¥60,000</div>
-                <div class="text-[10px] text-slate-400 mt-1 space-y-0.5" id="husbandBreakdown">
-                  <div>基本: ¥60,000</div>
-                  <div>私物: +¥0 / 立替: -¥0</div>
-                </div>
-                <button id="husbandPayToggle" class="mt-2.5 w-full py-1.5 rounded-lg text-xs font-bold bg-blue-600 hover:bg-blue-500 text-white transition-colors flex items-center justify-center gap-1">
-                  <i data-lucide="check-circle" class="w-3.5 h-3.5"></i> 振込済みにする
-                </button>
-              </div>
-
-              <!-- メンバー2の振込カード -->
-              <div class="bg-slate-800/80 rounded-xl p-3 border border-slate-700">
-                <div class="flex items-center justify-between mb-1.5">
-                  <span class="text-xs font-bold text-pink-400 flex items-center gap-1 truncate">
-                    <i data-lucide="user" class="w-3 h-3 shrink-0"></i> <span id="wifeNameLabel" class="truncate">メンバー2</span>の振込
-                  </span>
-                  <span id="wifeStatusBadge" class="text-[10px] px-1.5 py-0.5 rounded-full bg-amber-500/20 text-amber-300 font-medium shrink-0">未完了</span>
-                </div>
-                <div class="text-lg font-black text-white" id="wifeAmount">¥60,000</div>
-                <div class="text-[10px] text-slate-400 mt-1 space-y-0.5" id="wifeBreakdown">
-                  <div>基本: ¥60,000</div>
-                  <div>私物: +¥0 / 立替: -¥0</div>
-                </div>
-                <button id="wifePayToggle" class="mt-2.5 w-full py-1.5 rounded-lg text-xs font-bold bg-pink-600 hover:bg-pink-500 text-white transition-colors flex items-center justify-center gap-1">
-                  <i data-lucide="check-circle" class="w-3.5 h-3.5"></i> 振込済みにする
-                </button>
-              </div>
+            <!-- メンバー別振込カードグリッド (動的レンダリング: ふたり〜シェアハウス対応) -->
+            <div id="transferCardsContainer" class="grid grid-cols-2 gap-3">
+              <!-- JSで全メンバーの振込カードが動的に生成される -->
             </div>
           </section>
 
@@ -392,37 +358,33 @@
             </div>
           </section>
 
-          <!-- ふたりの表示名・基本振込額設定 -->
+          <!-- メンバー管理・基本拠出・カラー設定 (マルチメンバー・シェアハウス対応) -->
           <section class="bg-white rounded-2xl p-4 shadow-sm border border-slate-100 space-y-3">
-            <h3 class="text-sm font-bold text-slate-800 flex items-center gap-1.5">
-              <i data-lucide="users" class="w-4 h-4 text-brand-500"></i> ふたりの表示名・基本拠出額
-            </h3>
-            <p class="text-[11px] text-slate-400">お好きなニックネームや毎月の基本拠出額を自由に設定できます。</p>
-            <div class="grid grid-cols-2 gap-3">
-              <div class="space-y-2 p-2.5 rounded-xl bg-blue-50/50 border border-blue-100">
-                <div>
-                  <label for="settingHusbandName" class="text-[11px] font-bold text-blue-600 block mb-1">🔵 メンバー1の表示名</label>
-                  <input type="text" id="settingHusbandName" maxlength="15" placeholder="例: たろう" class="w-full bg-white border border-slate-200 rounded-lg px-2.5 py-1.5 text-xs font-bold text-slate-800" value="メンバー1">
-                </div>
-                <div>
-                  <label for="settingHusbandBase" class="text-[11px] font-medium text-slate-600 block mb-1">基本拠出額 (円)</label>
-                  <input type="number" id="settingHusbandBase" class="w-full bg-white border border-slate-200 rounded-lg px-2.5 py-1.5 text-xs" value="60000">
-                </div>
+            <div class="flex items-center justify-between">
+              <div>
+                <h3 class="text-sm font-bold text-slate-800 flex items-center gap-1.5">
+                  <i data-lucide="users" class="w-4 h-4 text-brand-500"></i> メンバー設定・拠出・カラー
+                </h3>
+                <p class="text-[11px] text-slate-400">ふたりでも、3人以上のルームシェア・シェアハウスでも自由に追加・設定できます。</p>
               </div>
-              <div class="space-y-2 p-2.5 rounded-xl bg-pink-50/50 border border-pink-100">
-                <div>
-                  <label for="settingWifeName" class="text-[11px] font-bold text-pink-600 block mb-1">🩷 メンバー2の表示名</label>
-                  <input type="text" id="settingWifeName" maxlength="15" placeholder="例: はなこ" class="w-full bg-white border border-slate-200 rounded-lg px-2.5 py-1.5 text-xs font-bold text-slate-800" value="メンバー2">
-                </div>
-                <div>
-                  <label for="settingWifeBase" class="text-[11px] font-medium text-slate-600 block mb-1">基本拠出額 (円)</label>
-                  <input type="number" id="settingWifeBase" class="w-full bg-white border border-slate-200 rounded-lg px-2.5 py-1.5 text-xs" value="60000">
-                </div>
-              </div>
+              <button type="button" id="addMemberBtn" onclick="addNewMemberSlot()" class="bg-brand-50 hover:bg-brand-100 text-brand-700 text-xs font-bold px-3 py-1.5 rounded-xl border border-brand-200 shadow-sm flex items-center gap-1 transition-all active:scale-95">
+                <i data-lucide="user-plus" class="w-3.5 h-3.5"></i> メンバー追加
+              </button>
             </div>
-            <button id="saveMemberSettingsBtn" class="w-full bg-slate-900 hover:bg-slate-800 text-white py-2 rounded-xl text-xs font-bold">
-              表示名・基本拠出額を保存
-            </button>
+
+            <!-- メンバーカード一覧 (動的レンダリング) -->
+            <div id="settingMembersList" class="space-y-3">
+              <!-- JSで各メンバーカードが動的生成される -->
+            </div>
+
+            <div class="pt-1 flex gap-2">
+              <button id="saveMemberSettingsBtn" class="flex-1 bg-slate-900 hover:bg-slate-800 text-white py-2.5 rounded-xl text-xs font-bold shadow-sm transition-colors flex items-center justify-center gap-1.5">
+                <i data-lucide="check" class="w-3.5 h-3.5"></i> メンバー設定を保存
+              </button>
+              <button type="button" onclick="openPairModal()" class="bg-slate-100 hover:bg-slate-200 text-slate-700 px-3 py-2.5 rounded-xl text-xs font-bold transition-colors flex items-center gap-1 shrink-0">
+                <i data-lucide="share-2" class="w-3.5 h-3.5"></i> 招待コード
+              </button>
+            </div>
           </section>
 
           <!-- プライバシーマスキング設定 -->
@@ -437,27 +399,14 @@
           </section>
         </div>
 
-        <!-- 右列: データ説明・接続設定・バージョン情報 -->
+        <!-- 右列: データ説明・バージョン情報 -->
         <div class="space-y-4">
           <!-- AI-OCRとデータの扱い -->
           <section class="bg-white rounded-2xl p-4 shadow-sm border border-slate-100 space-y-1">
             <h3 class="text-sm font-bold text-slate-800 flex items-center gap-1.5">
-              <i data-lucide="lock" class="w-4 h-4 text-brand-500"></i> AI-OCRとデータの扱い
+              <i data-lucide="lock" class="w-4 h-4 text-brand-500"></i> データの保護と扱い
             </h3>
-            <p class="text-[11px] text-slate-500 leading-relaxed">家計データはご自身のGoogleスプレッドシートにのみ保存されます。レシート読み取りを使う時だけ、画像がGoogleのAI(Gemini)に送信されます（当アプリには保存されません）。無料枠では送信内容がGoogleの改善に使われる場合があります。私物マスキングは「品名」のみ伏せ、金額は振込計算のため残ります。</p>
-          </section>
-
-          <!-- API接続設定 (GAS URL) -->
-          <section class="bg-white rounded-2xl p-4 shadow-sm border border-slate-100 space-y-3">
-            <h3 class="text-sm font-bold text-slate-800 flex items-center gap-1.5">
-              <i data-lucide="link" class="w-4 h-4 text-brand-500"></i> バックエンド接続設定
-            </h3>
-            <div>
-              <label class="text-xs font-medium text-slate-600 block mb-1">API Endpoint URL (Vercel または GAS)</label>
-              <input type="text" id="settingGasUrl" placeholder="/api/budget または https://script.google.com/..."
-                     class="w-full bg-slate-50 border border-slate-200 rounded-xl px-3 py-2 text-xs font-mono focus:outline-none mb-2">
-              <button id="saveGasUrlBtn" class="w-full bg-slate-800 hover:bg-slate-700 text-white py-2 rounded-xl text-xs font-bold">API URLを保存</button>
-            </div>
+            <p class="text-[11px] text-slate-500 leading-relaxed">家計データはSupabaseクラウドデータベースに世帯ペアごとに安全に分離・暗号化保存されます。レシート読み取りを使う時だけ、画像がGoogleのAI(Gemini)に送信されます（当アプリ内には画像は保存されません）。私物マスキング機能によりパートナーには品名を伏せつつ、精算振込額のみ正確に連携できます。</p>
           </section>
 
           <!-- バージョン情報 (小さく表示) -->
@@ -620,22 +569,11 @@
           </select>
         </div>
 
-        <!-- 支払者 -->
+        <!-- 支払者 (マルチメンバー動的チップ) -->
         <div>
           <label class="text-xs font-bold text-slate-600 block mb-1">誰が買ったか</label>
-          <div class="grid grid-cols-3 gap-2">
-            <label class="border border-slate-200 rounded-xl p-2 flex items-center gap-2 cursor-pointer">
-              <input type="radio" name="expensePayer" id="expensePayerHusband" value="メンバー1" checked class="text-blue-500">
-              <span id="expensePayerHusbandLabel" class="text-xs font-bold text-blue-600 truncate">メンバー1</span>
-            </label>
-            <label class="border border-slate-200 rounded-xl p-2 flex items-center gap-2 cursor-pointer">
-              <input type="radio" name="expensePayer" id="expensePayerWife" value="メンバー2" class="text-pink-500">
-              <span id="expensePayerWifeLabel" class="text-xs font-bold text-pink-600 truncate">メンバー2</span>
-            </label>
-            <label class="border border-slate-200 rounded-xl p-2 flex items-center gap-2 cursor-pointer">
-              <input type="radio" name="expensePayer" id="expensePayerShared" value="共同" class="text-emerald-500">
-              <span class="text-xs font-bold text-emerald-600">共同</span>
-            </label>
+          <div id="expensePayerContainer" class="flex flex-wrap gap-2 pt-0.5">
+            <!-- JSで全メンバー＋共同のチップが動的生成される -->
           </div>
         </div>
 
@@ -816,32 +754,111 @@
     </div>
   </div>
 
-  <!-- 6. 初回メンバー登録モーダル（LIFF検証済みIDトークン＋自由な表示名による安全な登録） -->
+  <!-- 6. 初回オンボーディング（グループ新規作成 ＆ 招待コードで参加）モーダル -->
   <div id="registerMemberModal" class="hidden fixed inset-0 z-50 bg-black/60 backdrop-blur-sm flex items-center justify-center p-4">
-    <div class="bg-white w-full max-w-sm rounded-3xl p-5 shadow-2xl space-y-3">
-      <div class="text-center">
-        <div class="w-12 h-12 bg-brand-100 text-brand-600 rounded-full flex items-center justify-center mx-auto mb-2 text-2xl">🌱</div>
-        <h3 class="text-base font-bold text-slate-900">初回メンバー登録</h3>
-        <p class="text-xs text-slate-500 mt-1">家計簿で表示するあなたの名前（ニックネーム）を入力して、登録する枠を選んでください。</p>
+    <div class="bg-white w-full max-w-md rounded-3xl p-5 shadow-2xl space-y-4 max-h-[90vh] overflow-y-auto">
+      
+      <!-- ステップ1: グループ作成 or 招待参加フォーム -->
+      <div id="onboardingStepForm" class="space-y-4">
+        <div class="text-center">
+          <div class="w-12 h-12 bg-brand-100 text-brand-600 rounded-full flex items-center justify-center mx-auto mb-2 text-2xl shadow-inner">👫</div>
+          <h3 class="text-base font-extrabold text-slate-900">ふたりの家計簿をはじめよう</h3>
+          <p class="text-xs text-slate-500 mt-1 leading-relaxed">
+            登録不要ですぐに使えます。<br>まずはグループを作成するか、招待コードで参加してください。
+          </p>
+        </div>
+
+        <!-- ピル型タブ切替 -->
+        <div class="grid grid-cols-2 bg-slate-100 p-1 rounded-xl text-xs font-bold shadow-inner">
+          <button type="button" id="tabOnboardingCreateBtn" onclick="switchOnboardingTab('create')" class="py-2 rounded-lg bg-white text-brand-700 shadow-sm transition-all flex items-center justify-center gap-1.5 font-bold">
+            <i data-lucide="sparkles" class="w-3.5 h-3.5"></i> 新しくつくる
+          </button>
+          <button type="button" id="tabOnboardingJoinBtn" onclick="switchOnboardingTab('join')" class="py-2 rounded-lg text-slate-500 hover:text-slate-800 transition-all flex items-center justify-center gap-1.5 font-medium">
+            <i data-lucide="mail" class="w-3.5 h-3.5"></i> 招待で参加
+          </button>
+        </div>
+
+        <!-- タブ1: グループ作成フォーム -->
+        <form id="onboardingCreateForm" class="space-y-3.5">
+          <div>
+            <label for="onboardingCreatorName" class="text-xs font-bold text-slate-700 block mb-1">
+              あなたのニックネーム <span class="text-rose-500">*</span>
+            </label>
+            <input type="text" id="onboardingCreatorName" required maxlength="15" placeholder="例: たろう / りん"
+                   class="w-full bg-slate-50 border border-slate-200 rounded-xl px-3 py-2 text-sm font-bold text-slate-800 focus:outline-none focus:ring-2 focus:ring-brand-500">
+          </div>
+          <div>
+            <label for="onboardingGroupName" class="text-xs font-bold text-slate-700 block mb-1">
+              グループ（世帯）名 <span class="text-rose-500">*</span>
+            </label>
+            <input type="text" id="onboardingGroupName" required maxlength="30" value="ふたりの家計簿" placeholder="例: 佐藤家, ふたり暮らし"
+                   class="w-full bg-slate-50 border border-slate-200 rounded-xl px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-brand-500">
+            <p class="text-[10px] text-slate-400 mt-1">※あとからいつでも変更できます</p>
+          </div>
+          <button type="submit" id="submitOnboardingCreateBtn" class="w-full bg-brand-500 hover:bg-brand-600 text-white font-bold py-3 rounded-xl text-xs shadow-md transition-all active:scale-98 flex items-center justify-center gap-1.5">
+            <i data-lucide="arrow-right" class="w-4 h-4"></i> 家計簿グループをつくる
+          </button>
+        </form>
+
+        <!-- タブ2: 招待参加フォーム -->
+        <form id="onboardingJoinForm" class="hidden space-y-3.5">
+          <div>
+            <label for="onboardingJoinCode" class="text-xs font-bold text-slate-700 block mb-1">
+              招待コード（7桁英数字） <span class="text-rose-500">*</span>
+            </label>
+            <input type="text" id="onboardingJoinCode" required maxlength="10" placeholder="例: PAIR782"
+                   class="w-full bg-slate-50 border border-slate-200 rounded-xl px-3 py-2 text-sm font-mono uppercase tracking-wider focus:outline-none focus:ring-2 focus:ring-brand-500">
+            <p class="text-[10px] text-slate-400 mt-1">※パートナーから届いた招待コードを入力してください</p>
+          </div>
+          <div>
+            <label for="onboardingJoinName" class="text-xs font-bold text-slate-700 block mb-1">
+              あなたのニックネーム <span class="text-rose-500">*</span>
+            </label>
+            <input type="text" id="onboardingJoinName" required maxlength="15" placeholder="例: はなこ / 妻"
+                   class="w-full bg-slate-50 border border-slate-200 rounded-xl px-3 py-2 text-sm font-bold text-slate-800 focus:outline-none focus:ring-2 focus:ring-brand-500">
+          </div>
+          <button type="submit" id="submitOnboardingJoinBtn" class="w-full bg-indigo-600 hover:bg-indigo-500 text-white font-bold py-3 rounded-xl text-xs shadow-md transition-all active:scale-98 flex items-center justify-center gap-1.5">
+            <i data-lucide="user-check" class="w-4 h-4"></i> グループに参加する
+          </button>
+        </form>
       </div>
-      <div>
-        <label for="registerNameInput" class="text-xs font-bold text-slate-600 block mb-1">あなたの表示名（ニックネーム・15文字以内）</label>
-        <input type="text" id="registerNameInput" maxlength="15" placeholder="例: なおや / りん"
-               class="w-full bg-slate-50 border border-slate-200 rounded-xl px-3 py-2 text-sm font-bold text-slate-800 focus:outline-none focus:ring-2 focus:ring-brand-500">
-      </div>
-      <div>
-        <label for="registerCodeInput" class="text-xs font-bold text-slate-600 block mb-1">合言葉（設定している場合のみ）</label>
-        <input type="text" id="registerCodeInput" placeholder="未設定なら空欄のままでOK"
-               class="w-full bg-slate-50 border border-slate-200 rounded-xl px-3 py-2 text-xs focus:outline-none">
-      </div>
-      <div class="grid grid-cols-2 gap-2 pt-1">
-        <button type="button" id="registerHusbandBtn" class="bg-blue-600 hover:bg-blue-500 disabled:opacity-40 text-white font-bold py-2.5 px-2 rounded-xl text-xs truncate">
-          🔵 メンバー1枠で登録
+
+      <!-- ステップ2: グループ作成完了 ＆ パートナー招待画面 -->
+      <div id="onboardingStepComplete" class="hidden space-y-4 text-center">
+        <div class="w-14 h-14 bg-emerald-100 text-emerald-600 rounded-full flex items-center justify-center mx-auto text-3xl shadow-inner">
+          🎉
+        </div>
+        <div>
+          <h3 class="text-base font-extrabold text-slate-900">グループが作成されました！</h3>
+          <p class="text-xs text-slate-500 mt-1 leading-relaxed">
+            パートナーに招待コードを送って、ふたりで家計簿を共有しましょう。
+          </p>
+        </div>
+
+        <!-- 招待コード表示ボックス -->
+        <div class="bg-slate-50 border-2 border-dashed border-brand-300 rounded-2xl p-3.5 space-y-1">
+          <p class="text-[10px] font-bold text-slate-400 uppercase tracking-wider">あなたの招待コード</p>
+          <div class="flex items-center justify-center gap-2">
+            <span id="onboardingGeneratedCode" class="text-2xl font-black font-mono tracking-widest text-brand-700 select-all">
+              ------
+            </span>
+            <button type="button" id="onboardingCopyCodeBtn" onclick="copyOnboardingCode()" class="bg-white border border-slate-200 hover:bg-slate-50 text-slate-700 p-2 rounded-xl text-xs font-bold shadow-sm transition-all active:scale-95" aria-label="コードをコピー">
+              <i data-lucide="copy" class="w-4 h-4"></i>
+            </button>
+          </div>
+        </div>
+
+        <!-- LINEで招待ボタン -->
+        <button type="button" id="onboardingLineShareBtn" onclick="shareOnboardingViaLine()" class="w-full bg-[#06C755] hover:bg-[#05b34c] text-white font-bold py-3 rounded-xl text-xs shadow-md transition-all active:scale-98 flex items-center justify-center gap-2">
+          <i data-lucide="message-circle" class="w-4 h-4"></i> LINEでパートナーを招待
         </button>
-        <button type="button" id="registerWifeBtn" class="bg-pink-600 hover:bg-pink-500 disabled:opacity-40 text-white font-bold py-2.5 px-2 rounded-xl text-xs truncate">
-          🩷 メンバー2枠で登録
+
+        <!-- 家計簿へ進むボタン -->
+        <button type="button" onclick="finishOnboarding()" class="w-full bg-slate-900 hover:bg-slate-800 text-white font-bold py-2.5 rounded-xl text-xs transition-colors">
+          家計簿をはじめる
         </button>
       </div>
+
     </div>
   </div>
 
