@@ -19,7 +19,11 @@
 
 /* モーダル表示アニメーション */
 #expenseModal:not(.hidden) > div,
-#buySyncModal:not(.hidden) > div {
+#buySyncModal:not(.hidden) > div,
+#pairModal:not(.hidden) > div,
+#createEventModal:not(.hidden) > div,
+#eventDetailModal:not(.hidden) > div,
+#addEventExpenseModal:not(.hidden) > div {
   animation: slideUp 0.25s cubic-bezier(0.16, 1, 0.3, 1) forwards;
 }
 

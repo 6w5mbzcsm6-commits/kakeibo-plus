@@ -9,6 +9,7 @@
  */
 
 const APP_CONFIG = window.PAIRBUDGET_CONFIG || {};
+const FRONTEND_VERSION = 'v2.2.0';
 const MAX_HISTORY_MONTHS = 36;
 const FIELD_LABELS = {
   date: '日付', title: '品名', amount: '金額', category: 'カテゴリ', isShared: '共同',
@@ -49,6 +50,13 @@ function shortDateTime(s) { // 'yyyy-MM-dd HH:mm:ss' -> 'M/D HH:mm'
 const state = {
   viewMonth: localMonthStr(),
   activeScope: 'shared',
+  currentMode: 'budget', // 'budget' | 'events'
+  pairId: localStorage.getItem('pairbudget_pair_id') || '00000000-0000-0000-0000-000000000001',
+  pairName: localStorage.getItem('pairbudget_pair_name') || '世帯ペア',
+  inviteCode: localStorage.getItem('pairbudget_invite_code') || '',
+  events: [],
+  activeEventId: null,
+  currentSettlement: null,
   currentUser: 'メンバー1',
   currentSlot: 'husband',
   liffDisplayName: '',
@@ -56,7 +64,7 @@ const state = {
   isMockMode: false,
   liffReady: false,
   privacyMask: localStorage.getItem('pairbudget_privacy_mask') === 'true',
-  gasApiUrl: localStorage.getItem('pairbudget_gas_url') || APP_CONFIG.GAS_URL || '',
+  gasApiUrl: localStorage.getItem('pairbudget_api_url') || localStorage.getItem('pairbudget_gas_url') || APP_CONFIG.API_URL || APP_CONFIG.GAS_URL || '',
   trendRange: 12,
   categoryChart: null,
   trendChart: null,
@@ -427,10 +435,13 @@ function clearAllLocalCache() {
 
 async function callGas(action, data, extra = {}) {
   const idToken = state.liffReady ? liff.getIDToken() : null;
+  const isGoogleScript = state.gasApiUrl.includes('script.google.com');
   const res = await fetch(state.gasApiUrl, {
     method: 'POST',
-    headers: { 'Content-Type': 'text/plain' }, // CORSプリフライト回避
-    body: JSON.stringify({ action, data: data || {}, idToken, ...extra })
+    headers: {
+      'Content-Type': isGoogleScript ? 'text/plain' : 'application/json'
+    },
+    body: JSON.stringify({ action, data: data || {}, idToken, pairId: state.pairId, ...extra })
   });
   return res.json();
 }
@@ -616,6 +627,7 @@ function applyData(data) {
   state.monthlyTotals = data.monthlyTotals || [];
   state.summary = data.summary || state.summary;
   state.transfers = data.transfers || state.transfers;
+  state.backendVersion = data.version || (state.isMockMode ? 'demo' : 'v2.1以下 (未更新)');
   if (data.config) {
     state.config = {
       husbandBaseContribution: Number(data.config.husbandBaseContribution) || 60000,
@@ -623,6 +635,15 @@ function applyData(data) {
       husbandName: data.config.husbandName || 'メンバー1',
       wifeName: data.config.wifeName || 'メンバー2'
     };
+  }
+  if (data.pair) {
+    state.pairId = data.pair.id;
+    state.pairName = data.pair.name;
+    state.inviteCode = data.pair.inviteCode || '';
+    localStorage.setItem('pairbudget_pair_id', data.pair.id);
+    localStorage.setItem('pairbudget_pair_name', data.pair.name);
+    localStorage.setItem('pairbudget_invite_code', data.pair.inviteCode || '');
+    updatePairHeader();
   }
   if (data.actor && data.actor.verified) {
     state.currentUser = data.actor.name;
@@ -914,6 +935,12 @@ function renderSettings() {
   $('settingWifeBase').value = state.config.wifeBaseContribution;
   $('privacyMaskToggle').checked = state.privacyMask;
   $('settingGasUrl').value = state.gasApiUrl;
+
+  // バージョン表示
+  if ($('frontVersionLabel')) $('frontVersionLabel').textContent = FRONTEND_VERSION;
+  if ($('backVersionLabel')) {
+    $('backVersionLabel').textContent = state.backendVersion || (state.isMockMode ? 'demo' : '未取得');
+  }
 }
 
 // ==========================================
@@ -1453,7 +1480,18 @@ window.switchTab = function (tabName) {
   ['home', 'shopping', 'history', 'settings'].forEach(t => {
     const cap = t.charAt(0).toUpperCase() + t.slice(1);
     $(`tabContent${cap}`).classList.toggle('hidden', t !== tabName);
-    $(`nav${cap}Btn`).className = `py-1 ${t === tabName ? 'text-brand-600' : 'text-slate-400'} flex flex-col items-center justify-center gap-0.5`;
+    const mobileBtn = $(`nav${cap}Btn`);
+    if (mobileBtn) {
+      mobileBtn.className = `py-1 ${t === tabName ? 'text-brand-600' : 'text-slate-400'} flex flex-col items-center justify-center gap-0.5`;
+    }
+    const desktopBtn = $(`desktopNav${cap}Btn`);
+    if (desktopBtn) {
+      desktopBtn.className = `px-3.5 py-1.5 rounded-lg transition-all flex items-center gap-1.5 ${
+        t === tabName
+          ? 'bg-white text-brand-700 shadow-sm font-bold'
+          : 'text-slate-500 hover:text-slate-800 font-medium'
+      }`;
+    }
   });
   if (tabName === 'home') renderCharts(); // 非表示中に描画したグラフのサイズ崩れを防ぐ
   lucide.createIcons();
@@ -1543,10 +1581,24 @@ function setupEventListeners() {
   $('registerWifeBtn').addEventListener('click', () => submitRegisterMember('wife'));
   $('saveGasUrlBtn').addEventListener('click', () => {
     state.gasApiUrl = $('settingGasUrl').value.trim();
+    localStorage.setItem('pairbudget_api_url', state.gasApiUrl);
     localStorage.setItem('pairbudget_gas_url', state.gasApiUrl);
     showToast('API URLを保存しました');
     loadInitialData();
   });
+
+  // モード切替・世帯ペア・臨時イベント リスナー
+  $('modeBudgetBtn')?.addEventListener('click', () => switchAppMode('budget'));
+  $('modeEventsBtn')?.addEventListener('click', () => switchAppMode('events'));
+  $('openPairModalBtn')?.addEventListener('click', openPairModal);
+  $('copyInviteCodeBtn')?.addEventListener('click', copyInviteCode);
+  $('submitCreatePairBtn')?.addEventListener('click', submitCreatePair);
+  $('submitJoinPairBtn')?.addEventListener('click', submitJoinPair);
+  $('openCreateEventModalBtn')?.addEventListener('click', openCreateEventModal);
+  $('submitCreateEventBtn')?.addEventListener('click', submitCreateEvent);
+  $('copySettlementBtn')?.addEventListener('click', copySettlementText);
+  $('openAddEventExpenseBtn')?.addEventListener('click', openAddEventExpenseModal);
+  $('submitAddEventExpenseBtn')?.addEventListener('click', submitAddEventExpense);
 
   // 動的に生成された要素のクリック・変更はイベント委譲で処理（品名などをHTML属性に埋め込まない）
   document.addEventListener('click', e => {
@@ -1594,9 +1646,468 @@ async function initLiff() {
   }
 }
 
+// ==========================================
+// モード切替 & 世帯ペア管理
+// ==========================================
+
+function switchAppMode(mode) {
+  state.currentMode = mode;
+  const isBudget = mode === 'budget';
+
+  $('budgetView')?.classList.toggle('hidden', !isBudget);
+  $('eventsView')?.classList.toggle('hidden', isBudget);
+
+  // フローティングボタン（レシート/支出）は家計簿モードのみ表示
+  const quickBtns = document.querySelector('.fixed.right-5.bottom-20');
+  if (quickBtns) quickBtns.style.display = isBudget ? 'flex' : 'none';
+
+  // モードタブのアクティブ状態
+  const budgetBtn = $('modeBudgetBtn');
+  const eventsBtn = $('modeEventsBtn');
+  if (budgetBtn && eventsBtn) {
+    if (isBudget) {
+      budgetBtn.className = 'px-2.5 py-1 rounded-md bg-brand-500 text-white transition-all flex items-center gap-1';
+      eventsBtn.className = 'px-2.5 py-1 rounded-md text-slate-400 hover:text-white transition-all flex items-center gap-1';
+    } else {
+      budgetBtn.className = 'px-2.5 py-1 rounded-md text-slate-400 hover:text-white transition-all flex items-center gap-1';
+      eventsBtn.className = 'px-2.5 py-1 rounded-md bg-indigo-600 text-white transition-all flex items-center gap-1';
+      loadEvents();
+    }
+  }
+  lucide.createIcons();
+}
+
+function updatePairHeader() {
+  const headerName = $('headerPairName');
+  if (headerName) headerName.textContent = state.pairName || '世帯ペア';
+  const modalName = $('modalPairName');
+  if (modalName) modalName.textContent = state.pairName || '世帯ペア';
+  const modalCode = $('modalInviteCode');
+  if (modalCode) modalCode.textContent = state.inviteCode || '未発行';
+}
+
+function openPairModal() {
+  updatePairHeader();
+  $('pairModal')?.classList.remove('hidden');
+  lucide.createIcons();
+}
+
+function closePairModal() {
+  $('pairModal')?.classList.add('hidden');
+}
+
+async function submitCreatePair() {
+  const name = $('newPairNameInput')?.value.trim();
+  const userName = $('newPairCreatorNameInput')?.value.trim();
+  if (!name || !userName) {
+    showToast('世帯名とお名前を入力してください');
+    return;
+  }
+  showToast('新しい世帯を作成中…', 'loading');
+  const res = await api('createPair', { name, userName });
+  hideToast();
+  if (!res.success) {
+    showToast(res.error || '作成に失敗しました');
+    return;
+  }
+  state.pairId = res.pair.id;
+  state.pairName = res.pair.name;
+  state.inviteCode = res.pair.inviteCode;
+  localStorage.setItem('pairbudget_pair_id', res.pair.id);
+  localStorage.setItem('pairbudget_pair_name', res.pair.name);
+  localStorage.setItem('pairbudget_invite_code', res.pair.inviteCode);
+  closePairModal();
+  showToast(`世帯ペア「${res.pair.name}」を作成しました！`);
+  loadInitialData(state.viewMonth, { skipCache: true });
+}
+
+async function submitJoinPair() {
+  const inviteCode = $('joinInviteCodeInput')?.value.trim().toUpperCase();
+  const userName = $('joinUserNameInput')?.value.trim();
+  if (!inviteCode || !userName) {
+    showToast('招待コードとお名前を入力してください');
+    return;
+  }
+  showToast('世帯に合流中…', 'loading');
+  const res = await api('joinPair', { inviteCode, name: userName });
+  hideToast();
+  if (!res.success) {
+    showToast(res.error || '合流に失敗しました');
+    return;
+  }
+  state.pairId = res.pair.id;
+  state.pairName = res.pair.name;
+  state.inviteCode = res.pair.inviteCode;
+  localStorage.setItem('pairbudget_pair_id', res.pair.id);
+  localStorage.setItem('pairbudget_pair_name', res.pair.name);
+  localStorage.setItem('pairbudget_invite_code', res.pair.inviteCode);
+  closePairModal();
+  showToast(`世帯「${res.pair.name}」に合流しました！`);
+  loadInitialData(state.viewMonth, { skipCache: true });
+}
+
+function copyInviteCode() {
+  const code = state.inviteCode || 'PAIR2026';
+  const url = `${window.location.origin}${window.location.pathname}?invite=${code}`;
+  const text = `ふたり家計簿に招待されました！\n世帯名: ${state.pairName}\n招待コード: ${code}\n合流URL: ${url}`;
+  if (navigator.clipboard && navigator.clipboard.writeText) {
+    navigator.clipboard.writeText(text).then(() => {
+      showToast('招待テキストをコピーしました！LINE等で送信してください');
+    }).catch(() => {
+      prompt('以下のテキストをコピーしてください:', text);
+    });
+  } else {
+    prompt('以下のテキストをコピーしてください:', text);
+  }
+}
+
+// ==========================================
+// 臨時イベント・旅行精算機能
+// ==========================================
+
+async function loadEvents() {
+  const container = $('eventsListContainer');
+  if (container) {
+    container.innerHTML = '<div class="text-center py-8 text-slate-400 text-xs">読み込み中…</div>';
+  }
+  const res = await api('getEvents', { pairId: state.pairId });
+  if (!res.success) {
+    if (container) container.innerHTML = `<div class="text-center py-8 text-rose-500 text-xs">${res.error || 'イベントの取得に失敗しました'}</div>`;
+    return;
+  }
+  state.events = res.events || [];
+  renderEventsList();
+}
+
+function renderEventsList() {
+  const container = $('eventsListContainer');
+  if (!container) return;
+  if (state.events.length === 0) {
+    container.innerHTML = `
+      <div class="text-center py-12 bg-white rounded-2xl border border-slate-100 p-6 space-y-2">
+        <div class="w-12 h-12 bg-indigo-50 text-indigo-500 rounded-full flex items-center justify-center mx-auto text-xl">✈️</div>
+        <h4 class="text-xs font-bold text-slate-700">登録されているイベントはありません</h4>
+        <p class="text-[11px] text-slate-400 max-w-xs mx-auto">旅行やBBQ、飲み会などの立替精算を始めるには「イベント作成」を押してください。</p>
+      </div>`;
+    return;
+  }
+
+  container.innerHTML = state.events.map(ev => {
+    const membersBadge = (ev.members || []).map(m => `<span class="bg-slate-100 text-slate-600 px-1.5 py-0.5 rounded text-[10px] font-bold">${escapeHtml(m)}</span>`).join(' ');
+    const isWarning = ev.daysLeft <= 7;
+    return `
+      <div onclick="openEventDetail('${ev.id}')" class="bg-white hover:bg-slate-50 border border-slate-100 rounded-2xl p-4 shadow-sm cursor-pointer transition-all active:scale-[0.99] space-y-2.5">
+        <div class="flex items-start justify-between">
+          <div>
+            <h3 class="text-sm font-extrabold text-slate-800">${escapeHtml(ev.title)}</h3>
+            <div class="flex items-center gap-1.5 mt-1">
+              <span class="${isWarning ? 'bg-rose-100 text-rose-700' : 'bg-amber-100 text-amber-800'} text-[10px] font-extrabold px-1.5 py-0.5 rounded">
+                ⏳ あと${ev.daysLeft}日で自動消去
+              </span>
+              <span class="text-[10px] text-slate-400">${ev.createdAt}作成</span>
+            </div>
+          </div>
+          <div class="text-right">
+            <span class="text-[10px] text-slate-400 block font-bold">立替合計</span>
+            <span class="text-base font-black text-indigo-700 font-mono">¥${(ev.totalAmount || 0).toLocaleString()}</span>
+          </div>
+        </div>
+        <div class="flex items-center justify-between pt-1 border-t border-slate-50 text-xs">
+          <div class="flex flex-wrap gap-1 items-center">
+            <span class="text-[10px] text-slate-400">参加:</span>
+            ${membersBadge}
+          </div>
+          <span class="text-[10px] text-indigo-500 font-bold flex items-center gap-0.5">
+            精算・明細 (${ev.expenseCount || 0}件) <i data-lucide="chevron-right" class="w-3.5 h-3.5"></i>
+          </span>
+        </div>
+      </div>
+    `;
+  }).join('');
+  lucide.createIcons();
+}
+
+function openCreateEventModal() {
+  if ($('eventTitleInput')) $('eventTitleInput').value = '';
+  if ($('eventMembersInput')) $('eventMembersInput').value = `${state.config.husbandName || 'メンバー1'}, ${state.config.wifeName || 'メンバー2'}`;
+  $('createEventModal')?.classList.remove('hidden');
+  lucide.createIcons();
+}
+
+function closeCreateEventModal() {
+  $('createEventModal')?.classList.add('hidden');
+}
+
+async function submitCreateEvent() {
+  const title = $('eventTitleInput')?.value.trim();
+  const rawMembers = $('eventMembersInput')?.value.trim();
+  if (!title || !rawMembers) {
+    showToast('イベント名と参加メンバーを入力してください');
+    return;
+  }
+  const members = rawMembers.split(/[,、\s]+/).map(m => m.trim()).filter(Boolean);
+  if (members.length < 2) {
+    showToast('参加メンバーは2名以上入力してください');
+    return;
+  }
+
+  showToast('イベントを作成中…', 'loading');
+  const res = await api('createEvent', { title, members, pairId: state.pairId });
+  hideToast();
+  if (!res.success) {
+    showToast(res.error || '作成に失敗しました');
+    return;
+  }
+  closeCreateEventModal();
+  showToast(`イベント「${title}」を作成しました！`);
+  loadEvents();
+}
+
+async function openEventDetail(eventId) {
+  state.activeEventId = eventId;
+  showToast('精算データを取得中…', 'loading');
+  const res = await api('getEventSettlement', { eventId });
+  hideToast();
+  if (!res.success) {
+    showToast(res.error || '精算データの取得に失敗しました');
+    return;
+  }
+  state.currentSettlement = res;
+  renderEventDetail(res);
+  $('eventDetailModal')?.classList.remove('hidden');
+  lucide.createIcons();
+}
+
+function closeEventDetailModal() {
+  $('eventDetailModal')?.classList.add('hidden');
+  state.activeEventId = null;
+  state.currentSettlement = null;
+}
+
+function renderEventDetail(s) {
+  const ev = s.event;
+  if ($('detailEventTitle')) $('detailEventTitle').textContent = ev.title;
+  if ($('detailEventDaysLeft')) $('detailEventDaysLeft').textContent = `⏳ 残り${ev.daysLeft}日で消去`;
+  if ($('detailEventDate')) $('detailEventDate').textContent = `${ev.createdAt}作成`;
+
+  // 1. 最小送金ステップ（スマート精算）
+  const transfersContainer = $('settlementTransfersContainer');
+  if (transfersContainer) {
+    if (!s.transfers || s.transfers.length === 0) {
+      transfersContainer.innerHTML = '<p class="text-indigo-200 text-xs py-1">精算は完了しています（差額なし）✨</p>';
+    } else {
+      transfersContainer.innerHTML = s.transfers.map(t => `
+        <div class="flex items-center justify-between bg-white/10 rounded-xl px-3 py-2 font-bold">
+          <div class="flex items-center gap-1.5">
+            <span class="text-rose-300">${escapeHtml(t.from)}</span>
+            <span class="text-indigo-300">➡️</span>
+            <span class="text-emerald-300">${escapeHtml(t.to)}</span>
+          </div>
+          <span class="text-brand-300 font-mono text-sm">¥${t.amount.toLocaleString()}</span>
+        </div>
+      `).join('');
+    }
+  }
+
+  // 2. メンバー別集計
+  const memberContainer = $('memberSummariesContainer');
+  if (memberContainer) {
+    memberContainer.innerHTML = (s.memberSummaries || []).map(m => {
+      const isPlus = m.balance > 0;
+      const isMinus = m.balance < 0;
+      const color = isPlus ? 'text-emerald-600 bg-emerald-50' : (isMinus ? 'text-rose-600 bg-rose-50' : 'text-slate-500 bg-slate-50');
+      const label = isPlus ? `+¥${m.balance.toLocaleString()} 受取` : (isMinus ? `-¥${(-m.balance).toLocaleString()} 支払` : '±0円');
+      return `
+        <div class="bg-slate-50 border border-slate-100 rounded-xl p-2.5 space-y-1">
+          <div class="flex items-center justify-between font-bold">
+            <span class="text-slate-800">${escapeHtml(m.name)}</span>
+            <span class="text-[10px] px-1.5 py-0.5 rounded font-black ${color}">${label}</span>
+          </div>
+          <div class="text-[10px] text-slate-500 flex justify-between">
+            <span>立替: ¥${m.paid.toLocaleString()}</span>
+            <span>負担: ¥${m.shouldPay.toLocaleString()}</span>
+          </div>
+        </div>
+      `;
+    }).join('');
+  }
+
+  // 3. 支出明細リスト
+  const expensesList = $('eventExpensesList');
+  if (expensesList) {
+    if (!s.expenses || s.expenses.length === 0) {
+      expensesList.innerHTML = '<p class="text-slate-400 text-center py-4 text-xs">まだ立替支出はありません。「立替を登録」から追加してください。</p>';
+    } else {
+      expensesList.innerHTML = s.expenses.map(x => `
+        <div class="flex items-center justify-between bg-slate-50 border border-slate-100 rounded-xl px-3 py-2 text-xs">
+          <div>
+            <span class="font-bold text-slate-800 block">${escapeHtml(x.title)}</span>
+            <span class="text-[10px] text-slate-400">${x.createdAt} / 払った人: <b class="text-slate-600">${escapeHtml(x.payer)}</b></span>
+          </div>
+          <div class="flex items-center gap-2">
+            <span class="font-mono font-bold text-slate-900">¥${x.amount.toLocaleString()}</span>
+            <button onclick="deleteEventExpenseById('${x.id}')" class="text-slate-300 hover:text-rose-500 p-1">
+              <i data-lucide="trash-2" class="w-3.5 h-3.5"></i>
+            </button>
+          </div>
+        </div>
+      `).join('');
+    }
+  }
+
+  // イベント削除ボタンのバインド
+  const delBtn = $('deleteEventBtn');
+  if (delBtn) {
+    delBtn.onclick = () => {
+      if (confirm(`イベント「${ev.title}」を削除しますか？\n（関連するすべての立替明細も削除されます）`)) {
+        deleteEventById(ev.id);
+      }
+    };
+  }
+
+  lucide.createIcons();
+}
+
+function copySettlementText() {
+  const s = state.currentSettlement;
+  if (!s || !s.event) return;
+  const ev = s.event;
+  const transferLines = (s.transfers || []).length > 0
+    ? s.transfers.map(t => `・${t.from} ➡️ ${t.to}：¥${t.amount.toLocaleString()}`).join('\n')
+    : '・精算完了（差額なし）';
+
+  const memberLines = (s.memberSummaries || []).map(m => {
+    const diff = m.balance > 0 ? `+¥${m.balance.toLocaleString()}` : (m.balance < 0 ? `-¥${(-m.balance).toLocaleString()}` : '±0');
+    return `・${m.name}: 支払¥${m.paid.toLocaleString()} (差引 ${diff})`;
+  }).join('\n');
+
+  const text = `✈️【${ev.title} 精算サマリー】\n` +
+    `━━━━━━━━━━━━━━\n` +
+    `■ 最小送金ステップ\n${transferLines}\n` +
+    `━━━━━━━━━━━━━━\n` +
+    `■ 各自の立替状況\n${memberLines}\n` +
+    `━━━━━━━━━━━━━━\n` +
+    `ふたり家計簿 (PairBudget)`;
+
+  if (navigator.clipboard && navigator.clipboard.writeText) {
+    navigator.clipboard.writeText(text).then(() => {
+      showToast('精算テキストをコピーしました！LINEに貼り付けて共有してください');
+    }).catch(() => {
+      prompt('以下の精算テキストをコピーしてください:', text);
+    });
+  } else {
+    prompt('以下の精算テキストをコピーしてください:', text);
+  }
+}
+
+function openAddEventExpenseModal() {
+  const s = state.currentSettlement;
+  if (!s || !s.event) return;
+  const members = s.event.members || [];
+
+  if ($('eventExpenseTitleInput')) $('eventExpenseTitleInput').value = '';
+  if ($('eventExpenseAmountInput')) $('eventExpenseAmountInput').value = '';
+
+  const payerSelect = $('eventExpensePayerSelect');
+  if (payerSelect) {
+    payerSelect.innerHTML = members.map(m => `<option value="${escapeHtml(m)}">${escapeHtml(m)}</option>`).join('');
+  }
+
+  const benContainer = $('eventExpenseBeneficiariesContainer');
+  if (benContainer) {
+    benContainer.innerHTML = members.map(m => `
+      <label class="inline-flex items-center gap-1.5 bg-slate-50 border border-slate-200 px-2.5 py-1 rounded-lg text-xs font-bold cursor-pointer">
+        <input type="checkbox" name="beneficiary" value="${escapeHtml(m)}" checked class="w-3.5 h-3.5 text-indigo-600 rounded">
+        <span>${escapeHtml(m)}</span>
+      </label>
+    `).join('');
+  }
+
+  $('addEventExpenseModal')?.classList.remove('hidden');
+  lucide.createIcons();
+}
+
+function closeAddEventExpenseModal() {
+  $('addEventExpenseModal')?.classList.add('hidden');
+}
+
+async function submitAddEventExpense() {
+  const eventId = state.activeEventId;
+  const title = $('eventExpenseTitleInput')?.value.trim();
+  const amount = Number($('eventExpenseAmountInput')?.value);
+  const payer = $('eventExpensePayerSelect')?.value;
+
+  if (!title || !amount || amount <= 0) {
+    showToast('品名と金額を入力してください');
+    return;
+  }
+
+  const checkboxes = document.querySelectorAll('input[name="beneficiary"]:checked');
+  const beneficiaries = Array.from(checkboxes).map(c => c.value);
+
+  showToast('立替を記録中…', 'loading');
+  const res = await api('addEventExpense', {
+    eventId,
+    title,
+    amount,
+    payer,
+    beneficiaries: beneficiaries.length > 0 ? beneficiaries : null
+  });
+  hideToast();
+
+  if (!res.success) {
+    showToast(res.error || '記録に失敗しました');
+    return;
+  }
+  closeAddEventExpenseModal();
+  showToast('立替を記録しました！');
+  openEventDetail(eventId);
+}
+
+async function deleteEventExpenseById(expenseId) {
+  if (!confirm('この立替明細を削除しますか？')) return;
+  showToast('削除中…', 'loading');
+  const res = await api('deleteEventExpense', { expenseId });
+  hideToast();
+  if (res.success) {
+    showToast('立替明細を削除しました');
+    openEventDetail(state.activeEventId);
+  } else {
+    showToast(res.error || '削除に失敗しました');
+  }
+}
+
+async function deleteEventById(eventId) {
+  showToast('イベントを削除中…', 'loading');
+  const res = await api('deleteEvent', { eventId });
+  hideToast();
+  if (res.success) {
+    closeEventDetailModal();
+    showToast('イベントを削除しました');
+    loadEvents();
+  } else {
+    showToast(res.error || '削除に失敗しました');
+  }
+}
+
+function checkUrlInviteParam() {
+  try {
+    const urlParams = new URLSearchParams(window.location.search);
+    const invite = urlParams.get('invite');
+    if (invite) {
+      const code = invite.toUpperCase().trim();
+      if ($('joinInviteCodeInput')) $('joinInviteCodeInput').value = code;
+      openPairModal();
+      showToast(`招待コード「${code}」を検出しました`);
+    }
+  } catch (_) {}
+}
+
 document.addEventListener('DOMContentLoaded', async () => {
   lucide.createIcons();
   setupEventListeners();
+  updatePairHeader();
+  checkUrlInviteParam();
   // 起動直後にローカルキャッシュがあれば即座に描画して白画面待ちをゼロにする
   const cached = loadInitCache(state.viewMonth);
   if (cached && state.gasApiUrl) applyData(cached);
