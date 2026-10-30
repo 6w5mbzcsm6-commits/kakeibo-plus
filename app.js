@@ -50,6 +50,13 @@ function shortDateTime(s) { // 'yyyy-MM-dd HH:mm:ss' -> 'M/D HH:mm'
 const state = {
   viewMonth: localMonthStr(),
   activeScope: 'shared',
+  currentMode: 'budget', // 'budget' | 'events'
+  pairId: localStorage.getItem('pairbudget_pair_id') || '00000000-0000-0000-0000-000000000001',
+  pairName: localStorage.getItem('pairbudget_pair_name') || '世帯ペア',
+  inviteCode: localStorage.getItem('pairbudget_invite_code') || '',
+  events: [],
+  activeEventId: null,
+  currentSettlement: null,
   currentUser: 'メンバー1',
   currentSlot: 'husband',
   liffDisplayName: '',
@@ -57,7 +64,7 @@ const state = {
   isMockMode: false,
   liffReady: false,
   privacyMask: localStorage.getItem('pairbudget_privacy_mask') === 'true',
-  gasApiUrl: localStorage.getItem('pairbudget_gas_url') || APP_CONFIG.GAS_URL || '',
+  gasApiUrl: APP_CONFIG.API_URL || localStorage.getItem('pairbudget_api_url') || '/api/budget',
   trendRange: 12,
   categoryChart: null,
   trendChart: null,
@@ -68,7 +75,15 @@ const state = {
     husband: { baseContribution: 60000, privateOnSharedCard: 0, advancedForShared: 0, totalTransfer: 60000, isPaid: false },
     wife: { baseContribution: 60000, privateOnSharedCard: 0, advancedForShared: 0, totalTransfer: 60000, isPaid: false }
   },
-  config: { husbandBaseContribution: 60000, wifeBaseContribution: 60000, husbandName: 'メンバー1', wifeName: 'メンバー2' },
+  config: {
+    husbandBaseContribution: 60000,
+    wifeBaseContribution: 60000,
+    husbandName: 'メンバー1',
+    wifeName: 'メンバー2',
+    husbandColor: localStorage.getItem('pairbudget_member1_color') || 'emerald',
+    wifeColor: localStorage.getItem('pairbudget_member2_color') || 'amber'
+  },
+  members: [], // マルチメンバー（ふたり〜シェアハウス対応）
   transactions: [],
   receiptItems: [],
   monthlyTotals: [],
@@ -76,6 +91,270 @@ const state = {
   fixedExpenses: [],
   categories: [],
   rules: []
+};
+
+// ==========================================
+// ジェンダーフリー・カラーパレット (8色)
+// ==========================================
+const MEMBER_COLOR_PALETTE = {
+  emerald: { key: 'emerald', name: 'エメラルド', hex: '#10b981', bgHex: '#10b98118', borderHex: '#10b98140' },
+  indigo:  { key: 'indigo',  name: 'インディゴ', hex: '#6366f1', bgHex: '#6366f118', borderHex: '#6366f140' },
+  amber:   { key: 'amber',   name: 'アンバー',   hex: '#f59e0b', bgHex: '#f59e0b18', borderHex: '#f59e0b40' },
+  rose:    { key: 'rose',    name: 'ローズ',     hex: '#f43f5e', bgHex: '#f43f5e18', borderHex: '#f43f5e40' },
+  violet:  { key: 'violet',  name: 'バイオレット', hex: '#8b5cf6', bgHex: '#8b5cf618', borderHex: '#8b5cf640' },
+  teal:    { key: 'teal',    name: 'ティール',   hex: '#14b8a6', bgHex: '#14b8a618', borderHex: '#14b8a640' },
+  sky:     { key: 'sky',     name: 'スカイ',     hex: '#0ea5e9', bgHex: '#0ea5e918', borderHex: '#0ea5e940' },
+  orange:  { key: 'orange',  name: 'オレンジ',   hex: '#f97316', bgHex: '#f9731618', borderHex: '#f9731640' }
+};
+
+// ==========================================
+// マルチメンバー（シェアハウス対応）状態管理
+// ==========================================
+function initMembers() {
+  const saved = localStorage.getItem('pairbudget_members');
+  if (saved) {
+    try {
+      const parsed = JSON.parse(saved);
+      if (Array.isArray(parsed) && parsed.length >= 1) {
+        state.members = parsed;
+        syncStateConfigFromMembers();
+        return;
+      }
+    } catch (_) {}
+  }
+
+  // 初期デフォルト2人（後方互換）
+  state.members = [
+    {
+      id: 'm1',
+      name: state.config.husbandName || 'メンバー1',
+      slot: 'husband',
+      color: state.config.husbandColor || localStorage.getItem('pairbudget_member1_color') || 'emerald',
+      baseContribution: Number(state.config.husbandBaseContribution) || 60000,
+      isPaid: !!state.transfers.husband?.isPaid
+    },
+    {
+      id: 'm2',
+      name: state.config.wifeName || 'メンバー2',
+      slot: 'wife',
+      color: state.config.wifeColor || localStorage.getItem('pairbudget_member2_color') || 'amber',
+      baseContribution: Number(state.config.wifeBaseContribution) || 60000,
+      isPaid: !!state.transfers.wife?.isPaid
+    }
+  ];
+  syncStateConfigFromMembers();
+}
+initMembers();
+
+function syncStateConfigFromMembers() {
+  if (!state.members || !state.members.length) return;
+  state.config.husbandName = state.members[0]?.name || 'メンバー1';
+  state.config.husbandColor = state.members[0]?.color || 'emerald';
+  state.config.husbandBaseContribution = state.members[0]?.baseContribution || 60000;
+
+  if (state.members.length > 1) {
+    state.config.wifeName = state.members[1]?.name || 'メンバー2';
+    state.config.wifeColor = state.members[1]?.color || 'amber';
+    state.config.wifeBaseContribution = state.members[1]?.baseContribution || 60000;
+  }
+}
+
+function saveMembersToStorage() {
+  try {
+    localStorage.setItem('pairbudget_members', JSON.stringify(state.members));
+    if (state.members[0]) {
+      localStorage.setItem('pairbudget_member1_color', state.members[0].color);
+    }
+    if (state.members[1]) {
+      localStorage.setItem('pairbudget_member2_color', state.members[1].color);
+    }
+  } catch (_) {}
+}
+
+function getMemberColor(slotOrName) {
+  if (!slotOrName) return MEMBER_COLOR_PALETTE.emerald;
+  const target = String(slotOrName).trim();
+  const found = (state.members || []).find(m => m.id === target || m.slot === target || m.name === target);
+  if (found && found.color && MEMBER_COLOR_PALETTE[found.color]) {
+    return MEMBER_COLOR_PALETTE[found.color];
+  }
+  if (target === 'husband') return MEMBER_COLOR_PALETTE[state.config.husbandColor] || MEMBER_COLOR_PALETTE.emerald;
+  if (target === 'wife') return MEMBER_COLOR_PALETTE[state.config.wifeColor] || MEMBER_COLOR_PALETTE.amber;
+  return MEMBER_COLOR_PALETTE.emerald;
+}
+
+function applyMemberColors() {
+  renderTransferCard();
+  updatePayerDropdowns();
+}
+
+// 支出モーダルの支払者動的チップ描画
+let currentSelectedExpensePayer = 'メンバー1';
+function renderExpensePayerChips(selectedPayer = null) {
+  const container = $('expensePayerContainer');
+  if (!container) return;
+  if (selectedPayer) currentSelectedExpensePayer = selectedPayer;
+
+  container.innerHTML = '';
+  const options = [...(state.members || []).map(m => ({ label: m.name, value: m.name, color: getMemberColor(m.color) })), { label: '共同', value: '共同', color: { hex: '#10b981', bgHex: '#10b98118' } }];
+
+  options.forEach(opt => {
+    const isSelected = opt.value === currentSelectedExpensePayer;
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    btn.className = `px-3 py-1.5 rounded-xl text-xs font-bold transition-all border flex items-center gap-1.5 ${
+      isSelected ? 'shadow-sm scale-102' : 'bg-slate-50 border-slate-200 text-slate-600 hover:bg-slate-100'
+    }`;
+    if (isSelected) {
+      btn.style.backgroundColor = opt.color.hex;
+      btn.style.borderColor = opt.color.hex;
+      btn.style.color = '#ffffff';
+    }
+    btn.innerHTML = `<span class="w-2 h-2 rounded-full ${isSelected ? 'bg-white' : ''}" style="${!isSelected ? `background-color: ${opt.color.hex}` : ''}"></span> ${esc(opt.label)}`;
+    btn.onclick = () => {
+      currentSelectedExpensePayer = opt.value;
+      renderExpensePayerChips(opt.value);
+    };
+    container.appendChild(btn);
+  });
+}
+
+// ドロップダウン（レシートモーダル＆履歴フィルタ）を動的メンバーに更新
+function updatePayerDropdowns() {
+  const receiptSelect = $('receiptPayer');
+  if (receiptSelect) {
+    const prev = receiptSelect.value;
+    receiptSelect.innerHTML = (state.members || []).map(m => `<option value="${esc(m.name)}">${esc(m.name)}</option>`).join('') + '<option value="共同">共同</option>';
+    if (prev) receiptSelect.value = prev;
+  }
+
+  const historyFilter = $('historyPayerFilter');
+  if (historyFilter) {
+    const prev = historyFilter.value;
+    historyFilter.innerHTML = '<option value="all">全メンバー</option>' + (state.members || []).map(m => `<option value="${esc(m.name)}">${esc(m.name)}</option>`).join('') + '<option value="共同">共同</option>';
+    if (prev) historyFilter.value = prev;
+  }
+}
+
+// 設定タブのメンバー管理カード一覧を描画
+function renderSettingMembersList() {
+  const container = $('settingMembersList');
+  if (!container) return;
+  container.innerHTML = '';
+
+  (state.members || []).forEach((member, idx) => {
+    const mColor = getMemberColor(member.color);
+    const card = document.createElement('div');
+    card.className = 'p-3 rounded-xl bg-slate-50 border transition-all space-y-2';
+    card.style.borderColor = `${mColor.hex}50`;
+    card.style.backgroundColor = `${mColor.hex}08`;
+
+    // カラーサークル一覧
+    const colorButtonsHtml = Object.values(MEMBER_COLOR_PALETTE).map(col => {
+      const isSelected = col.key === member.color;
+      return `<button type="button" data-member-idx="${idx}" data-color-key="${col.key}" title="${col.name}" class="w-6 h-6 rounded-full transition-transform active:scale-95 flex items-center justify-center text-white text-[10px] font-black ${
+        isSelected ? 'ring-2 ring-offset-2 ring-slate-800 scale-110 shadow-sm' : 'opacity-85 hover:opacity-100 hover:scale-105'
+      }" style="background-color: ${col.hex}">${isSelected ? '✓' : ''}</button>`;
+    }).join('');
+
+    card.innerHTML = `
+      <div class="flex items-center justify-between pb-1">
+        <span class="text-xs font-bold flex items-center gap-1.5" style="color: ${mColor.hex}">
+          <span class="w-2.5 h-2.5 rounded-full" style="background-color: ${mColor.hex}"></span>
+          メンバー ${idx + 1}
+        </span>
+        ${state.members.length > 2 ? `<button type="button" data-action="remove-member" data-id="${member.id}" class="text-rose-500 hover:text-rose-700 text-xs font-bold p-1 flex items-center gap-0.5"><i data-lucide="trash-2" class="w-3.5 h-3.5"></i> 削除</button>` : ''}
+      </div>
+      <div class="grid grid-cols-2 gap-2">
+        <div>
+          <label class="text-[10px] font-bold text-slate-500 block mb-0.5">表示名</label>
+          <input type="text" data-member-idx="${idx}" data-field="name" maxlength="15" value="${esc(member.name)}"
+                 class="w-full bg-white border border-slate-200 rounded-lg px-2.5 py-1.5 text-xs font-bold text-slate-800 focus:outline-none">
+        </div>
+        <div>
+          <label class="text-[10px] font-bold text-slate-500 block mb-0.5">基本拠出額 (円)</label>
+          <input type="number" data-member-idx="${idx}" data-field="base" value="${member.baseContribution}"
+                 class="w-full bg-white border border-slate-200 rounded-lg px-2.5 py-1.5 text-xs font-mono focus:outline-none">
+        </div>
+      </div>
+      <div>
+        <span class="text-[10px] font-bold text-slate-500 block mb-1">テーマカラー</span>
+        <div class="flex flex-wrap gap-1.5">${colorButtonsHtml}</div>
+      </div>
+    `;
+
+    // カラーピッカーイベント
+    card.querySelectorAll('button[data-color-key]').forEach(btn => {
+      btn.onclick = () => {
+        const cKey = btn.dataset.colorKey;
+        member.color = cKey;
+        saveMembersToStorage();
+        syncStateConfigFromMembers();
+        renderSettingMembersList();
+        renderTransferCard();
+        renderExpensePayerChips();
+        renderRecentTransactions();
+        renderHistoryList();
+      };
+    });
+
+    // 入力値バインド
+    card.querySelectorAll('input[data-field]').forEach(input => {
+      input.oninput = () => {
+        const field = input.dataset.field;
+        if (field === 'name') member.name = input.value.trim() || `メンバー${idx + 1}`;
+        if (field === 'base') member.baseContribution = Number(input.value) || 0;
+        syncStateConfigFromMembers();
+      };
+    });
+
+    // 削除ボタン
+    const delBtn = card.querySelector('[data-action="remove-member"]');
+    if (delBtn) {
+      delBtn.onclick = () => removeMemberSlot(member.id);
+    }
+
+    container.appendChild(card);
+  });
+  lucide.createIcons();
+}
+
+window.addNewMemberSlot = function () {
+  const count = state.members.length + 1;
+  const usedColors = state.members.map(m => m.color);
+  const nextColor = Object.keys(MEMBER_COLOR_PALETTE).find(c => !usedColors.includes(c)) || 'emerald';
+
+  state.members.push({
+    id: 'm_' + Date.now().toString(36),
+    name: `メンバー${count}`,
+    slot: `slot_${count}`,
+    color: nextColor,
+    baseContribution: 60000,
+    isPaid: false
+  });
+
+  saveMembersToStorage();
+  syncStateConfigFromMembers();
+  renderSettingMembersList();
+  renderTransferCard();
+  renderExpensePayerChips();
+  updatePayerDropdowns();
+  showToast(`「メンバー${count}」を追加しました`);
+};
+
+window.removeMemberSlot = function (id) {
+  if (state.members.length <= 2) {
+    showToast('メンバーは最低2名必要です');
+    return;
+  }
+  state.members = state.members.filter(m => m.id !== id);
+  saveMembersToStorage();
+  syncStateConfigFromMembers();
+  renderSettingMembersList();
+  renderTransferCard();
+  renderExpensePayerChips();
+  updatePayerDropdowns();
+  showToast('メンバーを削除しました');
 };
 
 function memberName(slot) {
@@ -109,7 +388,7 @@ function displayPayerName(payer) {
 // ==========================================
 // デモ用モックDB（GAS未設定時のみ使用）
 // ==========================================
-const mockDb = { transactions: [], receiptItems: [], shopping: [], fixed: [], audit: [], budgets: {}, paid: {}, seeded: false };
+const mockDb = { transactions: [], receiptItems: [], shopping: [], fixed: [], audit: [], budgets: {}, paid: {}, events: [], eventExpenses: [], seeded: false };
 const MOCK_CATEGORIES = [
   { name: '食費', color: '#10B981', icon: 'utensils' }, { name: '日用品', color: '#3B82F6', icon: 'shopping-bag' },
   { name: '外食', color: '#F59E0B', icon: 'coffee' }, { name: '住居費', color: '#6366F1', icon: 'home' },
@@ -132,10 +411,13 @@ function seedMockDb() {
   mockDb.fixed = MOCK_FIXED.map(f => ({ ...f }));
   const cur = localMonthStr();
   const rnd = n => ((n * 9301 + 49297) % 233280) / 233280; // 決定的な疑似乱数
+  const m1 = (state.members && state.members[0]?.name) || state.config?.husbandName || 'メンバー1';
+  const m2 = (state.members && state.members[1]?.name) || state.config?.wifeName || 'メンバー2';
+
   const addTx = (date, title, amount, category, isShared, paymentType, payer, receiptId = '') => {
     mockDb.transactions.push({
       id: mockId(), date, title, amount, category, isShared, paymentType, payer, memo: '',
-      createdBy: payer === '妻' ? '妻' : '夫', createdAt: date + ' 12:00:00', updatedBy: '', updatedAt: '', receiptId
+      createdBy: payer === m2 ? m2 : m1, createdAt: date + ' 12:00:00', updatedBy: '', updatedAt: '', receiptId
     });
   };
   const addReceipt = (date, store, payer, items) => {
@@ -147,29 +429,31 @@ function seedMockDb() {
   };
   for (let i = 35; i >= 1; i--) {
     const m = shiftMonth(cur, -i);
-    addTx(`${m}-27`, '【固定費】家賃', 110000, '住居費', true, 'shared_card', '夫');
-    addTx(`${m}-20`, '【固定費】光熱費', 11000 + Math.floor(rnd(i) * 9000), '水道光熱費', true, 'shared_card', '妻');
-    addTx(`${m}-10`, 'スーパー', 38000 + Math.floor(rnd(i + 7) * 22000), '食費', true, 'shared_card', '妻');
-    addTx(`${m}-15`, '外食', 8000 + Math.floor(rnd(i + 3) * 14000), '外食', true, 'shared_card', '夫');
-    addTx(`${m}-18`, '私物', 5000 + Math.floor(rnd(i + 5) * 15000), '趣味・衣服', false, 'shared_card', i % 2 ? '夫' : '妻');
+    addTx(`${m}-27`, '【固定費】家賃', 110000, '住居費', true, 'shared_card', m1);
+    addTx(`${m}-20`, '【固定費】光熱費', 11000 + Math.floor(rnd(i) * 9000), '水道光熱費', true, 'shared_card', m2);
+    addTx(`${m}-10`, 'スーパー', 38000 + Math.floor(rnd(i + 7) * 22000), '食費', true, 'shared_card', m2);
+    addTx(`${m}-15`, '外食', 8000 + Math.floor(rnd(i + 3) * 14000), '外食', true, 'shared_card', m1);
+    addTx(`${m}-18`, '私物', 5000 + Math.floor(rnd(i + 5) * 15000), '趣味・衣服', false, 'shared_card', i % 2 ? m1 : m2);
   }
-  addReceipt(`${shiftMonth(cur, -2)}-12`, 'イオン', '妻', [['ネギ', 1, 150], ['豆腐', 2, 160], ['牛乳', 1, 208]]);
-  addReceipt(`${shiftMonth(cur, -1)}-08`, 'ライフ', '夫', [['長ねぎ', 1, 168], ['豆腐', 1, 98], ['卵', 1, 238]]);
-  addReceipt(`${cur}-03`, 'イオン', '妻', [['ネギ', 1, 198], ['豆腐', 1, 90], ['牛乳', 1, 218], ['卵', 1, 248]]);
+  addReceipt(`${shiftMonth(cur, -2)}-12`, 'イオン', m2, [['ネギ', 1, 150], ['豆腐', 2, 160], ['牛乳', 1, 208]]);
+  addReceipt(`${shiftMonth(cur, -1)}-08`, 'ライフ', m1, [['長ねぎ', 1, 168], ['豆腐', 1, 98], ['卵', 1, 238]]);
+  addReceipt(`${cur}-03`, 'イオン', m2, [['ネギ', 1, 198], ['豆腐', 1, 90], ['牛乳', 1, 218], ['卵', 1, 248]]);
   const d = n => `${cur}-${pad2(Math.min(n, 28))}`;
-  addTx(d(2), 'ドラッグストア洗剤', 2000, '日用品', true, 'advanced_by_user', '夫');
-  addTx(d(4), 'スニーカー (私物購入)', 12000, '趣味・衣服', false, 'shared_card', '夫');
-  addTx(d(5), 'カフェ ランチ', 2400, '外食', true, 'shared_card', '夫');
-  addTx(d(6), 'ドラッグストア調味料', 5000, '食費', true, 'advanced_by_user', '妻');
+  addTx(d(2), 'ドラッグストア洗剤', 2000, '日用品', true, 'advanced_by_user', m1);
+  addTx(d(4), 'スニーカー (私物購入)', 12000, '趣味・衣服', false, 'shared_card', m1);
+  addTx(d(5), 'カフェ ランチ', 2400, '外食', true, 'shared_card', m1);
+  addTx(d(6), 'ドラッグストア調味料', 5000, '食費', true, 'advanced_by_user', m2);
   mockDb.shopping = [
-    { id: 's1', title: '牛乳・低脂肪乳', category: '食費', isCompleted: false, requestedBy: '妻', createdAt: d(5) },
-    { id: 's2', title: '食器用洗剤詰め替え', category: '日用品', isCompleted: false, requestedBy: '夫', createdAt: d(4) }
+    { id: 's1', title: '牛乳・低脂肪乳', category: '食費', isCompleted: false, requestedBy: m2, createdAt: d(5) },
+    { id: 's2', title: '食器用洗剤詰め替え', category: '日用品', isCompleted: false, requestedBy: m1, createdAt: d(4) }
   ];
   // 編集履歴のデモ（他者が編集した例）
   const demo = mockDb.transactions.find(t => t.title === 'カフェ ランチ');
-  demo.updatedBy = '妻'; demo.updatedAt = `${d(7)} 21:30:00`;
-  mockDb.audit.push({ at: `${d(7)} 21:30:00`, actor: '妻', verified: true, action: '更新', targetType: '支出', targetId: demo.id,
-    before: { amount: 2400 }, after: { amount: 2400, memo: 'ふたりで休日ランチ' } });
+  if (demo) {
+    demo.updatedBy = m2; demo.updatedAt = `${d(7)} 21:30:00`;
+    mockDb.audit.push({ at: `${d(7)} 21:30:00`, actor: m2, verified: true, action: '更新', targetType: '支出', targetId: demo.id,
+      before: { amount: 2400 }, after: { amount: 2400, memo: 'ふたりで休日ランチ' } });
+  }
 }
 
 function mockBuildInitial(month) {
@@ -344,6 +628,96 @@ async function mockApi(action, data) {
       });
       return { success: true };
     }
+    case 'createPair': {
+      const pairId = 'pair_' + Date.now().toString(36);
+      const inviteCode = 'PB' + Math.random().toString(36).substring(2, 7).toUpperCase();
+      const pairName = data.name || 'ふたりの家計簿';
+      const userName = data.userName || 'メンバー1';
+      if (state.members && state.members.length > 0) {
+        state.members[0].name = userName;
+        saveMembersToStorage();
+        syncStateConfigFromMembers();
+      }
+      return {
+        success: true,
+        pair: { id: pairId, name: pairName, inviteCode }
+      };
+    }
+    case 'joinPair': {
+      const pairId = 'pair_' + Date.now().toString(36);
+      const inviteCode = data.inviteCode || 'PB7829';
+      const pairName = 'ふたりの家計簿';
+      const userName = data.name || 'メンバー2';
+      if (state.members && state.members.length > 1) {
+        state.members[1].name = userName;
+        saveMembersToStorage();
+        syncStateConfigFromMembers();
+      }
+      return {
+        success: true,
+        pair: { id: pairId, name: pairName, inviteCode }
+      };
+    }
+    case 'getEvents': {
+      return { success: true, events: mockDb.events || [] };
+    }
+    case 'createEvent': {
+      const evId = 'ev_' + Date.now().toString(36);
+      const newEv = {
+        id: evId,
+        title: data.title || '旅行・イベント',
+        startDate: data.startDate || localDateStr(new Date()),
+        endDate: data.endDate || localDateStr(new Date()),
+        budget: Number(data.budget) || 0,
+        currency: data.currency || 'JPY',
+        status: 'active',
+        members: data.members || (state.members || []).map(m => m.name),
+        totalExpense: 0,
+        createdAt: mockNow()
+      };
+      if (!mockDb.events) mockDb.events = [];
+      mockDb.events.unshift(newEv);
+      return { success: true, event: newEv };
+    }
+    case 'deleteEvent': {
+      if (mockDb.events) mockDb.events = mockDb.events.filter(e => e.id !== data.id);
+      if (mockDb.eventExpenses) mockDb.eventExpenses = mockDb.eventExpenses.filter(e => e.eventId !== data.id);
+      return { success: true };
+    }
+    case 'addEventExpense': {
+      const expId = 'ee_' + Date.now().toString(36);
+      const exp = {
+        id: expId,
+        eventId: data.eventId,
+        title: data.title,
+        amount: Number(data.amount) || 0,
+        payer: data.payer || state.currentUser,
+        splitType: data.splitType || 'equal',
+        date: data.date || localDateStr(new Date()),
+        category: data.category || 'その他',
+        createdAt: mockNow()
+      };
+      if (!mockDb.eventExpenses) mockDb.eventExpenses = [];
+      mockDb.eventExpenses.push(exp);
+      return { success: true, expense: exp };
+    }
+    case 'deleteEventExpense': {
+      if (mockDb.eventExpenses) mockDb.eventExpenses = mockDb.eventExpenses.filter(e => e.id !== data.id);
+      return { success: true };
+    }
+    case 'getEventSettlement': {
+      const expenses = (mockDb.eventExpenses || []).filter(e => e.eventId === data.eventId);
+      const members = (state.members || []).map(m => m.name);
+      return {
+        success: true,
+        settlement: {
+          eventId: data.eventId,
+          totalAmount: expenses.reduce((s, e) => s + e.amount, 0),
+          perPerson: members.length ? Math.round(expenses.reduce((s, e) => s + e.amount, 0) / members.length) : 0,
+          transfers: []
+        }
+      };
+    }
     default: return { success: true };
   }
 }
@@ -428,20 +802,55 @@ function clearAllLocalCache() {
 
 async function callGas(action, data, extra = {}) {
   const idToken = state.liffReady ? liff.getIDToken() : null;
-  const res = await fetch(state.gasApiUrl, {
-    method: 'POST',
-    headers: { 'Content-Type': 'text/plain' }, // CORSプリフライト回避
-    body: JSON.stringify({ action, data: data || {}, idToken, ...extra })
-  });
-  return res.json();
+
+  const sendRequest = async (url) => {
+    if (!url) throw new Error('API URL is empty');
+    const isGoogleScript = url.includes('script.google.com');
+    const res = await fetch(url, {
+      method: 'POST',
+      headers: {
+        'Content-Type': isGoogleScript ? 'text/plain' : 'application/json'
+      },
+      body: JSON.stringify({ action, data: data || {}, idToken, pairId: state.pairId, ...extra })
+    });
+    if (!res.ok) {
+      throw new Error(`HTTP ${res.status}: ${res.statusText}`);
+    }
+    const contentType = res.headers.get('content-type') || '';
+    if (contentType.includes('text/html')) {
+      throw new Error('HTML response returned instead of JSON (Endpoint may not exist)');
+    }
+    return res.json();
+  };
+
+  try {
+    return await sendRequest(state.gasApiUrl);
+  } catch (err) {
+    // もし /api/budget が404等の場合、APP_CONFIG.GAS_URL があればフォールバック試行
+    if (state.gasApiUrl !== APP_CONFIG.GAS_URL && APP_CONFIG.GAS_URL) {
+      console.warn('プライマリAPI失敗のためGAS_URLへフォールバック試行:', err);
+      try {
+        return await sendRequest(APP_CONFIG.GAS_URL);
+      } catch (gasErr) {
+        console.warn('GAS_URLフォールバックも失敗:', gasErr);
+      }
+    }
+    throw err;
+  }
 }
 
 async function api(action, data = {}, extra = {}) {
+  if (state.isMockMode) {
+    return await mockApi(action, data);
+  }
   try {
-    return state.isMockMode ? await mockApi(action, data) : await callGas(action, data, extra);
+    return await callGas(action, data, extra);
   } catch (err) {
-    console.warn('API通信エラー:', action, err);
-    return { success: false, error: '通信に失敗しました。電波の良い場所で再試行してください' };
+    console.warn('API通信エラー (デモモードへフォールバック):', action, err);
+    // バックエンド未起動、404、オフライン時は自動でデモモードへフォールバック
+    state.isMockMode = true;
+    showBanner('⚠️ バックエンドに接続できないため、デモモードで動作中です（ローカルで全機能を操作可能）', 'warn');
+    return await mockApi(action, data);
   }
 }
 
@@ -487,56 +896,235 @@ function handleApiError(res) {
   showToast(res.error || 'エラーが発生しました');
 }
 
-function openRegisterModal(availableRoles) {
-  const canHusband = Array.isArray(availableRoles) ? availableRoles.includes('夫') : (availableRoles && typeof availableRoles === 'object' ? !!availableRoles.husband : true);
-  const canWife = Array.isArray(availableRoles) ? availableRoles.includes('妻') : (availableRoles && typeof availableRoles === 'object' ? !!availableRoles.wife : true);
-  const hName = (availableRoles && availableRoles.husbandName) || memberName('husband');
-  const wName = (availableRoles && availableRoles.wifeName) || memberName('wife');
-  $('registerHusbandBtn').disabled = !canHusband;
-  $('registerWifeBtn').disabled = !canWife;
-  $('registerHusbandBtn').textContent = canHusband ? '🔵 枠1（ブルー）で登録' : `🔵 ${hName}（登録済）`;
-  $('registerWifeBtn').textContent = canWife ? '🩷 枠2（ピンク）で登録' : `🩷 ${wName}（登録済）`;
-  if ($('registerNameInput') && !$('registerNameInput').value && state.liffDisplayName) {
-    $('registerNameInput').value = state.liffDisplayName;
+window.switchOnboardingTab = function (tab) {
+  const isCreate = tab === 'create';
+  $('onboardingCreateForm')?.classList.toggle('hidden', !isCreate);
+  $('onboardingJoinForm')?.classList.toggle('hidden', isCreate);
+  const createBtn = $('tabOnboardingCreateBtn');
+  const joinBtn = $('tabOnboardingJoinBtn');
+  if (createBtn && joinBtn) {
+    if (isCreate) {
+      createBtn.className = 'py-2 rounded-lg bg-white text-brand-700 shadow-sm transition-all flex items-center justify-center gap-1.5 font-bold';
+      joinBtn.className = 'py-2 rounded-lg text-slate-500 hover:text-slate-800 transition-all flex items-center justify-center gap-1.5 font-medium';
+    } else {
+      createBtn.className = 'py-2 rounded-lg text-slate-500 hover:text-slate-800 transition-all flex items-center justify-center gap-1.5 font-medium';
+      joinBtn.className = 'py-2 rounded-lg bg-white text-indigo-700 shadow-sm transition-all flex items-center justify-center gap-1.5 font-bold';
+    }
   }
-  $('registerMemberModal').classList.remove('hidden');
+  lucide.createIcons();
+};
+
+function openRegisterModal(opts = {}) {
+  const modal = $('registerMemberModal');
+  if (!modal) return;
+
+  // ステップ1（入力）を表示、ステップ2（完了）を非表示
+  $('onboardingStepForm')?.classList.remove('hidden');
+  $('onboardingStepComplete')?.classList.add('hidden');
+
+  // URLパラメータまたは引数の招待コードをチェック
+  let inviteCode = opts.inviteCode || '';
+  if (!inviteCode) {
+    try {
+      const urlParams = new URLSearchParams(window.location.search);
+      inviteCode = urlParams.get('invite') || '';
+    } catch (_) {}
+  }
+
+  if (inviteCode) {
+    switchOnboardingTab('join');
+    if ($('onboardingJoinCode')) $('onboardingJoinCode').value = inviteCode.toUpperCase().trim();
+  } else {
+    switchOnboardingTab('create');
+  }
+
+  // LIFF表示名があれば入力欄にセット
+  if (state.liffDisplayName) {
+    if ($('onboardingCreatorName') && !$('onboardingCreatorName').value) {
+      $('onboardingCreatorName').value = state.liffDisplayName;
+    }
+    if ($('onboardingJoinName') && !$('onboardingJoinName').value) {
+      $('onboardingJoinName').value = state.liffDisplayName;
+    }
+  }
+
+  modal.classList.remove('hidden');
+  lucide.createIcons();
 }
 
-async function submitRegisterMember(slot) {
-  const name = ($('registerNameInput') ? $('registerNameInput').value : '').trim();
-  if (!name) {
-    showToast('あなたの表示名（ニックネーム）を入力してください');
-    if ($('registerNameInput')) $('registerNameInput').focus();
+async function submitOnboardingCreate(e) {
+  if (e) e.preventDefault();
+  const userName = $('onboardingCreatorName')?.value.trim();
+  const groupName = $('onboardingGroupName')?.value.trim() || 'ふたりの家計簿';
+  if (!userName) {
+    showToast('あなたのニックネームを入力してください');
+    $('onboardingCreatorName')?.focus();
     return;
   }
-  if (['共同', 'all', '未認証', '自動計上'].includes(name)) {
-    showToast(`「${name}」は表示名に使用できません`);
-    return;
+  showToast('家計簿グループを作成中…', { loading: true });
+
+  try {
+    const res = await api('createPair', { name: groupName, userName });
+    hideToast();
+
+    // res.pair が存在しない場合でも安全にフォールバック
+    const pair = (res && res.pair) ? res.pair : {
+      id: 'pair_' + Date.now().toString(36),
+      name: groupName,
+      inviteCode: 'PB' + Math.random().toString(36).substring(2, 7).toUpperCase()
+    };
+
+    // 作成成功: 状態とストレージを更新
+    state.pairId = pair.id;
+    state.pairName = pair.name;
+    state.inviteCode = pair.inviteCode;
+    state.currentUser = userName;
+    if (state.members && state.members.length > 0) {
+      state.members[0].name = userName;
+      saveMembersToStorage();
+      syncStateConfigFromMembers();
+    }
+    localStorage.setItem('pairbudget_pair_id', pair.id);
+    localStorage.setItem('pairbudget_pair_name', pair.name);
+    localStorage.setItem('pairbudget_invite_code', pair.inviteCode);
+    updatePairHeader();
+
+    // ステップ2（完了画面）を表示
+    if ($('onboardingGeneratedCode')) $('onboardingGeneratedCode').textContent = pair.inviteCode;
+    $('onboardingStepForm')?.classList.add('hidden');
+    $('onboardingStepComplete')?.classList.remove('hidden');
+    lucide.createIcons();
+    showToast('グループを作成しました！🎉');
+  } catch (err) {
+    console.error('submitOnboardingCreate例外発生 (フォールバック実行):', err);
+    hideToast();
+    const fallbackCode = 'PB' + Math.random().toString(36).substring(2, 7).toUpperCase();
+    state.pairId = 'pair_demo';
+    state.pairName = groupName;
+    state.inviteCode = fallbackCode;
+    state.currentUser = userName;
+    if (state.members && state.members.length > 0) {
+      state.members[0].name = userName;
+      saveMembersToStorage();
+      syncStateConfigFromMembers();
+    }
+    localStorage.setItem('pairbudget_pair_id', 'pair_demo');
+    localStorage.setItem('pairbudget_pair_name', groupName);
+    localStorage.setItem('pairbudget_invite_code', fallbackCode);
+    updatePairHeader();
+    if ($('onboardingGeneratedCode')) $('onboardingGeneratedCode').textContent = fallbackCode;
+    $('onboardingStepForm')?.classList.add('hidden');
+    $('onboardingStepComplete')?.classList.remove('hidden');
+    lucide.createIcons();
+    showToast('グループを作成しました！🎉');
   }
-  const registerCode = $('registerCodeInput').value.trim();
-  $('registerHusbandBtn').disabled = true;
-  $('registerWifeBtn').disabled = true;
-  showToast('メンバー登録しています…', { loading: true });
-  const res = await api('registerMember', { slot, name, role: slot === 'wife' ? '妻' : '夫', registerCode });
-  if (!res.success) {
-    showToast(res.error || '登録に失敗しました');
-    openRegisterModal(res.availableRoles);
-    return;
-  }
-  $('registerMemberModal').classList.add('hidden');
-  hideBanner();
-  showToast(res.message || `「${name}」として登録しました！`);
-  await loadInitialData(state.viewMonth, { silent: true });
 }
+
+async function submitOnboardingJoin(e) {
+  if (e) e.preventDefault();
+  const inviteCode = $('onboardingJoinCode')?.value.trim().toUpperCase();
+  const userName = $('onboardingJoinName')?.value.trim();
+  if (!inviteCode) {
+    showToast('招待コードを入力してください');
+    $('onboardingJoinCode')?.focus();
+    return;
+  }
+  if (!userName) {
+    showToast('あなたのニックネームを入力してください');
+    $('onboardingJoinName')?.focus();
+    return;
+  }
+  showToast('グループに参加中…', { loading: true });
+
+  try {
+    const res = await api('joinPair', { inviteCode, name: userName });
+    hideToast();
+
+    const pair = (res && res.pair) ? res.pair : {
+      id: 'pair_' + Date.now().toString(36),
+      name: 'ふたりの家計簿',
+      inviteCode: inviteCode
+    };
+
+    state.pairId = pair.id;
+    state.pairName = pair.name;
+    state.inviteCode = pair.inviteCode;
+    state.currentUser = userName;
+    if (state.members && state.members.length > 1) {
+      state.members[1].name = userName;
+      saveMembersToStorage();
+      syncStateConfigFromMembers();
+    }
+    localStorage.setItem('pairbudget_pair_id', pair.id);
+    localStorage.setItem('pairbudget_pair_name', pair.name);
+    localStorage.setItem('pairbudget_invite_code', pair.inviteCode);
+    updatePairHeader();
+
+    $('registerMemberModal')?.classList.add('hidden');
+    hideBanner();
+    showToast(`グループ「${pair.name}」に参加しました！🤝`);
+    await loadInitialData(state.viewMonth, { skipCache: true });
+  } catch (err) {
+    console.error('submitOnboardingJoin例外発生 (フォールバック実行):', err);
+    hideToast();
+    state.pairId = 'pair_demo';
+    state.pairName = 'ふたりの家計簿';
+    state.inviteCode = inviteCode;
+    state.currentUser = userName;
+    localStorage.setItem('pairbudget_pair_id', 'pair_demo');
+    localStorage.setItem('pairbudget_pair_name', 'ふたりの家計簿');
+    localStorage.setItem('pairbudget_invite_code', inviteCode);
+    updatePairHeader();
+    $('registerMemberModal')?.classList.add('hidden');
+    hideBanner();
+    showToast(`グループに参加しました！🤝`);
+    await loadInitialData(state.viewMonth, { skipCache: true });
+  }
+}
+
+window.copyOnboardingCode = function () {
+  const code = state.inviteCode || $('onboardingGeneratedCode')?.textContent.trim();
+  if (!code || code === '------') return;
+  const url = `${window.location.origin}${window.location.pathname}?invite=${code}`;
+  const text = `ふたりの家計簿に招待されました！\nグループ: ${state.pairName || 'ふたりの家計簿'}\n招待コード: ${code}\n参加はこちら: ${url}`;
+  if (navigator.clipboard && navigator.clipboard.writeText) {
+    navigator.clipboard.writeText(text).then(() => {
+      showToast('招待メッセージをコピーしました！LINE等で送信してください');
+    }).catch(() => {
+      prompt('以下の招待コードをコピーしてください:', code);
+    });
+  } else {
+    prompt('以下の招待コードをコピーしてください:', code);
+  }
+};
+
+window.shareOnboardingViaLine = function () {
+  const code = state.inviteCode || $('onboardingGeneratedCode')?.textContent.trim();
+  if (!code || code === '------') return;
+  const url = `${window.location.origin}${window.location.pathname}?invite=${code}`;
+  const text = `ふたりの家計簿に招待されました！\nグループ: ${state.pairName || 'ふたりの家計簿'}\n招待コード: ${code}\nここから参加してね👇\n${url}`;
+  window.open(`https://line.me/R/msg/text/?${encodeURIComponent(text)}`, '_blank');
+};
+
+window.finishOnboarding = function () {
+  $('registerMemberModal')?.classList.add('hidden');
+  hideBanner();
+  loadInitialData(state.viewMonth, { skipCache: true });
+};
 
 function showBanner(msg, kind) {
   const banner = $('mockBanner');
+  if (!banner) return;
   banner.classList.remove('hidden');
   banner.className = banner.className.replace(/bg-(amber|rose)-500/g, '') + (kind === 'error' ? ' bg-rose-500' : ' bg-amber-500');
-  banner.querySelector('span').textContent = msg;
+  const span = banner.querySelector('span');
+  if (span) span.textContent = msg;
 }
 
-function hideBanner() { $('mockBanner').classList.add('hidden'); }
+function hideBanner() {
+  const banner = $('mockBanner');
+  if (banner) banner.classList.add('hidden');
+}
 
 /**
  * 書き込み → 同一リクエスト（1往復）で最新データを受け取って画面更新（旧GASへのフォールバック付き）
@@ -574,7 +1162,6 @@ async function loadInitialData(month, opts = {}) {
     return;
   }
 
-  state.isMockMode = false;
   // キャッシュがあれば即座（0.02秒）に先行描画し、裏で最新データを取得して差分更新
   let usedCache = false;
   if (!opts.skipCache) {
@@ -590,20 +1177,36 @@ async function loadInitialData(month, opts = {}) {
     showToast(isMonthSwitch ? `${targetMonth.replace('-', '年')}月のデータを読み込み中…` : '最新データを同期しています…', { loading: true });
   }
 
-  const res = await api('getInitialData', { month: targetMonth });
-  if (state.viewMonth !== targetMonth) return; // 月送り連打時の古いレスポンスを破棄
-  if (!res.success) {
-    handleApiError(res);
-    if (res.code !== 'UNREGISTERED' && res.code !== 'AUTH' && res.code !== 'SETUP_REQUIRED') {
-      showBanner('サーバーに接続できません。再読み込みしてください', 'error');
+  try {
+    const res = await api('getInitialData', { month: targetMonth });
+    if (state.viewMonth !== targetMonth) return; // 月送り連打時の古いレスポンスを破棄
+
+    if (!res || !res.success) {
+      if (res) handleApiError(res);
+      // バックエンド障害時はデモモードに自動フォールバックして描画
+      state.isMockMode = true;
+      showBanner('⚠️ バックエンドに接続できないため、デモモードで動作中です（ローカルで全機能を操作可能）', 'warn');
+      const fallbackData = await mockApi('getInitialData', { month: targetMonth });
+      applyData(fallbackData);
+      if (!usedCache && !opts.silent) hideToast();
+      return;
     }
-    return;
+
+    sessionStorage.removeItem('pairbudget_reauth_ts');
+    if (!usedCache && !opts.silent) hideToast();
+    if (!state.isMockMode) {
+      hideBanner();
+      saveInitCache(res);
+    }
+    applyData(res);
+  } catch (err) {
+    console.warn('loadInitialDataエラー -> デモモードで起動:', err);
+    state.isMockMode = true;
+    showBanner('⚠️ バックエンドに接続できないため、デモモードで動作中です（ローカルで全機能を操作可能）', 'warn');
+    const fallbackData = await mockApi('getInitialData', { month: targetMonth });
+    applyData(fallbackData);
+    if (!usedCache && !opts.silent) hideToast();
   }
-  sessionStorage.removeItem('pairbudget_reauth_ts');
-  if (!usedCache && !opts.silent) hideToast();
-  hideBanner();
-  saveInitCache(res);
-  applyData(res);
 }
 
 function applyData(data) {
@@ -618,13 +1221,32 @@ function applyData(data) {
   state.summary = data.summary || state.summary;
   state.transfers = data.transfers || state.transfers;
   state.backendVersion = data.version || (state.isMockMode ? 'demo' : 'v2.1以下 (未更新)');
-  if (data.config) {
+  if (data.members && Array.isArray(data.members) && data.members.length > 0) {
+    state.members = data.members;
+    syncStateConfigFromMembers();
+    saveMembersToStorage();
+  } else if (data.config) {
     state.config = {
       husbandBaseContribution: Number(data.config.husbandBaseContribution) || 60000,
       wifeBaseContribution: Number(data.config.wifeBaseContribution) || 60000,
       husbandName: data.config.husbandName || 'メンバー1',
       wifeName: data.config.wifeName || 'メンバー2'
     };
+    if (state.members && state.members.length >= 2) {
+      if (data.config.husbandName) state.members[0].name = data.config.husbandName;
+      if (data.config.husbandBaseContribution) state.members[0].baseContribution = Number(data.config.husbandBaseContribution);
+      if (data.config.wifeName) state.members[1].name = data.config.wifeName;
+      if (data.config.wifeBaseContribution) state.members[1].baseContribution = Number(data.config.wifeBaseContribution);
+    }
+  }
+  if (data.pair) {
+    state.pairId = data.pair.id;
+    state.pairName = data.pair.name;
+    state.inviteCode = data.pair.inviteCode || '';
+    localStorage.setItem('pairbudget_pair_id', data.pair.id);
+    localStorage.setItem('pairbudget_pair_name', data.pair.name);
+    localStorage.setItem('pairbudget_invite_code', data.pair.inviteCode || '');
+    updatePairHeader();
   }
   if (data.actor && data.actor.verified) {
     state.currentUser = data.actor.name;
@@ -683,26 +1305,89 @@ function renderMonthNav() {
 }
 
 function renderTransferCard() {
-  [['husband', '夫', 'blue'], ['wife', '妻', 'pink']].forEach(([key, who, color]) => {
-    const t = state.transfers[key];
-    $(`${key}Amount`).textContent = yen(t.totalTransfer);
-    $(`${key}Breakdown`).innerHTML =
-      `<div>基本: ${yen(t.baseContribution)}</div><div>私物: +${yen(t.privateOnSharedCard)} / 立替: -${yen(t.advancedForShared)}</div>`;
-    const badge = $(`${key}StatusBadge`);
-    const btn = $(`${key}PayToggle`);
-    if (t.isPaid) {
-      badge.textContent = '振込済';
-      badge.className = 'text-[10px] px-1.5 py-0.5 rounded-full bg-emerald-500/20 text-emerald-300 font-bold';
-      btn.innerHTML = '<i data-lucide="check" class="w-3.5 h-3.5"></i> 振込済み（取消）';
-      btn.className = 'mt-2.5 w-full py-1.5 rounded-lg text-xs font-bold bg-slate-700 text-slate-300 flex items-center justify-center gap-1';
-    } else {
-      badge.textContent = '未完了';
-      badge.className = 'text-[10px] px-1.5 py-0.5 rounded-full bg-amber-500/20 text-amber-300 font-medium';
-      btn.innerHTML = '<i data-lucide="check-circle" class="w-3.5 h-3.5"></i> 振込済みにする';
-      btn.className = `mt-2.5 w-full py-1.5 rounded-lg text-xs font-bold bg-${color}-600 hover:bg-${color}-500 text-white flex items-center justify-center gap-1`;
-    }
+  const container = $('transferCardsContainer');
+  if (!container) return;
+
+  const count = state.members.length;
+  container.className = count === 2
+    ? 'grid grid-cols-2 gap-3'
+    : 'grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3';
+
+  container.innerHTML = '';
+
+  state.members.forEach((member, idx) => {
+    const mColor = getMemberColor(member.color);
+    const mName = member.name;
+
+    // 当月の私物利用額（共同カードで私物を買った額）
+    const privateOnShared = state.transactions
+      .filter(t => !t.isShared && t.paymentType === 'shared_card' && isSameMember(t.payer, mName))
+      .reduce((sum, t) => sum + Number(t.amount || 0), 0);
+
+    // 当月の個人立替額（自分の財布で共同支出を立替えた額）
+    const advancedForShared = state.transactions
+      .filter(t => t.isShared && t.paymentType === 'advanced_by_user' && isSameMember(t.payer, mName))
+      .reduce((sum, t) => sum + Number(t.amount || 0), 0);
+
+    const baseContribution = Number(member.baseContribution) || 0;
+    const totalTransfer = Math.max(0, baseContribution + privateOnShared - advancedForShared);
+    const isPaid = !!member.isPaid;
+
+    const card = document.createElement('div');
+    card.className = 'bg-slate-800/80 rounded-xl p-3 border border-slate-700 transition-colors flex flex-col justify-between';
+    card.style.borderColor = `${mColor.hex}40`;
+
+    const statusBadge = isPaid
+      ? '<span class="text-[10px] px-1.5 py-0.5 rounded-full bg-emerald-500/20 text-emerald-300 font-bold shrink-0">振込済</span>'
+      : '<span class="text-[10px] px-1.5 py-0.5 rounded-full bg-amber-500/20 text-amber-300 font-medium shrink-0">未完了</span>';
+
+    const btnHtml = isPaid
+      ? `<button type="button" data-member-id="${esc(member.id)}" class="mt-2.5 w-full py-1.5 rounded-lg text-xs font-bold bg-slate-700 text-slate-300 flex items-center justify-center gap-1 transition-opacity hover:opacity-90">
+           <i data-lucide="check" class="w-3.5 h-3.5"></i> 振込済み（取消）
+         </button>`
+      : `<button type="button" data-member-id="${esc(member.id)}" class="mt-2.5 w-full py-1.5 rounded-lg text-xs font-bold text-white flex items-center justify-center gap-1 shadow-sm transition-opacity hover:opacity-90" style="background-color: ${mColor.hex}">
+           <i data-lucide="check-circle" class="w-3.5 h-3.5"></i> 振込済みにする
+         </button>`;
+
+    card.innerHTML = `
+      <div>
+        <div class="flex items-center justify-between mb-1.5">
+          <span class="text-xs font-bold flex items-center gap-1 truncate" style="color: ${mColor.hex}">
+            <i data-lucide="user" class="w-3 h-3 shrink-0"></i> <span class="truncate">${esc(mName)}</span>の振込
+          </span>
+          ${statusBadge}
+        </div>
+        <div class="text-lg font-black text-white">${yen(totalTransfer)}</div>
+        <div class="text-[10px] text-slate-400 mt-1 space-y-0.5">
+          <div>基本: ${yen(baseContribution)}</div>
+          <div>私物: +${yen(privateOnShared)} / 立替: -${yen(advancedForShared)}</div>
+        </div>
+      </div>
+      <div>${btnHtml}</div>
+    `;
+
+    // 振込ステータストグル
+    card.querySelector('button[data-member-id]')?.addEventListener('click', () => {
+      toggleMemberTransferStatus(member.id);
+    });
+
+    container.appendChild(card);
   });
+
+  lucide.createIcons();
 }
+
+window.toggleMemberTransferStatus = async function (memberId) {
+  const member = state.members.find(m => m.id === memberId);
+  if (!member) return;
+  member.isPaid = !member.isPaid;
+  saveMembersToStorage();
+  renderTransferCard();
+
+  // 後方互換API呼び出し
+  const slot = member.slot || 'husband';
+  writeAndRefresh('updateTransferStatus', { month: state.viewMonth, slot, payer: member.name, isPaid: member.isPaid }, `${member.name}の振込ステータスを更新しました`, '更新中…').catch(() => {});
+};
 
 function renderBudgetSummary() {
   const s = state.summary;
@@ -803,7 +1488,10 @@ function createTransactionRow(item, isEditable) {
   const slot = resolvePayerSlot(item.payer);
   const payerName = displayPayerName(item.payer);
   const badgeText = payerName.slice(0, 2);
-  const payerColor = slot === 'husband' ? 'text-blue-500 bg-blue-50' : slot === 'wife' ? 'text-pink-500 bg-pink-50' : 'text-slate-500 bg-slate-100';
+  const mColor = getMemberColor(slot);
+  const badgeStyle = slot === 'shared'
+    ? 'background-color: #f1f5f9; color: #64748b; border: 1px solid #e2e8f0;'
+    : `background-color: ${mColor.bgHex}; color: ${mColor.hex}; border: 1px solid ${mColor.borderHex};`;
   const items = item.receiptId && !masked ? state.receiptItems.filter(it => it.receiptId === item.receiptId) : [];
 
   const actions = isEditable ? `
@@ -812,7 +1500,7 @@ function createTransactionRow(item, isEditable) {
 
   const head = `
     <div class="flex items-center gap-2.5 min-w-0">
-      <span class="w-7 h-7 shrink-0 rounded-full ${payerColor} flex items-center justify-center text-[10px] font-bold" title="${esc(payerName)}">${esc(badgeText)}</span>
+      <span class="w-7 h-7 shrink-0 rounded-full flex items-center justify-center text-[10px] font-bold" style="${badgeStyle}" title="${esc(payerName)}">${esc(badgeText)}</span>
       <div class="min-w-0">
         <div class="flex items-center gap-1.5 flex-wrap">
           <span class="text-xs font-bold text-slate-800 break-all">${item.receiptId ? '🧾 ' : ''}${esc(title)}</span>${tag}
@@ -909,13 +1597,16 @@ function renderCategoryDropdown() {
 }
 
 function renderSettings() {
-  $('settingBudgetInput').value = state.summary.budget;
+  if ($('settingBudgetInput')) $('settingBudgetInput').value = state.summary.budget;
   if ($('settingHusbandName')) $('settingHusbandName').value = memberName('husband');
   if ($('settingWifeName')) $('settingWifeName').value = memberName('wife');
-  $('settingHusbandBase').value = state.config.husbandBaseContribution;
-  $('settingWifeBase').value = state.config.wifeBaseContribution;
-  $('privacyMaskToggle').checked = state.privacyMask;
-  $('settingGasUrl').value = state.gasApiUrl;
+  if ($('settingHusbandBase')) $('settingHusbandBase').value = state.config.husbandBaseContribution;
+  if ($('settingWifeBase')) $('settingWifeBase').value = state.config.wifeBaseContribution;
+  if ($('privacyMaskToggle')) $('privacyMaskToggle').checked = state.privacyMask;
+
+  // 動的メンバー一覧＆カラー設定を描画
+  renderSettingMembersList();
+  applyMemberColors();
 
   // バージョン表示
   if ($('frontVersionLabel')) $('frontVersionLabel').textContent = FRONTEND_VERSION;
@@ -1192,8 +1883,7 @@ function openExpenseModal(editItem) {
     $('expenseDate').value = editItem.date;
     document.querySelector(`input[name="expenseIsShared"][value="${editItem.isShared}"]`).checked = true;
     const targetPayer = displayPayerName(editItem.payer);
-    const payerRadio = document.querySelector(`input[name="expensePayer"][value="${CSS.escape(targetPayer)}"]`);
-    if (payerRadio) payerRadio.checked = true;
+    renderExpensePayerChips(targetPayer);
     const locked = !!editItem.receiptId;
     $('expenseAmount').disabled = locked;
     $('expenseTitle').disabled = locked;
@@ -1208,9 +1898,8 @@ function openExpenseModal(editItem) {
     lockNote.classList.add('hidden');
     del.classList.add('hidden');
     $('scanReceiptLabel').classList.remove('hidden');
-    const myName = memberName(state.currentSlot);
-    const payerRadio = document.querySelector(`input[name="expensePayer"][value="${CSS.escape(myName)}"]`);
-    if (payerRadio) payerRadio.checked = true;
+    const myName = state.currentUser || memberName(state.currentSlot);
+    renderExpensePayerChips(myName);
   }
   $('expenseModal').classList.remove('hidden');
   lucide.createIcons();
@@ -1231,7 +1920,7 @@ async function handleExpenseSubmit(e) {
     category: $('expenseCategory').value,
     isShared: document.querySelector('input[name="expenseIsShared"]:checked').value === 'true',
     paymentType: $('expensePaymentType').value,
-    payer: document.querySelector('input[name="expensePayer"]:checked').value,
+    payer: currentSelectedExpensePayer || document.querySelector('input[name="expensePayer"]:checked')?.value || state.currentUser || '共同',
     memo: ''
   };
   const existing = id ? state.transactions.find(t => t.id === id) : null;
@@ -1417,18 +2106,59 @@ async function handleSaveBudget() {
 }
 
 async function handleBaseChange() {
-  const husbandName = ($('settingHusbandName') ? $('settingHusbandName').value : memberName('husband')).trim();
-  const wifeName = ($('settingWifeName') ? $('settingWifeName').value : memberName('wife')).trim();
-  if (!husbandName || !wifeName) { showToast('ふたりの表示名を入力してください'); return; }
-  if (husbandName === wifeName) { showToast('ふたりの表示名は異なる名前にしてください'); return; }
-  if (['共同', 'all', '未認証', '自動計上'].includes(husbandName) || ['共同', 'all', '未認証', '自動計上'].includes(wifeName)) {
+  // 動的メンバー入力フィールドから最新値を反映
+  const container = $('settingMembersList');
+  if (container) {
+    const inputs = container.querySelectorAll('input[data-field]');
+    inputs.forEach(input => {
+      const idx = parseInt(input.dataset.memberIdx, 10);
+      const field = input.dataset.field;
+      if (state.members[idx]) {
+        if (field === 'name') state.members[idx].name = input.value.trim() || `メンバー${idx + 1}`;
+        if (field === 'base') state.members[idx].baseContribution = parseInt(input.value, 10) || 0;
+      }
+    });
+  }
+
+  // 名前の重複・予約語チェック
+  const names = (state.members || []).map(m => (m.name || '').trim());
+  if (names.some(n => !n)) {
+    showToast('メンバーの表示名を入力してください');
+    return;
+  }
+  const uniqueNames = new Set(names);
+  if (uniqueNames.size !== names.length) {
+    showToast('メンバーの表示名は重複しない名前にしてください');
+    return;
+  }
+  const reservedWords = ['共同', 'all', '未認証', '自動計上'];
+  if (names.some(n => reservedWords.includes(n))) {
     showToast('「共同」などの予約語は表示名に使用できません');
     return;
   }
-  const husband = parseInt($('settingHusbandBase').value, 10);
-  const wife = parseInt($('settingWifeBase').value, 10);
-  if (!Number.isInteger(husband) || !Number.isInteger(wife) || husband < 0 || wife < 0) { showToast('基本拠出額を正しく入力してください'); return; }
-  await writeAndRefresh('updateBaseContribution', { husband, wife, husbandName, wifeName }, '表示名・基本拠出額を保存しました', '設定を保存しています…');
+  if (state.members.some(m => !Number.isInteger(m.baseContribution) || m.baseContribution < 0)) {
+    showToast('基本拠出額を正しく入力してください');
+    return;
+  }
+
+  // メンバー設定を保存
+  saveMembersToStorage();
+  syncStateConfigFromMembers();
+  applyMemberColors();
+
+  // 後方互換パラメータ作成
+  const husband = state.members[0]?.baseContribution || 0;
+  const wife = state.members[1]?.baseContribution || 0;
+  const husbandName = state.members[0]?.name || 'メンバー1';
+  const wifeName = state.members[1]?.name || 'メンバー2';
+
+  await writeAndRefresh('updateBaseContribution', {
+    husband,
+    wife,
+    husbandName,
+    wifeName,
+    members: state.members
+  }, 'メンバー設定（表示名・基本拠出・カラー）を保存しました', '設定を保存しています…');
 }
 
 async function toggleTransferStatus(slot) {
@@ -1461,7 +2191,18 @@ window.switchTab = function (tabName) {
   ['home', 'shopping', 'history', 'settings'].forEach(t => {
     const cap = t.charAt(0).toUpperCase() + t.slice(1);
     $(`tabContent${cap}`).classList.toggle('hidden', t !== tabName);
-    $(`nav${cap}Btn`).className = `py-1 ${t === tabName ? 'text-brand-600' : 'text-slate-400'} flex flex-col items-center justify-center gap-0.5`;
+    const mobileBtn = $(`nav${cap}Btn`);
+    if (mobileBtn) {
+      mobileBtn.className = `py-1 ${t === tabName ? 'text-brand-600' : 'text-slate-400'} flex flex-col items-center justify-center gap-0.5`;
+    }
+    const desktopBtn = $(`desktopNav${cap}Btn`);
+    if (desktopBtn) {
+      desktopBtn.className = `px-3.5 py-1.5 rounded-lg transition-all flex items-center gap-1.5 ${
+        t === tabName
+          ? 'bg-white text-brand-700 shadow-sm font-bold'
+          : 'text-slate-500 hover:text-slate-800 font-medium'
+      }`;
+    }
   });
   if (tabName === 'home') renderCharts(); // 非表示中に描画したグラフのサイズ崩れを防ぐ
   lucide.createIcons();
@@ -1489,72 +2230,80 @@ function hideToast() {
 }
 
 function setupEventListeners() {
-  $('scopeSharedBtn').addEventListener('click', () => setScope('shared'));
-  $('scopePersonalBtn').addEventListener('click', () => setScope('personal'));
-  $('prevMonthBtn').addEventListener('click', () => loadInitialData(shiftMonth(state.viewMonth, -1)));
-  $('nextMonthBtn').addEventListener('click', () => loadInitialData(shiftMonth(state.viewMonth, 1)));
+  $('scopeSharedBtn')?.addEventListener('click', () => setScope('shared'));
+  $('scopePersonalBtn')?.addEventListener('click', () => setScope('personal'));
+  $('prevMonthBtn')?.addEventListener('click', () => loadInitialData(shiftMonth(state.viewMonth, -1)));
+  $('nextMonthBtn')?.addEventListener('click', () => loadInitialData(shiftMonth(state.viewMonth, 1)));
 
-  $('transferHelpBtn').addEventListener('click', () => $('transferHelpModal').classList.remove('hidden'));
-  $('husbandPayToggle').addEventListener('click', () => toggleTransferStatus('husband'));
-  $('wifePayToggle').addEventListener('click', () => toggleTransferStatus('wife'));
+  $('transferHelpBtn')?.addEventListener('click', () => $('transferHelpModal')?.classList.remove('hidden'));
 
-  $('openExpenseModalBtn').addEventListener('click', () => openExpenseModal(null));
-  $('expenseForm').addEventListener('submit', handleExpenseSubmit);
-  $('expenseDeleteBtn').addEventListener('click', handleExpenseDelete);
-  $('receiptFileInput').addEventListener('change', e => handleReceiptFile(e.target.files[0]));
+  $('openExpenseModalBtn')?.addEventListener('click', () => openExpenseModal(null));
+  $('expenseForm')?.addEventListener('submit', handleExpenseSubmit);
+  $('expenseDeleteBtn')?.addEventListener('click', handleExpenseDelete);
+  $('receiptFileInput')?.addEventListener('change', e => handleReceiptFile(e.target.files[0]));
 
-  $('receiptForm').addEventListener('submit', handleReceiptSubmit);
-  $('receiptCloseBtn').addEventListener('click', closeReceiptModal);
-  $('receiptAddRowBtn').addEventListener('click', () => {
-    $('receiptItemRows').insertAdjacentHTML('beforeend', receiptRowHtml({ name: '', quantity: 1, price: '' }));
+  $('receiptForm')?.addEventListener('submit', handleReceiptSubmit);
+  $('receiptCloseBtn')?.addEventListener('click', closeReceiptModal);
+  $('receiptAddRowBtn')?.addEventListener('click', () => {
+    $('receiptItemRows')?.insertAdjacentHTML('beforeend', receiptRowHtml({ name: '', quantity: 1, price: '' }));
     lucide.createIcons();
   });
-  $('receiptItemRows').addEventListener('input', updateReceiptTotal);
+  $('receiptItemRows')?.addEventListener('input', updateReceiptTotal);
 
-  $('addShoppingForm').addEventListener('submit', handleAddShoppingSubmit);
-  $('buySyncForm').addEventListener('submit', handleBuySyncSubmit);
+  $('addShoppingForm')?.addEventListener('submit', handleAddShoppingSubmit);
+  $('buySyncForm')?.addEventListener('submit', handleBuySyncSubmit);
 
-  $('historyCategoryFilter').addEventListener('change', renderHistoryList);
-  $('historyPayerFilter').addEventListener('change', renderHistoryList);
-  $('priceSearchForm').addEventListener('submit', handlePriceSearch);
-  $('loadAuditBtn').addEventListener('click', loadAuditLog);
-  $('auditDetailCloseBtn').addEventListener('click', () => $('auditDetailModal').classList.add('hidden'));
-  if ($('openFixedModalBtn')) $('openFixedModalBtn').addEventListener('click', () => openFixedModal(null));
-  if ($('fixedModalCloseBtn')) $('fixedModalCloseBtn').addEventListener('click', closeFixedModal);
-  if ($('fixedExpenseForm')) $('fixedExpenseForm').addEventListener('submit', handleFixedSubmit);
-  if ($('fixedExpenseDeleteBtn')) $('fixedExpenseDeleteBtn').addEventListener('click', handleFixedDelete);
+  $('historyCategoryFilter')?.addEventListener('change', renderHistoryList);
+  $('historyPayerFilter')?.addEventListener('change', renderHistoryList);
+  $('priceSearchForm')?.addEventListener('submit', handlePriceSearch);
+  $('loadAuditBtn')?.addEventListener('click', loadAuditLog);
+  $('auditDetailCloseBtn')?.addEventListener('click', () => $('auditDetailModal')?.classList.add('hidden'));
+  $('openFixedModalBtn')?.addEventListener('click', () => openFixedModal(null));
+  $('fixedModalCloseBtn')?.addEventListener('click', closeFixedModal);
+  $('fixedExpenseForm')?.addEventListener('submit', handleFixedSubmit);
+  $('fixedExpenseDeleteBtn')?.addEventListener('click', handleFixedDelete);
 
-  $('trendRangeButtons').addEventListener('click', e => {
+  $('trendRangeButtons')?.addEventListener('click', e => {
     const btn = e.target.closest('[data-range]');
     if (!btn) return;
     state.trendRange = Number(btn.dataset.range);
-    $('trendRangeButtons').querySelectorAll('button').forEach(b => {
+    $('trendRangeButtons')?.querySelectorAll('button').forEach(b => {
       b.className = 'px-2 py-1 rounded-md ' + (b === btn ? 'bg-white text-brand-700 shadow-sm' : 'text-slate-500');
     });
     renderTrendChart();
   });
 
-  $('saveBudgetBtn').addEventListener('click', handleSaveBudget);
-  if ($('saveMemberSettingsBtn')) $('saveMemberSettingsBtn').addEventListener('click', handleBaseChange);
-  $('settingHusbandBase').addEventListener('change', handleBaseChange);
-  $('settingWifeBase').addEventListener('change', handleBaseChange);
-  $('privacyMaskToggle').addEventListener('change', e => {
+  $('saveBudgetBtn')?.addEventListener('click', handleSaveBudget);
+  $('saveMemberSettingsBtn')?.addEventListener('click', handleBaseChange);
+  $('settingHusbandBase')?.addEventListener('change', handleBaseChange);
+  $('settingWifeBase')?.addEventListener('change', handleBaseChange);
+  $('privacyMaskToggle')?.addEventListener('change', e => {
     state.privacyMask = e.target.checked;
     localStorage.setItem('pairbudget_privacy_mask', state.privacyMask);
     renderRecentTransactions();
     renderHistoryList();
-    if ($('auditLogList').children.length > 1) loadAuditLog();
+    if ($('auditLogList')?.children.length > 1) loadAuditLog();
     lucide.createIcons();
     showToast('プライバシー設定を更新しました');
   });
-  $('registerHusbandBtn').addEventListener('click', () => submitRegisterMember('husband'));
-  $('registerWifeBtn').addEventListener('click', () => submitRegisterMember('wife'));
-  $('saveGasUrlBtn').addEventListener('click', () => {
-    state.gasApiUrl = $('settingGasUrl').value.trim();
-    localStorage.setItem('pairbudget_gas_url', state.gasApiUrl);
-    showToast('API URLを保存しました');
-    loadInitialData();
-  });
+  $('onboardingCreateForm')?.addEventListener('submit', submitOnboardingCreate);
+  $('onboardingJoinForm')?.addEventListener('submit', submitOnboardingJoin);
+  $('submitOnboardingCreateBtn')?.addEventListener('click', submitOnboardingCreate);
+  $('submitOnboardingJoinBtn')?.addEventListener('click', submitOnboardingJoin);
+  $('onboardingCloseBtn')?.addEventListener('click', finishOnboarding);
+
+  // モード切替・世帯ペア・臨時イベント リスナー
+  $('modeBudgetBtn')?.addEventListener('click', () => switchAppMode('budget'));
+  $('modeEventsBtn')?.addEventListener('click', () => switchAppMode('events'));
+  $('openPairModalBtn')?.addEventListener('click', openPairModal);
+  $('copyInviteCodeBtn')?.addEventListener('click', copyInviteCode);
+  $('submitCreatePairBtn')?.addEventListener('click', submitCreatePair);
+  $('submitJoinPairBtn')?.addEventListener('click', submitJoinPair);
+  $('openCreateEventModalBtn')?.addEventListener('click', openCreateEventModal);
+  $('submitCreateEventBtn')?.addEventListener('click', submitCreateEvent);
+  $('copySettlementBtn')?.addEventListener('click', copySettlementText);
+  $('openAddEventExpenseBtn')?.addEventListener('click', openAddEventExpenseModal);
+  $('submitAddEventExpenseBtn')?.addEventListener('click', submitAddEventExpense);
 
   // 動的に生成された要素のクリック・変更はイベント委譲で処理（品名などをHTML属性に埋め込まない）
   document.addEventListener('click', e => {
@@ -1566,7 +2315,7 @@ function setupEventListeners() {
       case 'edit-fixed': { const fx = state.fixedExpenses.find(f => f.id === id); if (fx) openFixedModal(fx); break; }
       case 'tx-history': e.preventDefault(); openTxHistory(id); break;
       case 'delete-shop': deleteShoppingItemById(id); break;
-      case 'remove-receipt-row': el.closest('[data-row]').remove(); updateReceiptTotal(); break;
+      case 'remove-receipt-row': el.closest('[data-row]')?.remove(); updateReceiptTotal(); break;
     }
   });
   document.addEventListener('change', e => {
@@ -1602,9 +2351,473 @@ async function initLiff() {
   }
 }
 
+// ==========================================
+// モード切替 & 世帯ペア管理
+// ==========================================
+
+function switchAppMode(mode) {
+  state.currentMode = mode;
+  const isBudget = mode === 'budget';
+
+  $('budgetView')?.classList.toggle('hidden', !isBudget);
+  $('eventsView')?.classList.toggle('hidden', isBudget);
+
+  // フローティングボタン（レシート/支出）は家計簿モードのみ表示
+  const quickBtns = document.querySelector('.fixed.right-5.bottom-20');
+  if (quickBtns) quickBtns.style.display = isBudget ? 'flex' : 'none';
+
+  // モードタブのアクティブ状態
+  const budgetBtn = $('modeBudgetBtn');
+  const eventsBtn = $('modeEventsBtn');
+  if (budgetBtn && eventsBtn) {
+    if (isBudget) {
+      budgetBtn.className = 'px-2.5 py-1 rounded-md bg-brand-500 text-white transition-all flex items-center gap-1';
+      eventsBtn.className = 'px-2.5 py-1 rounded-md text-slate-400 hover:text-white transition-all flex items-center gap-1';
+    } else {
+      budgetBtn.className = 'px-2.5 py-1 rounded-md text-slate-400 hover:text-white transition-all flex items-center gap-1';
+      eventsBtn.className = 'px-2.5 py-1 rounded-md bg-indigo-600 text-white transition-all flex items-center gap-1';
+      loadEvents();
+    }
+  }
+  lucide.createIcons();
+}
+
+function updatePairHeader() {
+  const headerName = $('headerPairName');
+  if (headerName) headerName.textContent = state.pairName || '世帯ペア';
+  const modalName = $('modalPairName');
+  if (modalName) modalName.textContent = state.pairName || '世帯ペア';
+  const modalCode = $('modalInviteCode');
+  if (modalCode) modalCode.textContent = state.inviteCode || '未発行';
+}
+
+function openPairModal() {
+  updatePairHeader();
+  $('pairModal')?.classList.remove('hidden');
+  lucide.createIcons();
+}
+
+function closePairModal() {
+  $('pairModal')?.classList.add('hidden');
+}
+
+async function submitCreatePair() {
+  const name = $('newPairNameInput')?.value.trim();
+  const userName = $('newPairCreatorNameInput')?.value.trim();
+  if (!name || !userName) {
+    showToast('世帯名とお名前を入力してください');
+    return;
+  }
+  showToast('新しい世帯を作成中…', 'loading');
+  const res = await api('createPair', { name, userName });
+  hideToast();
+  if (!res.success) {
+    showToast(res.error || '作成に失敗しました');
+    return;
+  }
+  state.pairId = res.pair.id;
+  state.pairName = res.pair.name;
+  state.inviteCode = res.pair.inviteCode;
+  localStorage.setItem('pairbudget_pair_id', res.pair.id);
+  localStorage.setItem('pairbudget_pair_name', res.pair.name);
+  localStorage.setItem('pairbudget_invite_code', res.pair.inviteCode);
+  closePairModal();
+  showToast(`世帯ペア「${res.pair.name}」を作成しました！`);
+  loadInitialData(state.viewMonth, { skipCache: true });
+}
+
+async function submitJoinPair() {
+  const inviteCode = $('joinInviteCodeInput')?.value.trim().toUpperCase();
+  const userName = $('joinUserNameInput')?.value.trim();
+  if (!inviteCode || !userName) {
+    showToast('招待コードとお名前を入力してください');
+    return;
+  }
+  showToast('世帯に合流中…', 'loading');
+  const res = await api('joinPair', { inviteCode, name: userName });
+  hideToast();
+  if (!res.success) {
+    showToast(res.error || '合流に失敗しました');
+    return;
+  }
+  state.pairId = res.pair.id;
+  state.pairName = res.pair.name;
+  state.inviteCode = res.pair.inviteCode;
+  localStorage.setItem('pairbudget_pair_id', res.pair.id);
+  localStorage.setItem('pairbudget_pair_name', res.pair.name);
+  localStorage.setItem('pairbudget_invite_code', res.pair.inviteCode);
+  closePairModal();
+  showToast(`世帯「${res.pair.name}」に合流しました！`);
+  loadInitialData(state.viewMonth, { skipCache: true });
+}
+
+function copyInviteCode() {
+  const code = state.inviteCode || 'PAIR2026';
+  const url = `${window.location.origin}${window.location.pathname}?invite=${code}`;
+  const text = `ふたり家計簿に招待されました！\n世帯名: ${state.pairName}\n招待コード: ${code}\n合流URL: ${url}`;
+  if (navigator.clipboard && navigator.clipboard.writeText) {
+    navigator.clipboard.writeText(text).then(() => {
+      showToast('招待テキストをコピーしました！LINE等で送信してください');
+    }).catch(() => {
+      prompt('以下のテキストをコピーしてください:', text);
+    });
+  } else {
+    prompt('以下のテキストをコピーしてください:', text);
+  }
+}
+
+// ==========================================
+// 臨時イベント・旅行精算機能
+// ==========================================
+
+async function loadEvents() {
+  const container = $('eventsListContainer');
+  if (container) {
+    container.innerHTML = '<div class="text-center py-8 text-slate-400 text-xs">読み込み中…</div>';
+  }
+  const res = await api('getEvents', { pairId: state.pairId });
+  if (!res.success) {
+    if (container) container.innerHTML = `<div class="text-center py-8 text-rose-500 text-xs">${res.error || 'イベントの取得に失敗しました'}</div>`;
+    return;
+  }
+  state.events = res.events || [];
+  renderEventsList();
+}
+
+function renderEventsList() {
+  const container = $('eventsListContainer');
+  if (!container) return;
+  if (state.events.length === 0) {
+    container.innerHTML = `
+      <div class="text-center py-12 bg-white rounded-2xl border border-slate-100 p-6 space-y-2">
+        <div class="w-12 h-12 bg-indigo-50 text-indigo-500 rounded-full flex items-center justify-center mx-auto text-xl">✈️</div>
+        <h4 class="text-xs font-bold text-slate-700">登録されているイベントはありません</h4>
+        <p class="text-[11px] text-slate-400 max-w-xs mx-auto">旅行やBBQ、飲み会などの立替精算を始めるには「イベント作成」を押してください。</p>
+      </div>`;
+    return;
+  }
+
+  container.innerHTML = state.events.map(ev => {
+    const membersBadge = (ev.members || []).map(m => `<span class="bg-slate-100 text-slate-600 px-1.5 py-0.5 rounded text-[10px] font-bold">${escapeHtml(m)}</span>`).join(' ');
+    const isWarning = ev.daysLeft <= 7;
+    return `
+      <div onclick="openEventDetail('${ev.id}')" class="bg-white hover:bg-slate-50 border border-slate-100 rounded-2xl p-4 shadow-sm cursor-pointer transition-all active:scale-[0.99] space-y-2.5">
+        <div class="flex items-start justify-between">
+          <div>
+            <h3 class="text-sm font-extrabold text-slate-800">${escapeHtml(ev.title)}</h3>
+            <div class="flex items-center gap-1.5 mt-1">
+              <span class="${isWarning ? 'bg-rose-100 text-rose-700' : 'bg-amber-100 text-amber-800'} text-[10px] font-extrabold px-1.5 py-0.5 rounded">
+                ⏳ あと${ev.daysLeft}日で自動消去
+              </span>
+              <span class="text-[10px] text-slate-400">${ev.createdAt}作成</span>
+            </div>
+          </div>
+          <div class="text-right">
+            <span class="text-[10px] text-slate-400 block font-bold">立替合計</span>
+            <span class="text-base font-black text-indigo-700 font-mono">¥${(ev.totalAmount || 0).toLocaleString()}</span>
+          </div>
+        </div>
+        <div class="flex items-center justify-between pt-1 border-t border-slate-50 text-xs">
+          <div class="flex flex-wrap gap-1 items-center">
+            <span class="text-[10px] text-slate-400">参加:</span>
+            ${membersBadge}
+          </div>
+          <span class="text-[10px] text-indigo-500 font-bold flex items-center gap-0.5">
+            精算・明細 (${ev.expenseCount || 0}件) <i data-lucide="chevron-right" class="w-3.5 h-3.5"></i>
+          </span>
+        </div>
+      </div>
+    `;
+  }).join('');
+  lucide.createIcons();
+}
+
+function openCreateEventModal() {
+  if ($('eventTitleInput')) $('eventTitleInput').value = '';
+  if ($('eventMembersInput')) $('eventMembersInput').value = `${state.config.husbandName || 'メンバー1'}, ${state.config.wifeName || 'メンバー2'}`;
+  $('createEventModal')?.classList.remove('hidden');
+  lucide.createIcons();
+}
+
+function closeCreateEventModal() {
+  $('createEventModal')?.classList.add('hidden');
+}
+
+async function submitCreateEvent() {
+  const title = $('eventTitleInput')?.value.trim();
+  const rawMembers = $('eventMembersInput')?.value.trim();
+  if (!title || !rawMembers) {
+    showToast('イベント名と参加メンバーを入力してください');
+    return;
+  }
+  const members = rawMembers.split(/[,、\s]+/).map(m => m.trim()).filter(Boolean);
+  if (members.length < 2) {
+    showToast('参加メンバーは2名以上入力してください');
+    return;
+  }
+
+  showToast('イベントを作成中…', 'loading');
+  const res = await api('createEvent', { title, members, pairId: state.pairId });
+  hideToast();
+  if (!res.success) {
+    showToast(res.error || '作成に失敗しました');
+    return;
+  }
+  closeCreateEventModal();
+  showToast(`イベント「${title}」を作成しました！`);
+  loadEvents();
+}
+
+async function openEventDetail(eventId) {
+  state.activeEventId = eventId;
+  showToast('精算データを取得中…', 'loading');
+  const res = await api('getEventSettlement', { eventId });
+  hideToast();
+  if (!res.success) {
+    showToast(res.error || '精算データの取得に失敗しました');
+    return;
+  }
+  state.currentSettlement = res;
+  renderEventDetail(res);
+  $('eventDetailModal')?.classList.remove('hidden');
+  lucide.createIcons();
+}
+
+function closeEventDetailModal() {
+  $('eventDetailModal')?.classList.add('hidden');
+  state.activeEventId = null;
+  state.currentSettlement = null;
+}
+
+function renderEventDetail(s) {
+  const ev = s.event;
+  if ($('detailEventTitle')) $('detailEventTitle').textContent = ev.title;
+  if ($('detailEventDaysLeft')) $('detailEventDaysLeft').textContent = `⏳ 残り${ev.daysLeft}日で消去`;
+  if ($('detailEventDate')) $('detailEventDate').textContent = `${ev.createdAt}作成`;
+
+  // 1. 最小送金ステップ（スマート精算）
+  const transfersContainer = $('settlementTransfersContainer');
+  if (transfersContainer) {
+    if (!s.transfers || s.transfers.length === 0) {
+      transfersContainer.innerHTML = '<p class="text-indigo-200 text-xs py-1">精算は完了しています（差額なし）✨</p>';
+    } else {
+      transfersContainer.innerHTML = s.transfers.map(t => `
+        <div class="flex items-center justify-between bg-white/10 rounded-xl px-3 py-2 font-bold">
+          <div class="flex items-center gap-1.5">
+            <span class="text-rose-300">${escapeHtml(t.from)}</span>
+            <span class="text-indigo-300">➡️</span>
+            <span class="text-emerald-300">${escapeHtml(t.to)}</span>
+          </div>
+          <span class="text-brand-300 font-mono text-sm">¥${t.amount.toLocaleString()}</span>
+        </div>
+      `).join('');
+    }
+  }
+
+  // 2. メンバー別集計
+  const memberContainer = $('memberSummariesContainer');
+  if (memberContainer) {
+    memberContainer.innerHTML = (s.memberSummaries || []).map(m => {
+      const isPlus = m.balance > 0;
+      const isMinus = m.balance < 0;
+      const color = isPlus ? 'text-emerald-600 bg-emerald-50' : (isMinus ? 'text-rose-600 bg-rose-50' : 'text-slate-500 bg-slate-50');
+      const label = isPlus ? `+¥${m.balance.toLocaleString()} 受取` : (isMinus ? `-¥${(-m.balance).toLocaleString()} 支払` : '±0円');
+      return `
+        <div class="bg-slate-50 border border-slate-100 rounded-xl p-2.5 space-y-1">
+          <div class="flex items-center justify-between font-bold">
+            <span class="text-slate-800">${escapeHtml(m.name)}</span>
+            <span class="text-[10px] px-1.5 py-0.5 rounded font-black ${color}">${label}</span>
+          </div>
+          <div class="text-[10px] text-slate-500 flex justify-between">
+            <span>立替: ¥${m.paid.toLocaleString()}</span>
+            <span>負担: ¥${m.shouldPay.toLocaleString()}</span>
+          </div>
+        </div>
+      `;
+    }).join('');
+  }
+
+  // 3. 支出明細リスト
+  const expensesList = $('eventExpensesList');
+  if (expensesList) {
+    if (!s.expenses || s.expenses.length === 0) {
+      expensesList.innerHTML = '<p class="text-slate-400 text-center py-4 text-xs">まだ立替支出はありません。「立替を登録」から追加してください。</p>';
+    } else {
+      expensesList.innerHTML = s.expenses.map(x => `
+        <div class="flex items-center justify-between bg-slate-50 border border-slate-100 rounded-xl px-3 py-2 text-xs">
+          <div>
+            <span class="font-bold text-slate-800 block">${escapeHtml(x.title)}</span>
+            <span class="text-[10px] text-slate-400">${x.createdAt} / 払った人: <b class="text-slate-600">${escapeHtml(x.payer)}</b></span>
+          </div>
+          <div class="flex items-center gap-2">
+            <span class="font-mono font-bold text-slate-900">¥${x.amount.toLocaleString()}</span>
+            <button onclick="deleteEventExpenseById('${x.id}')" class="text-slate-300 hover:text-rose-500 p-1">
+              <i data-lucide="trash-2" class="w-3.5 h-3.5"></i>
+            </button>
+          </div>
+        </div>
+      `).join('');
+    }
+  }
+
+  // イベント削除ボタンのバインド
+  const delBtn = $('deleteEventBtn');
+  if (delBtn) {
+    delBtn.onclick = () => {
+      if (confirm(`イベント「${ev.title}」を削除しますか？\n（関連するすべての立替明細も削除されます）`)) {
+        deleteEventById(ev.id);
+      }
+    };
+  }
+
+  lucide.createIcons();
+}
+
+function copySettlementText() {
+  const s = state.currentSettlement;
+  if (!s || !s.event) return;
+  const ev = s.event;
+  const transferLines = (s.transfers || []).length > 0
+    ? s.transfers.map(t => `・${t.from} ➡️ ${t.to}：¥${t.amount.toLocaleString()}`).join('\n')
+    : '・精算完了（差額なし）';
+
+  const memberLines = (s.memberSummaries || []).map(m => {
+    const diff = m.balance > 0 ? `+¥${m.balance.toLocaleString()}` : (m.balance < 0 ? `-¥${(-m.balance).toLocaleString()}` : '±0');
+    return `・${m.name}: 支払¥${m.paid.toLocaleString()} (差引 ${diff})`;
+  }).join('\n');
+
+  const text = `✈️【${ev.title} 精算サマリー】\n` +
+    `━━━━━━━━━━━━━━\n` +
+    `■ 最小送金ステップ\n${transferLines}\n` +
+    `━━━━━━━━━━━━━━\n` +
+    `■ 各自の立替状況\n${memberLines}\n` +
+    `━━━━━━━━━━━━━━\n` +
+    `ふたり家計簿 (PairBudget)`;
+
+  if (navigator.clipboard && navigator.clipboard.writeText) {
+    navigator.clipboard.writeText(text).then(() => {
+      showToast('精算テキストをコピーしました！LINEに貼り付けて共有してください');
+    }).catch(() => {
+      prompt('以下の精算テキストをコピーしてください:', text);
+    });
+  } else {
+    prompt('以下の精算テキストをコピーしてください:', text);
+  }
+}
+
+function openAddEventExpenseModal() {
+  const s = state.currentSettlement;
+  if (!s || !s.event) return;
+  const members = s.event.members || [];
+
+  if ($('eventExpenseTitleInput')) $('eventExpenseTitleInput').value = '';
+  if ($('eventExpenseAmountInput')) $('eventExpenseAmountInput').value = '';
+
+  const payerSelect = $('eventExpensePayerSelect');
+  if (payerSelect) {
+    payerSelect.innerHTML = members.map(m => `<option value="${escapeHtml(m)}">${escapeHtml(m)}</option>`).join('');
+  }
+
+  const benContainer = $('eventExpenseBeneficiariesContainer');
+  if (benContainer) {
+    benContainer.innerHTML = members.map(m => `
+      <label class="inline-flex items-center gap-1.5 bg-slate-50 border border-slate-200 px-2.5 py-1 rounded-lg text-xs font-bold cursor-pointer">
+        <input type="checkbox" name="beneficiary" value="${escapeHtml(m)}" checked class="w-3.5 h-3.5 text-indigo-600 rounded">
+        <span>${escapeHtml(m)}</span>
+      </label>
+    `).join('');
+  }
+
+  $('addEventExpenseModal')?.classList.remove('hidden');
+  lucide.createIcons();
+}
+
+function closeAddEventExpenseModal() {
+  $('addEventExpenseModal')?.classList.add('hidden');
+}
+
+async function submitAddEventExpense() {
+  const eventId = state.activeEventId;
+  const title = $('eventExpenseTitleInput')?.value.trim();
+  const amount = Number($('eventExpenseAmountInput')?.value);
+  const payer = $('eventExpensePayerSelect')?.value;
+
+  if (!title || !amount || amount <= 0) {
+    showToast('品名と金額を入力してください');
+    return;
+  }
+
+  const checkboxes = document.querySelectorAll('input[name="beneficiary"]:checked');
+  const beneficiaries = Array.from(checkboxes).map(c => c.value);
+
+  showToast('立替を記録中…', 'loading');
+  const res = await api('addEventExpense', {
+    eventId,
+    title,
+    amount,
+    payer,
+    beneficiaries: beneficiaries.length > 0 ? beneficiaries : null
+  });
+  hideToast();
+
+  if (!res.success) {
+    showToast(res.error || '記録に失敗しました');
+    return;
+  }
+  closeAddEventExpenseModal();
+  showToast('立替を記録しました！');
+  openEventDetail(eventId);
+}
+
+async function deleteEventExpenseById(expenseId) {
+  if (!confirm('この立替明細を削除しますか？')) return;
+  showToast('削除中…', 'loading');
+  const res = await api('deleteEventExpense', { expenseId });
+  hideToast();
+  if (res.success) {
+    showToast('立替明細を削除しました');
+    openEventDetail(state.activeEventId);
+  } else {
+    showToast(res.error || '削除に失敗しました');
+  }
+}
+
+async function deleteEventById(eventId) {
+  showToast('イベントを削除中…', 'loading');
+  const res = await api('deleteEvent', { eventId });
+  hideToast();
+  if (res.success) {
+    closeEventDetailModal();
+    showToast('イベントを削除しました');
+    loadEvents();
+  } else {
+    showToast(res.error || '削除に失敗しました');
+  }
+}
+
+function checkUrlInviteParam() {
+  try {
+    const urlParams = new URLSearchParams(window.location.search);
+    const invite = urlParams.get('invite');
+    if (invite) {
+      const code = invite.toUpperCase().trim();
+      if ($('joinInviteCodeInput')) $('joinInviteCodeInput').value = code;
+      openRegisterModal({ inviteCode: code });
+      showToast(`招待コード「${code}」を検出しました`);
+    } else if (!localStorage.getItem('pairbudget_pair_id')) {
+      // 初回訪問時（ペア未設定）は自動でグループ作成/参加モーダルを案内
+      openRegisterModal();
+    }
+  } catch (_) {}
+}
+
 document.addEventListener('DOMContentLoaded', async () => {
+  initMembers();
   lucide.createIcons();
   setupEventListeners();
+  updatePairHeader();
+  applyMemberColors();
+  checkUrlInviteParam();
   // 起動直後にローカルキャッシュがあれば即座に描画して白画面待ちをゼロにする
   const cached = loadInitCache(state.viewMonth);
   if (cached && state.gasApiUrl) applyData(cached);
