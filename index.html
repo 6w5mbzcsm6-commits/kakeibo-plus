@@ -13,7 +13,7 @@
   <!-- LINE LIFF SDK -->
   <script charset="utf-8" src="https://static.line-scdn.net/liff/edge/2/sdk.js"></script>
   <!-- Custom CSS -->
-  <link rel="stylesheet" href="style.css">
+  <link rel="stylesheet" href="css/style.css">
   <script>
     tailwind.config = {
       theme: {
@@ -121,7 +121,8 @@
     <div id="budgetView" class="space-y-4">
 
       <!-- ===================== タブ1: ホーム ===================== -->
-      <div id="tabContentHome" class="space-y-4 md:space-y-0 md:grid md:grid-cols-12 md:gap-6 items-start">
+      <div id="tabContentHome">
+        <div class="space-y-4 md:space-y-0 md:grid md:grid-cols-12 md:gap-6 items-start">
         <!-- 左カラム (md:col-span-5): 振込チェッカー ＆ 予算消化状況メーター -->
         <div class="space-y-4 md:col-span-5">
           <!-- 🏦 今月の共同口座 振込チェッカー (重要UI) -->
@@ -217,6 +218,7 @@
             </div>
           </section>
         </div>
+        </div>
       </div>
 
     <!-- ===================== タブ2: 買い物リスト ===================== -->
@@ -262,7 +264,8 @@
     </div>
 
     <!-- ===================== タブ3: 履歴・固定費 ===================== -->
-    <div id="tabContentHistory" class="hidden space-y-4 md:space-y-0 md:grid md:grid-cols-12 md:gap-6 items-start">
+    <div id="tabContentHistory" class="hidden">
+      <div class="space-y-4 md:space-y-0 md:grid md:grid-cols-12 md:gap-6 items-start">
       <!-- 左カラム (md:col-span-5): 価格検索 ＆ 固定費マスタ ＆ ふたりの記録帳 -->
       <div class="space-y-4 md:col-span-5">
         <!-- 価格検索（レシート明細から過去の購入価格を調べる） -->
@@ -336,6 +339,7 @@
             <!-- JS動的レンダリング -->
           </div>
         </section>
+      </div>
       </div>
     </div>
 
@@ -818,7 +822,7 @@
             <label for="onboardingJoinName" class="text-xs font-bold text-slate-700 block mb-1">
               あなたのニックネーム <span class="text-rose-500">*</span>
             </label>
-            <input type="text" id="onboardingJoinName" required maxlength="15" placeholder="例: はなこ / 妻"
+            <input type="text" id="onboardingJoinName" required maxlength="15" placeholder="例: はなこ / パートナー"
                    class="w-full bg-slate-50 border border-slate-200 rounded-xl px-3 py-2 text-sm font-bold text-slate-800 focus:outline-none focus:ring-2 focus:ring-brand-500">
           </div>
           <button type="submit" id="submitOnboardingJoinBtn" onclick="submitOnboardingJoin(event)" class="w-full bg-indigo-600 hover:bg-indigo-500 text-white font-bold py-3 rounded-xl text-xs shadow-md transition-all active:scale-98 flex items-center justify-center gap-1.5 cursor-pointer">
@@ -965,7 +969,7 @@
             <i data-lucide="user-plus" class="w-4 h-4 text-brand-500"></i> パートナーの招待コードで合流する
           </h4>
           <input type="text" id="joinInviteCodeInput" placeholder="招待コード（例: 7K2M9X）" class="w-full bg-slate-50 border border-slate-200 rounded-xl px-3 py-2 text-xs font-mono uppercase focus:outline-none">
-          <input type="text" id="joinUserNameInput" placeholder="あなたの表示名（例: 妻, ニックネーム）" class="w-full bg-slate-50 border border-slate-200 rounded-xl px-3 py-2 text-xs focus:outline-none">
+          <input type="text" id="joinUserNameInput" placeholder="あなたの表示名（例: パートナー, ニックネーム）" class="w-full bg-slate-50 border border-slate-200 rounded-xl px-3 py-2 text-xs focus:outline-none">
           <button id="submitJoinPairBtn" class="w-full bg-slate-800 hover:bg-slate-700 text-white font-bold py-2 rounded-xl text-xs transition-colors">
             この世帯に合流する
           </button>
@@ -977,7 +981,7 @@
             <i data-lucide="sparkles" class="w-4 h-4 text-purple-500"></i> 新しい世帯ペアを立ち上げる
           </h4>
           <input type="text" id="newPairNameInput" placeholder="世帯名（例: 佐藤家, ふたり暮らし）" class="w-full bg-slate-50 border border-slate-200 rounded-xl px-3 py-2 text-xs focus:outline-none">
-          <input type="text" id="newPairCreatorNameInput" placeholder="あなたの表示名（例: 夫）" class="w-full bg-slate-50 border border-slate-200 rounded-xl px-3 py-2 text-xs focus:outline-none">
+          <input type="text" id="newPairCreatorNameInput" placeholder="あなたの表示名（例: ホスト, ニックネーム）" class="w-full bg-slate-50 border border-slate-200 rounded-xl px-3 py-2 text-xs focus:outline-none">
           <button id="submitCreatePairBtn" class="w-full bg-purple-600 hover:bg-purple-500 text-white font-bold py-2 rounded-xl text-xs transition-colors">
             新しい世帯ペアを作成（招待コード発行）
           </button>
@@ -1005,7 +1009,7 @@
         </div>
         <div>
           <label class="text-xs font-bold text-slate-600 block mb-1">参加メンバー（カンマ区切りまたはスペース）</label>
-          <input type="text" id="eventMembersInput" placeholder="例: 夫, 妻, 友人A, 友人B" class="w-full bg-slate-50 border border-slate-200 rounded-xl px-3 py-2 text-sm focus:outline-none">
+          <input type="text" id="eventMembersInput" placeholder="例: 自分, パートナー, 友人A, 友人B" class="w-full bg-slate-50 border border-slate-200 rounded-xl px-3 py-2 text-sm focus:outline-none">
           <p class="text-[10px] text-slate-400 mt-1">※あとで立替支出を割り振る対象者になります（2名以上）。</p>
         </div>
         <div class="p-3 bg-amber-50 border border-amber-200 rounded-xl text-[11px] text-amber-800">
@@ -1131,7 +1135,7 @@
   </div>
 
   <!-- アプリ本体スクリプト -->
-  <script src="config.js"></script>
-  <script src="app.js"></script>
+  <script src="js/config.js"></script>
+  <script src="js/app.js"></script>
 </body>
 </html>

@@ -411,10 +411,13 @@ function seedMockDb() {
   mockDb.fixed = MOCK_FIXED.map(f => ({ ...f }));
   const cur = localMonthStr();
   const rnd = n => ((n * 9301 + 49297) % 233280) / 233280; // 決定的な疑似乱数
+  const m1 = (state.members && state.members[0]?.name) || state.config?.husbandName || 'メンバー1';
+  const m2 = (state.members && state.members[1]?.name) || state.config?.wifeName || 'メンバー2';
+
   const addTx = (date, title, amount, category, isShared, paymentType, payer, receiptId = '') => {
     mockDb.transactions.push({
       id: mockId(), date, title, amount, category, isShared, paymentType, payer, memo: '',
-      createdBy: payer === '妻' ? '妻' : '夫', createdAt: date + ' 12:00:00', updatedBy: '', updatedAt: '', receiptId
+      createdBy: payer === m2 ? m2 : m1, createdAt: date + ' 12:00:00', updatedBy: '', updatedAt: '', receiptId
     });
   };
   const addReceipt = (date, store, payer, items) => {
@@ -426,29 +429,31 @@ function seedMockDb() {
   };
   for (let i = 35; i >= 1; i--) {
     const m = shiftMonth(cur, -i);
-    addTx(`${m}-27`, '【固定費】家賃', 110000, '住居費', true, 'shared_card', '夫');
-    addTx(`${m}-20`, '【固定費】光熱費', 11000 + Math.floor(rnd(i) * 9000), '水道光熱費', true, 'shared_card', '妻');
-    addTx(`${m}-10`, 'スーパー', 38000 + Math.floor(rnd(i + 7) * 22000), '食費', true, 'shared_card', '妻');
-    addTx(`${m}-15`, '外食', 8000 + Math.floor(rnd(i + 3) * 14000), '外食', true, 'shared_card', '夫');
-    addTx(`${m}-18`, '私物', 5000 + Math.floor(rnd(i + 5) * 15000), '趣味・衣服', false, 'shared_card', i % 2 ? '夫' : '妻');
+    addTx(`${m}-27`, '【固定費】家賃', 110000, '住居費', true, 'shared_card', m1);
+    addTx(`${m}-20`, '【固定費】光熱費', 11000 + Math.floor(rnd(i) * 9000), '水道光熱費', true, 'shared_card', m2);
+    addTx(`${m}-10`, 'スーパー', 38000 + Math.floor(rnd(i + 7) * 22000), '食費', true, 'shared_card', m2);
+    addTx(`${m}-15`, '外食', 8000 + Math.floor(rnd(i + 3) * 14000), '外食', true, 'shared_card', m1);
+    addTx(`${m}-18`, '私物', 5000 + Math.floor(rnd(i + 5) * 15000), '趣味・衣服', false, 'shared_card', i % 2 ? m1 : m2);
   }
-  addReceipt(`${shiftMonth(cur, -2)}-12`, 'イオン', '妻', [['ネギ', 1, 150], ['豆腐', 2, 160], ['牛乳', 1, 208]]);
-  addReceipt(`${shiftMonth(cur, -1)}-08`, 'ライフ', '夫', [['長ねぎ', 1, 168], ['豆腐', 1, 98], ['卵', 1, 238]]);
-  addReceipt(`${cur}-03`, 'イオン', '妻', [['ネギ', 1, 198], ['豆腐', 1, 90], ['牛乳', 1, 218], ['卵', 1, 248]]);
+  addReceipt(`${shiftMonth(cur, -2)}-12`, 'イオン', m2, [['ネギ', 1, 150], ['豆腐', 2, 160], ['牛乳', 1, 208]]);
+  addReceipt(`${shiftMonth(cur, -1)}-08`, 'ライフ', m1, [['長ねぎ', 1, 168], ['豆腐', 1, 98], ['卵', 1, 238]]);
+  addReceipt(`${cur}-03`, 'イオン', m2, [['ネギ', 1, 198], ['豆腐', 1, 90], ['牛乳', 1, 218], ['卵', 1, 248]]);
   const d = n => `${cur}-${pad2(Math.min(n, 28))}`;
-  addTx(d(2), 'ドラッグストア洗剤', 2000, '日用品', true, 'advanced_by_user', '夫');
-  addTx(d(4), 'スニーカー (私物購入)', 12000, '趣味・衣服', false, 'shared_card', '夫');
-  addTx(d(5), 'カフェ ランチ', 2400, '外食', true, 'shared_card', '夫');
-  addTx(d(6), 'ドラッグストア調味料', 5000, '食費', true, 'advanced_by_user', '妻');
+  addTx(d(2), 'ドラッグストア洗剤', 2000, '日用品', true, 'advanced_by_user', m1);
+  addTx(d(4), 'スニーカー (私物購入)', 12000, '趣味・衣服', false, 'shared_card', m1);
+  addTx(d(5), 'カフェ ランチ', 2400, '外食', true, 'shared_card', m1);
+  addTx(d(6), 'ドラッグストア調味料', 5000, '食費', true, 'advanced_by_user', m2);
   mockDb.shopping = [
-    { id: 's1', title: '牛乳・低脂肪乳', category: '食費', isCompleted: false, requestedBy: '妻', createdAt: d(5) },
-    { id: 's2', title: '食器用洗剤詰め替え', category: '日用品', isCompleted: false, requestedBy: '夫', createdAt: d(4) }
+    { id: 's1', title: '牛乳・低脂肪乳', category: '食費', isCompleted: false, requestedBy: m2, createdAt: d(5) },
+    { id: 's2', title: '食器用洗剤詰め替え', category: '日用品', isCompleted: false, requestedBy: m1, createdAt: d(4) }
   ];
   // 編集履歴のデモ（他者が編集した例）
   const demo = mockDb.transactions.find(t => t.title === 'カフェ ランチ');
-  demo.updatedBy = '妻'; demo.updatedAt = `${d(7)} 21:30:00`;
-  mockDb.audit.push({ at: `${d(7)} 21:30:00`, actor: '妻', verified: true, action: '更新', targetType: '支出', targetId: demo.id,
-    before: { amount: 2400 }, after: { amount: 2400, memo: 'ふたりで休日ランチ' } });
+  if (demo) {
+    demo.updatedBy = m2; demo.updatedAt = `${d(7)} 21:30:00`;
+    mockDb.audit.push({ at: `${d(7)} 21:30:00`, actor: m2, verified: true, action: '更新', targetType: '支出', targetId: demo.id,
+      before: { amount: 2400 }, after: { amount: 2400, memo: 'ふたりで休日ランチ' } });
+  }
 }
 
 function mockBuildInitial(month) {

@@ -38,6 +38,14 @@
   }
 }
 
+/* タブおよびビュー切り替えの非表示を最優先（Tailwind md:grid等のカスケード上書きを防止） */
+.hidden,
+[id^="tabContent"].hidden,
+#budgetView.hidden,
+#eventsView.hidden {
+  display: none !important;
+}
+
 /* アラート・バッジ用の微弱パルスアニメーション */
 .badge-pulse {
   animation: pulseSlow 2s cubic-bezier(0.4, 0, 0.6, 1) infinite;
