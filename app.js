@@ -707,23 +707,55 @@ function clearAllLocalCache() {
 
 async function callGas(action, data, extra = {}) {
   const idToken = state.liffReady ? liff.getIDToken() : null;
-  const isGoogleScript = state.gasApiUrl.includes('script.google.com');
-  const res = await fetch(state.gasApiUrl, {
-    method: 'POST',
-    headers: {
-      'Content-Type': isGoogleScript ? 'text/plain' : 'application/json'
-    },
-    body: JSON.stringify({ action, data: data || {}, idToken, pairId: state.pairId, ...extra })
-  });
-  return res.json();
+
+  const sendRequest = async (url) => {
+    if (!url) throw new Error('API URL is empty');
+    const isGoogleScript = url.includes('script.google.com');
+    const res = await fetch(url, {
+      method: 'POST',
+      headers: {
+        'Content-Type': isGoogleScript ? 'text/plain' : 'application/json'
+      },
+      body: JSON.stringify({ action, data: data || {}, idToken, pairId: state.pairId, ...extra })
+    });
+    if (!res.ok) {
+      throw new Error(`HTTP ${res.status}: ${res.statusText}`);
+    }
+    const contentType = res.headers.get('content-type') || '';
+    if (contentType.includes('text/html')) {
+      throw new Error('HTML response returned instead of JSON (Endpoint may not exist)');
+    }
+    return res.json();
+  };
+
+  try {
+    return await sendRequest(state.gasApiUrl);
+  } catch (err) {
+    // もし /api/budget が404等の場合、APP_CONFIG.GAS_URL があればフォールバック試行
+    if (state.gasApiUrl !== APP_CONFIG.GAS_URL && APP_CONFIG.GAS_URL) {
+      console.warn('プライマリAPI失敗のためGAS_URLへフォールバック試行:', err);
+      try {
+        return await sendRequest(APP_CONFIG.GAS_URL);
+      } catch (gasErr) {
+        console.warn('GAS_URLフォールバックも失敗:', gasErr);
+      }
+    }
+    throw err;
+  }
 }
 
 async function api(action, data = {}, extra = {}) {
+  if (state.isMockMode) {
+    return await mockApi(action, data);
+  }
   try {
-    return state.isMockMode ? await mockApi(action, data) : await callGas(action, data, extra);
+    return await callGas(action, data, extra);
   } catch (err) {
-    console.warn('API通信エラー:', action, err);
-    return { success: false, error: '通信に失敗しました。電波の良い場所で再試行してください' };
+    console.warn('API通信エラー (デモモードへフォールバック):', action, err);
+    // バックエンド未起動、404、オフライン時は自動でデモモードへフォールバック
+    state.isMockMode = true;
+    showBanner('⚠️ バックエンドに接続できないため、デモモードで動作中です（ローカルで全機能を操作可能）', 'warn');
+    return await mockApi(action, data);
   }
 }
 
@@ -929,12 +961,17 @@ window.finishOnboarding = function () {
 
 function showBanner(msg, kind) {
   const banner = $('mockBanner');
+  if (!banner) return;
   banner.classList.remove('hidden');
   banner.className = banner.className.replace(/bg-(amber|rose)-500/g, '') + (kind === 'error' ? ' bg-rose-500' : ' bg-amber-500');
-  banner.querySelector('span').textContent = msg;
+  const span = banner.querySelector('span');
+  if (span) span.textContent = msg;
 }
 
-function hideBanner() { $('mockBanner').classList.add('hidden'); }
+function hideBanner() {
+  const banner = $('mockBanner');
+  if (banner) banner.classList.add('hidden');
+}
 
 /**
  * 書き込み → 同一リクエスト（1往復）で最新データを受け取って画面更新（旧GASへのフォールバック付き）
@@ -972,7 +1009,6 @@ async function loadInitialData(month, opts = {}) {
     return;
   }
 
-  state.isMockMode = false;
   // キャッシュがあれば即座（0.02秒）に先行描画し、裏で最新データを取得して差分更新
   let usedCache = false;
   if (!opts.skipCache) {
@@ -988,20 +1024,36 @@ async function loadInitialData(month, opts = {}) {
     showToast(isMonthSwitch ? `${targetMonth.replace('-', '年')}月のデータを読み込み中…` : '最新データを同期しています…', { loading: true });
   }
 
-  const res = await api('getInitialData', { month: targetMonth });
-  if (state.viewMonth !== targetMonth) return; // 月送り連打時の古いレスポンスを破棄
-  if (!res.success) {
-    handleApiError(res);
-    if (res.code !== 'UNREGISTERED' && res.code !== 'AUTH' && res.code !== 'SETUP_REQUIRED') {
-      showBanner('サーバーに接続できません。再読み込みしてください', 'error');
+  try {
+    const res = await api('getInitialData', { month: targetMonth });
+    if (state.viewMonth !== targetMonth) return; // 月送り連打時の古いレスポンスを破棄
+
+    if (!res || !res.success) {
+      if (res) handleApiError(res);
+      // バックエンド障害時はデモモードに自動フォールバックして描画
+      state.isMockMode = true;
+      showBanner('⚠️ バックエンドに接続できないため、デモモードで動作中です（ローカルで全機能を操作可能）', 'warn');
+      const fallbackData = await mockApi('getInitialData', { month: targetMonth });
+      applyData(fallbackData);
+      if (!usedCache && !opts.silent) hideToast();
+      return;
     }
-    return;
+
+    sessionStorage.removeItem('pairbudget_reauth_ts');
+    if (!usedCache && !opts.silent) hideToast();
+    if (!state.isMockMode) {
+      hideBanner();
+      saveInitCache(res);
+    }
+    applyData(res);
+  } catch (err) {
+    console.warn('loadInitialDataエラー -> デモモードで起動:', err);
+    state.isMockMode = true;
+    showBanner('⚠️ バックエンドに接続できないため、デモモードで動作中です（ローカルで全機能を操作可能）', 'warn');
+    const fallbackData = await mockApi('getInitialData', { month: targetMonth });
+    applyData(fallbackData);
+    if (!usedCache && !opts.silent) hideToast();
   }
-  sessionStorage.removeItem('pairbudget_reauth_ts');
-  if (!usedCache && !opts.silent) hideToast();
-  hideBanner();
-  saveInitCache(res);
-  applyData(res);
 }
 
 function applyData(data) {
@@ -2025,61 +2077,59 @@ function hideToast() {
 }
 
 function setupEventListeners() {
-  $('scopeSharedBtn').addEventListener('click', () => setScope('shared'));
-  $('scopePersonalBtn').addEventListener('click', () => setScope('personal'));
-  $('prevMonthBtn').addEventListener('click', () => loadInitialData(shiftMonth(state.viewMonth, -1)));
-  $('nextMonthBtn').addEventListener('click', () => loadInitialData(shiftMonth(state.viewMonth, 1)));
+  $('scopeSharedBtn')?.addEventListener('click', () => setScope('shared'));
+  $('scopePersonalBtn')?.addEventListener('click', () => setScope('personal'));
+  $('prevMonthBtn')?.addEventListener('click', () => loadInitialData(shiftMonth(state.viewMonth, -1)));
+  $('nextMonthBtn')?.addEventListener('click', () => loadInitialData(shiftMonth(state.viewMonth, 1)));
 
-  $('transferHelpBtn').addEventListener('click', () => $('transferHelpModal').classList.remove('hidden'));
-  $('husbandPayToggle').addEventListener('click', () => toggleTransferStatus('husband'));
-  $('wifePayToggle').addEventListener('click', () => toggleTransferStatus('wife'));
+  $('transferHelpBtn')?.addEventListener('click', () => $('transferHelpModal')?.classList.remove('hidden'));
 
-  $('openExpenseModalBtn').addEventListener('click', () => openExpenseModal(null));
-  $('expenseForm').addEventListener('submit', handleExpenseSubmit);
-  $('expenseDeleteBtn').addEventListener('click', handleExpenseDelete);
-  $('receiptFileInput').addEventListener('change', e => handleReceiptFile(e.target.files[0]));
+  $('openExpenseModalBtn')?.addEventListener('click', () => openExpenseModal(null));
+  $('expenseForm')?.addEventListener('submit', handleExpenseSubmit);
+  $('expenseDeleteBtn')?.addEventListener('click', handleExpenseDelete);
+  $('receiptFileInput')?.addEventListener('change', e => handleReceiptFile(e.target.files[0]));
 
-  $('receiptForm').addEventListener('submit', handleReceiptSubmit);
-  $('receiptCloseBtn').addEventListener('click', closeReceiptModal);
-  $('receiptAddRowBtn').addEventListener('click', () => {
-    $('receiptItemRows').insertAdjacentHTML('beforeend', receiptRowHtml({ name: '', quantity: 1, price: '' }));
+  $('receiptForm')?.addEventListener('submit', handleReceiptSubmit);
+  $('receiptCloseBtn')?.addEventListener('click', closeReceiptModal);
+  $('receiptAddRowBtn')?.addEventListener('click', () => {
+    $('receiptItemRows')?.insertAdjacentHTML('beforeend', receiptRowHtml({ name: '', quantity: 1, price: '' }));
     lucide.createIcons();
   });
-  $('receiptItemRows').addEventListener('input', updateReceiptTotal);
+  $('receiptItemRows')?.addEventListener('input', updateReceiptTotal);
 
-  $('addShoppingForm').addEventListener('submit', handleAddShoppingSubmit);
-  $('buySyncForm').addEventListener('submit', handleBuySyncSubmit);
+  $('addShoppingForm')?.addEventListener('submit', handleAddShoppingSubmit);
+  $('buySyncForm')?.addEventListener('submit', handleBuySyncSubmit);
 
-  $('historyCategoryFilter').addEventListener('change', renderHistoryList);
-  $('historyPayerFilter').addEventListener('change', renderHistoryList);
-  $('priceSearchForm').addEventListener('submit', handlePriceSearch);
-  $('loadAuditBtn').addEventListener('click', loadAuditLog);
-  $('auditDetailCloseBtn').addEventListener('click', () => $('auditDetailModal').classList.add('hidden'));
-  if ($('openFixedModalBtn')) $('openFixedModalBtn').addEventListener('click', () => openFixedModal(null));
-  if ($('fixedModalCloseBtn')) $('fixedModalCloseBtn').addEventListener('click', closeFixedModal);
-  if ($('fixedExpenseForm')) $('fixedExpenseForm').addEventListener('submit', handleFixedSubmit);
-  if ($('fixedExpenseDeleteBtn')) $('fixedExpenseDeleteBtn').addEventListener('click', handleFixedDelete);
+  $('historyCategoryFilter')?.addEventListener('change', renderHistoryList);
+  $('historyPayerFilter')?.addEventListener('change', renderHistoryList);
+  $('priceSearchForm')?.addEventListener('submit', handlePriceSearch);
+  $('loadAuditBtn')?.addEventListener('click', loadAuditLog);
+  $('auditDetailCloseBtn')?.addEventListener('click', () => $('auditDetailModal')?.classList.add('hidden'));
+  $('openFixedModalBtn')?.addEventListener('click', () => openFixedModal(null));
+  $('fixedModalCloseBtn')?.addEventListener('click', closeFixedModal);
+  $('fixedExpenseForm')?.addEventListener('submit', handleFixedSubmit);
+  $('fixedExpenseDeleteBtn')?.addEventListener('click', handleFixedDelete);
 
-  $('trendRangeButtons').addEventListener('click', e => {
+  $('trendRangeButtons')?.addEventListener('click', e => {
     const btn = e.target.closest('[data-range]');
     if (!btn) return;
     state.trendRange = Number(btn.dataset.range);
-    $('trendRangeButtons').querySelectorAll('button').forEach(b => {
+    $('trendRangeButtons')?.querySelectorAll('button').forEach(b => {
       b.className = 'px-2 py-1 rounded-md ' + (b === btn ? 'bg-white text-brand-700 shadow-sm' : 'text-slate-500');
     });
     renderTrendChart();
   });
 
-  if ($('saveBudgetBtn')) $('saveBudgetBtn').addEventListener('click', handleSaveBudget);
-  if ($('saveMemberSettingsBtn')) $('saveMemberSettingsBtn').addEventListener('click', handleBaseChange);
-  if ($('settingHusbandBase')) $('settingHusbandBase').addEventListener('change', handleBaseChange);
-  if ($('settingWifeBase')) $('settingWifeBase').addEventListener('change', handleBaseChange);
-  $('privacyMaskToggle').addEventListener('change', e => {
+  $('saveBudgetBtn')?.addEventListener('click', handleSaveBudget);
+  $('saveMemberSettingsBtn')?.addEventListener('click', handleBaseChange);
+  $('settingHusbandBase')?.addEventListener('change', handleBaseChange);
+  $('settingWifeBase')?.addEventListener('change', handleBaseChange);
+  $('privacyMaskToggle')?.addEventListener('change', e => {
     state.privacyMask = e.target.checked;
     localStorage.setItem('pairbudget_privacy_mask', state.privacyMask);
     renderRecentTransactions();
     renderHistoryList();
-    if ($('auditLogList').children.length > 1) loadAuditLog();
+    if ($('auditLogList')?.children.length > 1) loadAuditLog();
     lucide.createIcons();
     showToast('プライバシー設定を更新しました');
   });
@@ -2109,7 +2159,7 @@ function setupEventListeners() {
       case 'edit-fixed': { const fx = state.fixedExpenses.find(f => f.id === id); if (fx) openFixedModal(fx); break; }
       case 'tx-history': e.preventDefault(); openTxHistory(id); break;
       case 'delete-shop': deleteShoppingItemById(id); break;
-      case 'remove-receipt-row': el.closest('[data-row]').remove(); updateReceiptTotal(); break;
+      case 'remove-receipt-row': el.closest('[data-row]')?.remove(); updateReceiptTotal(); break;
     }
   });
   document.addEventListener('change', e => {
