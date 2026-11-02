@@ -1210,7 +1210,8 @@ async function loadInitialData(month, opts = {}) {
 }
 
 function applyData(data) {
-  state.viewMonth = data.month;
+  if (!data) return;
+  state.viewMonth = data.month || state.viewMonth || localMonthStr();
   state.transactions = data.transactions || [];
   state.receiptItems = data.receiptItems || [];
   state.shoppingList = data.shoppingList || [];
