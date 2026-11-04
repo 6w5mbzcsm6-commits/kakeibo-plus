@@ -125,6 +125,112 @@
     <!-- 🏠 家計簿ビュー -->
     <div id="budgetView" class="space-y-4">
 
+      <!-- 🦴 メインスケルトンローダー（データ読み込み中に表示） -->
+      <div id="mainSkeletonLoader" class="hidden space-y-4 md:space-y-0 md:grid md:grid-cols-12 md:gap-6 items-start animate-fade-in">
+        <!-- 左カラム (md:col-span-5): 振込チェッカー ＆ 予算メーター スケルトン -->
+        <div class="space-y-4 md:col-span-5">
+          <!-- 振込チェッカースケルトン -->
+          <div class="bg-slate-900 rounded-2xl p-4 space-y-3 shadow-lg">
+            <div class="flex items-center justify-between border-b border-slate-800 pb-2.5">
+              <div class="h-4 w-36 rounded-md skeleton-shimmer-dark"></div>
+              <div class="h-3 w-12 rounded-md skeleton-shimmer-dark"></div>
+            </div>
+            <div class="grid grid-cols-2 gap-3">
+              <div class="bg-slate-800/80 rounded-xl p-3 space-y-2 border border-slate-700/50">
+                <div class="flex items-center justify-between">
+                  <div class="h-3 w-16 rounded skeleton-shimmer-dark"></div>
+                  <div class="h-3 w-8 rounded-full skeleton-shimmer-dark"></div>
+                </div>
+                <div class="h-6 w-24 rounded skeleton-shimmer-dark mt-1"></div>
+                <div class="h-2.5 w-full rounded skeleton-shimmer-dark"></div>
+              </div>
+              <div class="bg-slate-800/80 rounded-xl p-3 space-y-2 border border-slate-700/50">
+                <div class="flex items-center justify-between">
+                  <div class="h-3 w-16 rounded skeleton-shimmer-dark"></div>
+                  <div class="h-3 w-8 rounded-full skeleton-shimmer-dark"></div>
+                </div>
+                <div class="h-6 w-24 rounded skeleton-shimmer-dark mt-1"></div>
+                <div class="h-2.5 w-full rounded skeleton-shimmer-dark"></div>
+              </div>
+            </div>
+          </div>
+
+          <!-- 予算メーター スケルトン -->
+          <div class="bg-white rounded-2xl p-4 shadow-sm border border-slate-100 space-y-3">
+            <div class="flex items-center justify-between">
+              <div class="h-3 w-28 rounded skeleton-shimmer"></div>
+              <div class="h-3 w-14 rounded skeleton-shimmer"></div>
+            </div>
+            <div class="w-full h-3 rounded-full skeleton-shimmer"></div>
+            <div class="grid grid-cols-2 gap-2 pt-1 border-t border-slate-50">
+              <div class="space-y-1">
+                <div class="h-2.5 w-16 rounded skeleton-shimmer"></div>
+                <div class="h-5 w-24 rounded skeleton-shimmer"></div>
+              </div>
+              <div class="space-y-1">
+                <div class="h-2.5 w-16 rounded skeleton-shimmer"></div>
+                <div class="h-5 w-24 rounded skeleton-shimmer"></div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- 右カラム (md:col-span-7): グラフ枠 ＆ 履歴リスト スケルトン -->
+        <div class="space-y-4 md:col-span-7">
+          <!-- グラフ枠 スケルトン -->
+          <div class="bg-white rounded-2xl p-4 shadow-sm border border-slate-100 space-y-3">
+            <div class="flex items-center justify-between">
+              <div class="h-4 w-32 rounded skeleton-shimmer"></div>
+              <div class="flex gap-1">
+                <div class="h-5 w-10 rounded skeleton-shimmer"></div>
+                <div class="h-5 w-10 rounded skeleton-shimmer"></div>
+              </div>
+            </div>
+            <div class="h-44 w-full rounded-xl skeleton-shimmer"></div>
+          </div>
+
+          <!-- 支出リスト スケルトン -->
+          <div class="bg-white rounded-2xl p-4 shadow-sm border border-slate-100 space-y-3">
+            <div class="flex items-center justify-between">
+              <div class="h-4 w-28 rounded skeleton-shimmer"></div>
+              <div class="h-3 w-14 rounded skeleton-shimmer"></div>
+            </div>
+            <div class="divide-y divide-slate-100">
+              <div class="py-2.5 flex items-center justify-between">
+                <div class="flex items-center gap-2.5">
+                  <div class="w-8 h-8 rounded-xl skeleton-shimmer"></div>
+                  <div class="space-y-1">
+                    <div class="h-3.5 w-24 rounded skeleton-shimmer"></div>
+                    <div class="h-2.5 w-16 rounded skeleton-shimmer"></div>
+                  </div>
+                </div>
+                <div class="h-4 w-16 rounded skeleton-shimmer"></div>
+              </div>
+              <div class="py-2.5 flex items-center justify-between">
+                <div class="flex items-center gap-2.5">
+                  <div class="w-8 h-8 rounded-xl skeleton-shimmer"></div>
+                  <div class="space-y-1">
+                    <div class="h-3.5 w-28 rounded skeleton-shimmer"></div>
+                    <div class="h-2.5 w-20 rounded skeleton-shimmer"></div>
+                  </div>
+                </div>
+                <div class="h-4 w-14 rounded skeleton-shimmer"></div>
+              </div>
+              <div class="py-2.5 flex items-center justify-between">
+                <div class="flex items-center gap-2.5">
+                  <div class="w-8 h-8 rounded-xl skeleton-shimmer"></div>
+                  <div class="space-y-1">
+                    <div class="h-3.5 w-20 rounded skeleton-shimmer"></div>
+                    <div class="h-2.5 w-14 rounded skeleton-shimmer"></div>
+                  </div>
+                </div>
+                <div class="h-4 w-18 rounded skeleton-shimmer"></div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
       <!-- ===================== タブ1: ホーム ===================== -->
       <div id="tabContentHome">
         <div class="space-y-4 md:space-y-0 md:grid md:grid-cols-12 md:gap-6 items-start">
@@ -1179,11 +1285,15 @@
     </div>
   </div>
 
-  <!-- トースト通知（通常完了 ＆ 処理中スピナー対応） -->
-  <div id="toast" class="hidden fixed top-5 left-1/2 -translate-x-1/2 z-[60] bg-slate-900/95 text-white text-xs font-bold px-4 py-2.5 rounded-full shadow-xl flex items-center gap-2 backdrop-blur-sm transition-opacity duration-300 max-w-[90vw]">
+  <!-- トースト通知（通常完了 ＆ 処理中スピナー ＆ 流れるプログレスバー対応） -->
+  <div id="toast" class="hidden fixed top-5 left-1/2 -translate-x-1/2 z-[60] bg-slate-900/95 text-white text-xs font-bold px-4 py-2.5 rounded-full shadow-xl flex items-center gap-2 backdrop-blur-sm transition-opacity duration-300 max-w-[90vw] overflow-hidden relative">
     <div id="toastSpinner" class="hidden w-4 h-4 border-2 border-white/30 border-t-brand-400 rounded-full animate-spin shrink-0"></div>
     <i id="toastIcon" data-lucide="check" class="w-4 h-4 text-brand-400 shrink-0"></i>
     <span id="toastMessage" class="truncate">保存しました</span>
+    <!-- 下部流れるプログレスバー -->
+    <div id="toastProgressWrap" class="hidden absolute bottom-0 left-0 right-0 h-0.5 overflow-hidden bg-white/10">
+      <div class="toast-progress-bar h-full w-full"></div>
+    </div>
   </div>
 
   <!-- アプリ本体スクリプト -->

@@ -23,16 +23,84 @@ const ALLOWED_PAYMENT_TYPES = [
 ];
 
 /**
- * Supabaseクライアントの初期化（サービスロールキー使用）
+ * 環境変数キー・シークレットの正規化（前後の空白・クォーテーションの自動除去）
  */
-function getSupabase() {
-  const url = process.env.SUPABASE_URL;
-  const key = process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.SUPABASE_ANON_KEY;
+function normalizeEnvSecret(rawKey) {
+  if (!rawKey) return '';
+  let str = String(rawKey).trim();
+  if ((str.startsWith('"') && str.endsWith('"')) || (str.startsWith("'") && str.endsWith("'"))) {
+    str = str.slice(1, -1).trim();
+  }
+  return str;
+}
+
+/**
+ * Supabase URLの自動補正（ダッシュボードURLやプロジェクトIDの自動変換、フォールバックURL）
+ */
+function normalizeSupabaseUrl(rawUrl) {
+  let str = normalizeEnvSecret(rawUrl);
+  if (!str) return 'https://pqxrlkheqwuvgwgnxnkk.supabase.co';
+
+  // もしダッシュボードURLが指定されていた場合
+  // 例: https://supabase.com/dashboard/project/pqxrlkheqwuvgwgnxnkk...
+  const dashboardMatch = str.match(/supabase\.com\/dashboard\/project\/([a-z0-9]+)/i);
+  if (dashboardMatch && dashboardMatch[1]) {
+    return `https://${dashboardMatch[1]}.supabase.co`;
+  }
+
+  // プロジェクトID単体の場合 (20文字前後の英小文字数字)
+  if (/^[a-z0-9]{15,30}$/i.test(str)) {
+    return `https://${str}.supabase.co`;
+  }
+
+  // プロトコル補完
+  if (!/^https?:\/\//i.test(str)) {
+    str = 'https://' + str;
+  }
+
+  // 末尾のスラッシュを除去
+  return str.replace(/\/+$/, '');
+}
+
+/**
+ * Supabaseキーのタイプ判別
+ */
+function getKeyType(key) {
+  if (!key) return 'missing';
+  if (key.startsWith('sb_secret_')) return 'sb_secret';
+  if (key.startsWith('sb_publishable_')) return 'sb_publishable';
+  if (key.split('.').length === 3) return 'jwt';
+  return 'unknown';
+}
+
+/**
+ * Supabaseクライアントの初期化（新形式キー対応＆URL自動補正＆フォールバック）
+ */
+function getSupabase(customUrl = null, customKey = null) {
+  const rawUrl = customUrl || process.env.SUPABASE_URL;
+  const rawKey = customKey || process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.SUPABASE_ANON_KEY;
+
+  const url = normalizeSupabaseUrl(rawUrl);
+  const key = normalizeEnvSecret(rawKey);
+
   if (!url || !key) {
     throw new Error('Supabaseの環境変数 (SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY) が設定されていません');
   }
+
+  // 新形式キー（sb_secret_... または sb_publishable_...）対応
+  // PostgREST が Expected 3 parts in JWT を出さないよう、authオプションとglobalヘッダーを最適化
   return createClient(url, key, {
-    auth: { persistSession: false }
+    auth: {
+      persistSession: false,
+      autoRefreshToken: false,
+      detectSessionInUrl: false
+    },
+    global: {
+      headers: {
+        apikey: key,
+        ...(key.startsWith('sb_') ? { 'x-supabase-api-key': key } : {})
+      }
+    }
   });
 }
 
@@ -2007,6 +2075,13 @@ async function processNaturalLanguageMessage(supabase, text, userId) {
 // ヘルスチェック ＆ 設定漏れ自己診断
 // ==========================================
 async function handleHealthCheck(req) {
+  const rawUrl = process.env.SUPABASE_URL;
+  const rawKey = process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.SUPABASE_ANON_KEY;
+
+  const resolvedUrl = normalizeSupabaseUrl(rawUrl);
+  const resolvedKey = normalizeEnvSecret(rawKey);
+  const keyType = getKeyType(resolvedKey);
+
   const envCheck = {
     SUPABASE_URL: !!process.env.SUPABASE_URL,
     SUPABASE_SERVICE_ROLE_KEY: !!process.env.SUPABASE_SERVICE_ROLE_KEY,
@@ -2019,19 +2094,34 @@ async function handleHealthCheck(req) {
   let dbStatus = '未接続';
   let dbError = null;
 
-  if (envCheck.SUPABASE_URL && envCheck.SUPABASE_SERVICE_ROLE_KEY) {
+  if (resolvedUrl && resolvedKey) {
     try {
-      const client = getSupabase();
+      const client = getSupabase(resolvedUrl, resolvedKey);
       const { data, error } = await client.from('pairs').select('id').limit(1);
       if (error) {
-        dbStatus = 'エラー (テーブル未作成)';
-        dbError = error.message;
+        dbStatus = 'エラー';
+        let hint = error.hint || null;
+        if (keyType === 'sb_publishable') {
+          hint = '※Publishableキー（sb_publishable_...）が設定されています。サーバー用には必ず Service Role Key（sb_secret_... または JWT secret）を設定してください。';
+        } else if (error.message && error.message.includes('relation') && error.message.includes('does not exist')) {
+          hint = '※テーブルが見つかりません。Supabaseの SQL Editor で schema.sql を実行してください。';
+        }
+        dbError = {
+          code: error.code || 'UNKNOWN',
+          message: error.message || '不明なエラー',
+          hint: hint,
+          details: error.details || null
+        };
       } else {
         dbStatus = '正常接続 (OK)';
       }
     } catch (e) {
       dbStatus = '接続例外エラー';
-      dbError = e.message;
+      dbError = {
+        code: 'CLIENT_EXCEPTION',
+        message: e.message,
+        hint: 'URLまたはキーの形式を確認してください'
+      };
     }
   } else {
     dbStatus = '環境変数が未設定のため未接続';
@@ -2039,13 +2129,16 @@ async function handleHealthCheck(req) {
 
   return {
     success: true,
-    version: 'v2.2.0',
-    timestamp: new Date().toISOString(),
+    version: 'v2.3 (Multi-member & Enhanced Diagnostics)',
+    resolvedUrl: resolvedUrl ? resolvedUrl.replace(/\/\/[^@]+@/, '//***@') : '未設定',
+    keyType: keyType,
     env: envCheck,
     database: {
       status: dbStatus,
-      error: dbError
-    }
+      error: dbError ? (typeof dbError === 'object' ? `${dbError.message}${dbError.hint ? ' [' + dbError.hint + ']' : ''}` : String(dbError)) : null,
+      errorDetail: dbError
+    },
+    timestamp: new Date().toISOString()
   };
 }
 

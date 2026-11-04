@@ -1167,6 +1167,28 @@ async function writeAndRefresh(action, data, successMsg, loadingMsg) {
   }
 }
 
+/**
+ * メインスケルトンローダーの表示制御
+ */
+function showMainSkeleton() {
+  const sk = $('mainSkeletonLoader');
+  const home = $('tabContentHome');
+  if (sk) sk.classList.remove('hidden');
+  if (home) home.classList.add('hidden');
+}
+
+function hideMainSkeleton() {
+  const sk = $('mainSkeletonLoader');
+  const home = $('tabContentHome');
+  if (sk) sk.classList.add('hidden');
+  if (home) {
+    home.classList.remove('hidden');
+    home.classList.remove('animate-fade-in');
+    void home.offsetWidth;
+    home.classList.add('animate-fade-in');
+  }
+}
+
 async function loadInitialData(month, opts = {}) {
   const isMonthSwitch = Boolean(month && month !== state.viewMonth);
   if (month) state.viewMonth = month;
@@ -1190,6 +1212,12 @@ async function loadInitialData(month, opts = {}) {
       renderMonthNav();
     }
   }
+
+  // キャッシュがない場合や月切り替え時はリアルなスケルトンを表示
+  if (!usedCache || opts.showSkeleton || isMonthSwitch) {
+    showMainSkeleton();
+  }
+
   if (!usedCache && !opts.silent) {
     showToast(isMonthSwitch ? `${targetMonth.replace('-', '年')}月のデータを読み込み中…` : '最新データを同期しています…', { loading: true });
   }
@@ -1206,6 +1234,7 @@ async function loadInitialData(month, opts = {}) {
         state.backendVersion = res.version || 'v2.2.0';
         handleApiError(res);
         renderAll();
+        hideMainSkeleton();
         if (!usedCache && !opts.silent) hideToast();
         return;
       }
@@ -1215,6 +1244,7 @@ async function loadInitialData(month, opts = {}) {
       showBanner('⚠️ バックエンドに接続できないため、デモモードで動作中です（ローカルで全機能を操作可能）', 'warn');
       const fallbackData = await mockApi('getInitialData', { month: targetMonth });
       applyData(fallbackData);
+      hideMainSkeleton();
       if (!usedCache && !opts.silent) hideToast();
       return;
     }
@@ -1226,12 +1256,14 @@ async function loadInitialData(month, opts = {}) {
       saveInitCache(res);
     }
     applyData(res);
+    hideMainSkeleton();
   } catch (err) {
     console.warn('loadInitialDataエラー -> デモモードで起動:', err);
     state.isMockMode = true;
     showBanner('⚠️ バックエンドに接続できないため、デモモードで動作中です（ローカルで全機能を操作可能）', 'warn');
     const fallbackData = await mockApi('getInitialData', { month: targetMonth });
     applyData(fallbackData);
+    hideMainSkeleton();
     if (!usedCache && !opts.silent) hideToast();
   }
 }
@@ -1284,6 +1316,7 @@ function applyData(data) {
     state.currentUser = memberName(state.currentSlot);
   }
   renderAll();
+  hideMainSkeleton();
 }
 
 // ==========================================
@@ -1703,9 +1736,32 @@ function auditRowHtml(log) {
     <div class="text-[11px] text-slate-700 mt-0.5 leading-relaxed">${diffText(log.before, log.after, log)}</div></div>`;
 }
 
+function renderAuditSkeleton() {
+  const box = $('auditLogList');
+  if (!box) return;
+  box.innerHTML = `
+    <div class="divide-y divide-slate-100 animate-fade-in">
+      <div class="py-2.5 space-y-1.5">
+        <div class="flex items-center justify-between">
+          <div class="h-3.5 w-28 rounded skeleton-shimmer"></div>
+          <div class="h-3 w-16 rounded skeleton-shimmer"></div>
+        </div>
+        <div class="h-3 w-48 rounded skeleton-shimmer"></div>
+      </div>
+      <div class="py-2.5 space-y-1.5">
+        <div class="flex items-center justify-between">
+          <div class="h-3.5 w-24 rounded skeleton-shimmer"></div>
+          <div class="h-3 w-14 rounded skeleton-shimmer"></div>
+        </div>
+        <div class="h-3 w-56 rounded skeleton-shimmer"></div>
+      </div>
+    </div>
+  `;
+}
+
 async function loadAuditLog() {
   const box = $('auditLogList');
-  box.innerHTML = '<div class="py-3 text-center text-xs text-slate-400">読み込み中…</div>';
+  renderAuditSkeleton();
   showToast('変更履歴を読み込み中…', { loading: true });
   const res = await api('getAuditLog', { limit: 50 });
   if (!res.success) { box.innerHTML = ''; handleApiError(res); return; }
@@ -1717,7 +1773,13 @@ async function openTxHistory(id) {
   const tx = state.transactions.find(t => t.id === id);
   const masked = tx && !tx.isShared && state.privacyMask && !isSameMember(tx.payer, state.currentUser);
   $('auditDetailTitle').textContent = `変更履歴: ${tx ? (masked ? '🔒 私物支出 (マスキング中)' : tx.title) : ''}`;
-  $('auditDetailBody').innerHTML = '<div class="py-4 text-center text-slate-400">読み込み中…</div>';
+  $('auditDetailBody').innerHTML = `
+    <div class="space-y-2 py-3 animate-fade-in">
+      <div class="h-3.5 w-32 rounded skeleton-shimmer"></div>
+      <div class="h-3 w-48 rounded skeleton-shimmer"></div>
+      <div class="h-3 w-40 rounded skeleton-shimmer"></div>
+    </div>
+  `;
   $('auditDetailModal').classList.remove('hidden');
   showToast('履歴を取得中…', { loading: true });
   const res = await api('getAuditLog', { targetId: id, limit: 50 });
@@ -1731,13 +1793,28 @@ async function openTxHistory(id) {
 // ==========================================
 // 価格検索
 // ==========================================
+function renderPriceSearchSkeleton() {
+  const box = $('priceSearchResult');
+  if (!box) return;
+  box.classList.remove('hidden');
+  box.innerHTML = `
+    <div class="bg-slate-50 rounded-xl p-3.5 space-y-2.5 border border-slate-100 animate-fade-in">
+      <div class="flex items-center justify-between">
+        <div class="h-3.5 w-32 rounded skeleton-shimmer"></div>
+        <div class="h-3 w-16 rounded skeleton-shimmer"></div>
+      </div>
+      <div class="h-7 w-24 rounded skeleton-shimmer"></div>
+      <div class="h-2.5 w-44 rounded skeleton-shimmer"></div>
+    </div>
+  `;
+}
+
 async function handlePriceSearch(e) {
   e.preventDefault();
   const q = $('priceSearchInput').value.trim();
   if (!q) return;
   const box = $('priceSearchResult');
-  box.classList.remove('hidden');
-  box.innerHTML = '<div class="text-xs text-slate-400 text-center py-2">検索中…</div>';
+  renderPriceSearchSkeleton();
   showToast(`「${q}」の価格履歴を検索中…`, { loading: true });
   const res = await api('searchPrices', { query: q });
   if (!res.success) { box.classList.add('hidden'); handleApiError(res); return; }
@@ -2218,15 +2295,24 @@ function setScope(scope) {
 window.switchTab = function (tabName) {
   ['home', 'shopping', 'history', 'settings'].forEach(t => {
     const cap = t.charAt(0).toUpperCase() + t.slice(1);
-    $(`tabContent${cap}`).classList.toggle('hidden', t !== tabName);
+    const tabEl = $(`tabContent${cap}`);
+    const isTarget = t === tabName;
+    if (tabEl) {
+      tabEl.classList.toggle('hidden', !isTarget);
+      if (isTarget) {
+        tabEl.classList.remove('animate-fade-in');
+        void tabEl.offsetWidth; // トランジション再トリガー
+        tabEl.classList.add('animate-fade-in');
+      }
+    }
     const mobileBtn = $(`nav${cap}Btn`);
     if (mobileBtn) {
-      mobileBtn.className = `py-1 ${t === tabName ? 'text-brand-600' : 'text-slate-400'} flex flex-col items-center justify-center gap-0.5`;
+      mobileBtn.className = `py-1 ${isTarget ? 'text-brand-600' : 'text-slate-400'} flex flex-col items-center justify-center gap-0.5`;
     }
     const desktopBtn = $(`desktopNav${cap}Btn`);
     if (desktopBtn) {
       desktopBtn.className = `px-3.5 py-1.5 rounded-lg transition-all flex items-center gap-1.5 ${
-        t === tabName
+        isTarget
           ? 'bg-white text-brand-700 shadow-sm font-bold'
           : 'text-slate-500 hover:text-slate-800 font-medium'
       }`;
@@ -2239,14 +2325,15 @@ window.switchTab = function (tabName) {
 function showToast(msg, opts = {}) {
   const toast = $('toast');
   if (!toast) return;
-  const loading = !!opts.loading;
+  const loading = opts === 'loading' || !!(opts && opts.loading);
   $('toastMessage').textContent = msg;
   if ($('toastSpinner')) $('toastSpinner').classList.toggle('hidden', !loading);
   if ($('toastIcon')) $('toastIcon').classList.toggle('hidden', loading);
+  if ($('toastProgressWrap')) $('toastProgressWrap').classList.toggle('hidden', !loading);
   toast.classList.remove('hidden');
   clearTimeout(showToast.timer);
   if (!loading) {
-    showToast.timer = setTimeout(() => toast.classList.add('hidden'), opts.duration || 2800);
+    showToast.timer = setTimeout(() => toast.classList.add('hidden'), (opts && opts.duration) || 2800);
   }
 }
 
@@ -2255,6 +2342,7 @@ function hideToast() {
   if (!toast) return;
   clearTimeout(showToast.timer);
   toast.classList.add('hidden');
+  if ($('toastProgressWrap')) $('toastProgressWrap').classList.add('hidden');
 }
 
 function setupEventListeners() {
@@ -2498,13 +2586,36 @@ function copyInviteCode() {
 // 臨時イベント・旅行精算機能
 // ==========================================
 
-async function loadEvents() {
+function renderEventsSkeleton() {
   const container = $('eventsListContainer');
-  if (container) {
-    container.innerHTML = '<div class="text-center py-8 text-slate-400 text-xs">読み込み中…</div>';
-  }
+  if (!container) return;
+  container.innerHTML = `
+    <div class="space-y-3 animate-fade-in">
+      <div class="bg-white rounded-2xl p-4 shadow-sm border border-slate-100 space-y-3">
+        <div class="flex items-center justify-between">
+          <div class="h-4 w-36 rounded skeleton-shimmer"></div>
+          <div class="h-5 w-16 rounded-full skeleton-shimmer"></div>
+        </div>
+        <div class="h-3 w-48 rounded skeleton-shimmer"></div>
+        <div class="h-6 w-28 rounded skeleton-shimmer"></div>
+      </div>
+      <div class="bg-white rounded-2xl p-4 shadow-sm border border-slate-100 space-y-3">
+        <div class="flex items-center justify-between">
+          <div class="h-4 w-32 rounded skeleton-shimmer"></div>
+          <div class="h-5 w-16 rounded-full skeleton-shimmer"></div>
+        </div>
+        <div class="h-3 w-40 rounded skeleton-shimmer"></div>
+        <div class="h-6 w-24 rounded skeleton-shimmer"></div>
+      </div>
+    </div>
+  `;
+}
+
+async function loadEvents() {
+  renderEventsSkeleton();
   const res = await api('getEvents', { pairId: state.pairId });
   if (!res.success) {
+    const container = $('eventsListContainer');
     if (container) container.innerHTML = `<div class="text-center py-8 text-rose-500 text-xs">${res.error || 'イベントの取得に失敗しました'}</div>`;
     return;
   }
@@ -2899,14 +3010,28 @@ window.runSystemDiagnostics = async function () {
     const env = backendData.env || {};
     const hasSupabaseUrl = !!env.SUPABASE_URL;
     const hasServiceKey = !!env.SUPABASE_SERVICE_ROLE_KEY;
+    const keyType = backendData.keyType || 'unknown';
+    const resolvedUrl = backendData.resolvedUrl || '未設定';
 
     if (hasSupabaseUrl && hasServiceKey) {
-      items.push({
-        title: '3. Vercelの環境変数 (Supabase鍵)',
-        status: 'ok',
-        badge: '設定完了',
-        desc: 'SUPABASE_URL および SUPABASE_SERVICE_ROLE_KEY がVercelに正しく登録されています。'
-      });
+      if (keyType === 'sb_publishable') {
+        items.push({
+          title: '3. Vercelの環境変数 (Supabase鍵)',
+          status: 'error',
+          badge: 'キー種別エラー (Publishable Key検出)',
+          desc: `接続先: ${resolvedUrl} / ⚠️ Publishable Key（sb_publishable_...）が設定されています。サーバー用APIには完全な読み書き権限を持つ Service Role Key（sb_secret_... または JWT secret）を設定してください。`,
+          action: '👉 Supabase の Project Settings ➔ API ➔ service_role (secret) キーをコピーし、Vercelの SUPABASE_SERVICE_ROLE_KEY に上書き登録して Redeploy してください。'
+        });
+        actionAdvice.push('Vercelの SUPABASE_SERVICE_ROLE_KEY に Service Role Key を設定して Redeploy してください');
+      } else {
+        const keyLabel = keyType === 'sb_secret' ? '新形式 Service Role Key (sb_secret_...)' : keyType === 'jwt' ? 'JWT Service Role Key' : 'サービスロールキー';
+        items.push({
+          title: '3. Vercelの環境変数 (Supabase鍵)',
+          status: 'ok',
+          badge: '設定完了',
+          desc: `接続先: ${resolvedUrl} (${keyLabel}) がVercelに正しく登録されています。`
+        });
+      }
     } else {
       const missing = [];
       if (!hasSupabaseUrl) missing.push('SUPABASE_URL');
@@ -2915,7 +3040,7 @@ window.runSystemDiagnostics = async function () {
         title: '3. Vercelの環境変数 (Supabase鍵)',
         status: 'error',
         badge: '設定漏れあり',
-        desc: `未設定の環境変数: ${missing.join(', ')}`,
+        desc: `未設定の環境変数: ${missing.join(', ')} (接続先URL: ${resolvedUrl})`,
         action: '👉 Vercel の Settings ➔ Environment Variables でこの環境変数を追加し、「Redeploy」を実行してください。'
       });
       actionAdvice.push(`Vercelに ${missing.join(' と ')} を設定して「Redeploy」してください`);
@@ -2923,6 +3048,7 @@ window.runSystemDiagnostics = async function () {
 
     // 4. Supabaseデータベース状態
     const db = backendData.database || {};
+    const errorDetail = db.errorDetail || null;
     if (db.status && db.status.includes('OK')) {
       items.push({
         title: '4. クラウドデータベース (Supabase PostgreSQL)',
@@ -2938,14 +3064,16 @@ window.runSystemDiagnostics = async function () {
         desc: '3番のVercel環境変数が反映（Redeploy）されると自動的に接続されます。'
       });
     } else {
+      const errHint = errorDetail?.hint ? `\n💡 ヒント: ${errorDetail.hint}` : '';
+      const errCode = errorDetail?.code ? ` [エラーコード: ${errorDetail.code}]` : '';
       items.push({
         title: '4. クラウドデータベース (Supabase PostgreSQL)',
         status: 'error',
         badge: 'テーブル未作成または接続エラー',
-        desc: `DBステータス: ${db.status} ${db.error ? '(' + db.error + ')' : ''}`,
-        action: '👉 Supabase のダッシュボード ➔ SQL Editor で schema.sql を貼り付けて「Run」を実行してください。'
+        desc: `DBステータス: ${db.status} ${db.error ? '(' + db.error + ')' : ''}${errCode}${errHint}`,
+        action: errorDetail?.hint || '👉 Supabase のダッシュボード ➔ SQL Editor で schema.sql を貼り付けて「Run」を実行してください。'
       });
-      actionAdvice.push('Supabaseの SQL Editor で schema.sql を実行してください');
+      actionAdvice.push(errorDetail?.hint || 'Supabaseの SQL Editor で schema.sql を実行してください');
     }
 
   } else {

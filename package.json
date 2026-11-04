@@ -4,7 +4,7 @@
   "description": "ふたり家計簿 (PairBudget) - Vercel Serverless Functions + Supabase PostgreSQL",
   "type": "module",
   "dependencies": {
-    "@supabase/supabase-js": "^2.49.1"
+    "@supabase/supabase-js": "^2.50.0"
   },
   "engines": {
     "node": ">=18.0.0"

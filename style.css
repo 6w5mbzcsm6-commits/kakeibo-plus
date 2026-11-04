@@ -61,3 +61,57 @@
     opacity: 0.6;
   }
 }
+
+/* トースト通知 下部流れるプログレスバー */
+.toast-progress-bar {
+  background: linear-gradient(90deg, #10b981, #14b8a6, #0ea5e9, #10b981);
+  background-size: 200% 100%;
+  animation: toastFlow 1.2s linear infinite;
+}
+
+@keyframes toastFlow {
+  0% {
+    background-position: 100% 0;
+  }
+  100% {
+    background-position: -100% 0;
+  }
+}
+
+/* スケルトンローディング用シマー効果 */
+.skeleton-shimmer {
+  background: linear-gradient(90deg, rgba(226, 232, 240, 0.6) 0%, rgba(241, 245, 249, 0.95) 50%, rgba(226, 232, 240, 0.6) 100%);
+  background-size: 200% 100%;
+  animation: skeletonShimmer 1.5s ease-in-out infinite;
+}
+
+.skeleton-shimmer-dark {
+  background: linear-gradient(90deg, rgba(30, 41, 59, 0.7) 0%, rgba(51, 65, 85, 0.9) 50%, rgba(30, 41, 59, 0.7) 100%);
+  background-size: 200% 100%;
+  animation: skeletonShimmer 1.5s ease-in-out infinite;
+}
+
+@keyframes skeletonShimmer {
+  0% {
+    background-position: 200% 0;
+  }
+  100% {
+    background-position: -200% 0;
+  }
+}
+
+/* フェードインアニメーション */
+.animate-fade-in {
+  animation: fadeIn 0.25s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+}
+
+@keyframes fadeIn {
+  from {
+    opacity: 0;
+    transform: translateY(3px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
