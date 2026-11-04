@@ -1312,8 +1312,8 @@ async function handleScanReceipt(data, actor) {
   if ((!actor || !actor.verified) && !isDemoAllowed()) {
     return { success: false, code: 'AUTH', error: 'レシート読み取りにはLINEログインとメンバー登録が必要です' };
   }
-  const apiKey = process.env.GEMINI_API_KEY;
-  if (!apiKey) return { success: false, error: 'GEMINI_API_KEY が未設定です' };
+  const apiKey = normalizeEnvSecret(process.env.GEMINI_API_KEY);
+  if (!apiKey) return { success: false, error: 'Vercelの環境変数 GEMINI_API_KEY が未設定です' };
 
   const mime = String(data.mimeType || 'image/jpeg');
   const b64 = String(data.imageBase64 || '');
@@ -1358,7 +1358,7 @@ async function handleScanReceipt(data, actor) {
   };
 
   const modelsToTry = [
-    process.env.GEMINI_MODEL,
+    normalizeEnvSecret(process.env.GEMINI_MODEL),
     'gemini-2.5-flash',
     'gemini-2.0-flash',
     'gemini-1.5-flash'
@@ -1373,14 +1373,15 @@ async function handleScanReceipt(data, actor) {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
-          'x-goog-api-key': apiKey.trim()
+          'x-goog-api-key': apiKey
         },
         body: JSON.stringify(body)
       });
       if (res.ok) break;
       lastErrorDetail = await res.text();
       console.warn(`Gemini try failed (${model}): ${res.status} ${lastErrorDetail}`);
-      if (res.status !== 404) break;
+      // 400 (API Key invalid) 以外は次のフォールバックモデルを継続試行
+      if (res.status === 400 && /API_KEY_INVALID|key not valid/i.test(lastErrorDetail)) break;
     } catch (err) {
       lastErrorDetail = err.message;
     }

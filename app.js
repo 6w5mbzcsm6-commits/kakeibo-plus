@@ -1911,6 +1911,7 @@ async function handleReceiptFile(file) {
   try {
     const imageBase64 = await resizeImageToBase64(file);
     showToast('🤖 AIがレシートを読み取り中です（5〜10秒ほどお待ちください）…', { loading: true });
+    state.isMockMode = false;
     const res = await api('scanReceipt', { imageBase64, mimeType: 'image/jpeg' });
     if (!res || !res.success || !res.receipt) {
       closeReceiptModal();
@@ -1935,6 +1936,7 @@ function fillReceiptForm(r) {
   $('receiptCategory').innerHTML = categoryOptionsHtml(guessCategoryByStore(receipt.store || ''));
   $('receiptIsShared').value = 'true';
   $('receiptPaymentType').value = 'shared_card';
+  updatePayerDropdowns();
   $('receiptPayer').value = memberName(state.currentSlot);
   const items = Array.isArray(receipt.items) && receipt.items.length ? receipt.items : [{ name: '', quantity: 1, price: 0 }];
   $('receiptItemRows').innerHTML =

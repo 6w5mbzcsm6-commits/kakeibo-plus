@@ -586,6 +586,8 @@
   </main>
 
   <!-- クイック操作 フローティングボタン群 (レシートAI-OCR & 支出追加) -->
+  <!-- ※ input[type=file] は display:none のモーダル外（body直下）に配置することで全ブラウザで確実に起動させる -->
+  <input type="file" id="receiptFileInput" accept="image/*" class="sr-only">
   <div class="fixed right-5 md:right-8 bottom-20 md:bottom-8 z-40 flex flex-col items-end gap-2.5">
     <label for="receiptFileInput" id="quickScanReceiptBtn" class="bg-white hover:bg-brand-50 active:scale-95 text-brand-700 border-2 border-brand-500 px-3.5 py-2 rounded-full shadow-lg flex items-center gap-1.5 text-xs font-extrabold cursor-pointer transition-transform select-none" aria-label="レシートを読み取る">
       <i data-lucide="camera" class="w-4 h-4 text-brand-600 pointer-events-none"></i>
@@ -635,7 +637,6 @@
         <i data-lucide="camera" class="w-5 h-5 pointer-events-none"></i>
         <span class="pointer-events-none">レシートを撮影・選択して自動入力</span>
       </label>
-      <input type="file" id="receiptFileInput" accept="image/*" class="sr-only">
       <p class="text-[10px] text-slate-400 mt-1">※ 画像はGoogleのAI(Gemini)に送信されます。カード番号・氏名が写らないよう撮影してください。</p>
 
       <form id="expenseForm" class="space-y-3.5 mt-3.5">
