@@ -378,7 +378,8 @@ async function getConfigData(supabase, pairId) {
     husbandUserId: '',
     wifeUserId: '',
     husbandName: 'メンバー1',
-    wifeName: 'メンバー2'
+    wifeName: 'メンバー2',
+    shoppingPurgeDays: 1
   };
 
   (settingsRes.data || []).forEach(s => {
@@ -386,6 +387,7 @@ async function getConfigData(supabase, pairId) {
     if (s.key === 'wifeBaseContribution') config.wifeBaseContribution = Number(s.value) || 60000;
     if (s.key === 'husbandName') config.husbandName = s.value;
     if (s.key === 'wifeName') config.wifeName = s.value;
+    if (s.key === 'shoppingPurgeDays') config.shoppingPurgeDays = Number(s.value !== undefined ? s.value : 1);
     if (s.key === 'membersConfig') {
       try {
         config.members = JSON.parse(s.value);
@@ -537,6 +539,51 @@ async function purgeExpiredEvents(supabase) {
   }
 }
 
+/**
+ * 購入済み買い物アイテムの自動物理削除（未購入アイテムは絶対に削除しない）
+ * @param {object} supabase
+ * @param {string} pairId
+ * @param {number} purgeDays
+ */
+async function purgeCompletedShoppingItems(supabase, pairId, purgeDays) {
+  try {
+    const days = Number(purgeDays !== undefined ? purgeDays : 1);
+    if (days === -1) return; // 自動削除なし
+
+    if (days === 0) {
+      // 即時削除: 購入済みをすべて物理削除（未購入は除外）
+      await supabase
+        .from('shopping_list')
+        .delete()
+        .eq('pair_id', pairId)
+        .eq('is_completed', true);
+      return;
+    }
+
+    const cutoffIso = new Date(Date.now() - (days * 24 * 60 * 60 * 1000)).toISOString();
+
+    // 1) completed_at が記録されており、cutoffIso 以前の購入済みアイテム
+    await supabase
+      .from('shopping_list')
+      .delete()
+      .eq('pair_id', pairId)
+      .eq('is_completed', true)
+      .not('completed_at', 'is', null)
+      .lt('completed_at', cutoffIso);
+
+    // 2) completed_at が null の購入済み旧データフォールバック（created_at で判定）
+    await supabase
+      .from('shopping_list')
+      .delete()
+      .eq('pair_id', pairId)
+      .eq('is_completed', true)
+      .is('completed_at', null)
+      .lt('created_at', cutoffIso);
+  } catch (err) {
+    console.warn('買い物リスト自動削除エラー:', err);
+  }
+}
+
 // ==========================================
 // APIアクション実装
 // ==========================================
@@ -553,6 +600,8 @@ async function handleGetInitialData(supabase, targetMonth, actor, requestedPairI
 
   // 期限切れイベントの自動パージをトリガー
   purgeExpiredEvents(supabase).catch(() => {});
+  // 購入済み買い物アイテムの自動パージ（設定日数経過分を物理削除）
+  await purgeCompletedShoppingItems(supabase, pairId, config.shoppingPurgeDays);
 
   // 並列データ取得（全て pair_id で厳格に分離）
   const [
@@ -630,6 +679,7 @@ async function handleGetInitialData(supabase, targetMonth, actor, requestedPairI
     title: s.title,
     category: s.category_id || '日用品',
     isCompleted: s.is_completed,
+    completedAt: s.completed_at || null,
     requestedBy: s.requested_by,
     createdAt: s.created_at?.slice(0, 10)
   }));
@@ -736,7 +786,8 @@ async function handleGetInitialData(supabase, targetMonth, actor, requestedPairI
       husbandBaseContribution: Number(config.husbandBaseContribution) || 60000,
       wifeBaseContribution: Number(config.wifeBaseContribution) || 60000,
       husbandName: config.husbandName,
-      wifeName: config.wifeName
+      wifeName: config.wifeName,
+      shoppingPurgeDays: Number(config.shoppingPurgeDays !== undefined ? config.shoppingPurgeDays : 1)
     },
     members: config.members || null,
     transfers: transfers,
@@ -1086,11 +1137,46 @@ async function handleUpdateShoppingItem(supabase, item, actor) {
   };
   if (item.isCompleted) {
     updateFields.completed_at = new Date().toISOString();
+  } else {
+    updateFields.completed_at = null;
   }
 
   const { error } = await supabase.from('shopping_list').update(updateFields).eq('id', item.id).eq('pair_id', pairId);
   if (error) return { success: false, error: '更新に失敗しました' };
+
+  if (item.isCompleted) {
+    // 購入完了時、設定（0日即時削除など）に応じて自動パージ
+    try {
+      const config = await getConfigData(supabase, pairId);
+      await purgeCompletedShoppingItems(supabase, pairId, config.shoppingPurgeDays);
+    } catch (_) {}
+  }
+
   return { success: true };
+}
+
+/**
+ * 買い物リストの購入済みアイテム自動削除期間設定更新
+ */
+async function handleUpdateShoppingPurgeDays(supabase, data, actor) {
+  const pairId = getTargetPairId(actor, data);
+  const days = Number(data.shoppingPurgeDays !== undefined ? data.shoppingPurgeDays : 1);
+  if (isNaN(days) || ![-1, 0, 1, 3, 7, 14, 30].includes(days)) {
+    return { success: false, error: '不正な自動削除日数です' };
+  }
+
+  const { error } = await supabase
+    .from('app_settings')
+    .upsert({ pair_id: pairId, key: 'shoppingPurgeDays', value: String(days) }, { onConflict: 'pair_id, key' });
+
+  if (error) {
+    return { success: false, error: '自動削除日数の保存に失敗しました' };
+  }
+
+  // 設定変更直後に条件を満たす購入済みアイテムをパージ
+  await purgeCompletedShoppingItems(supabase, pairId, days);
+
+  return { success: true, shoppingPurgeDays: days };
 }
 
 async function handleDeleteShoppingItem(supabase, id, actor) {
@@ -2351,6 +2437,9 @@ export default async function handler(req, res) {
           break;
         case 'deleteShoppingItem':
           result = await handleDeleteShoppingItem(supabase, data.id, actor);
+          break;
+        case 'updateShoppingPurgeDays':
+          result = await handleUpdateShoppingPurgeDays(supabase, data, actor);
           break;
         case 'updateMonthlyBudget':
           result = await handleUpdateMonthlyBudget(supabase, data, actor);

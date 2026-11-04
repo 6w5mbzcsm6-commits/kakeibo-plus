@@ -363,7 +363,10 @@
         <section class="bg-white rounded-2xl p-4 shadow-sm border border-slate-100">
           <details class="group">
             <summary class="flex items-center justify-between cursor-pointer list-none text-xs font-bold text-slate-400">
-              <span>購入済みのアイテム (<span id="completedCount">0</span>)</span>
+              <span class="flex items-center gap-1.5 flex-wrap">
+                <span>購入済みのアイテム (<span id="completedCount">0</span>)</span>
+                <span id="completedPurgeBadge" class="text-[10px] text-slate-400 font-normal bg-slate-100 px-2 py-0.5 rounded-full"></span>
+              </span>
               <i data-lucide="chevron-down" class="w-4 h-4 transition-transform group-open:rotate-180"></i>
             </summary>
             <div id="completedShoppingList" class="mt-3 space-y-2 pt-2 border-t border-slate-100">
@@ -509,8 +512,35 @@
                 <h4 class="text-sm font-bold text-slate-800">私物品名のプライバシー保護</h4>
                 <p class="text-xs text-slate-400">私物支出の品名をパートナーに伏せる（「私物」とだけ表示）</p>
               </div>
-              <input type="checkbox" id="privacyMaskToggle" class="w-5 h-5 text-brand-500 rounded focus:ring-brand-400">
+              <input type="checkbox" id="privacyMaskToggle" class="w-5 h-5 text-brand-500 rounded focus:ring-brand-400 cursor-pointer">
             </div>
+          </section>
+
+          <!-- 🛒 買い物リスト：購入済みアイテムの自動削除期間設定 -->
+          <section class="bg-white rounded-2xl p-4 shadow-sm border border-slate-100 space-y-3">
+            <div class="flex items-center justify-between">
+              <div>
+                <h4 class="text-sm font-bold text-slate-800 flex items-center gap-1.5">
+                  <i data-lucide="shopping-bag" class="w-4 h-4 text-brand-500"></i> 購入済みアイテムの自動削除
+                </h4>
+                <p class="text-xs text-slate-400">購入済みに移動したアイテムを自動的に完全削除する期間</p>
+              </div>
+            </div>
+            <div>
+              <label for="settingShoppingPurgeDays" class="text-xs font-medium text-slate-600 block mb-1">自動削除期間</label>
+              <select id="settingShoppingPurgeDays" class="w-full bg-slate-50 border border-slate-200 rounded-xl px-3 py-2 text-sm text-slate-700 focus:outline-none focus:ring-2 focus:ring-brand-400">
+                <option value="1">1日後（翌日に自動削除・推奨）</option>
+                <option value="3">3日後</option>
+                <option value="7">7日後（1週間）</option>
+                <option value="14">14日後（2週間）</option>
+                <option value="30">30日後（1ヶ月）</option>
+                <option value="0">即時削除（購入完了と同時に削除）</option>
+                <option value="-1">自動削除しない（手動削除のみ）</option>
+              </select>
+            </div>
+            <p class="text-[11px] text-slate-400 leading-relaxed">
+              ※ 未購入の「買うものリスト」は消えません。購入済みに移動したアイテムのみ、指定期間後にデータベースから完全削除して容量を節約します。
+            </p>
           </section>
         </div>
 
@@ -1298,7 +1328,7 @@
   </div>
 
   <!-- アプリ本体スクリプト -->
-  <script src="js/config.js"></script>
+  <script src="config.js"></script>
   <script src="js/app.js"></script>
 </body>
 </html>

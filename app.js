@@ -292,7 +292,7 @@ function renderSettingMembersList() {
 
     // カラーピッカーイベント
     card.querySelectorAll('button[data-color-key]').forEach(btn => {
-      btn.onclick = () => {
+      btn.onclick = async () => {
         const cKey = btn.dataset.colorKey;
         member.color = cKey;
         saveMembersToStorage();
@@ -302,6 +302,21 @@ function renderSettingMembersList() {
         renderExpensePayerChips();
         renderRecentTransactions();
         renderHistoryList();
+        showToast('🎨 テーマカラーを保存しました');
+        // バックエンドにも同期保存
+        try {
+          const husband = state.members[0]?.baseContribution || 0;
+          const wife = state.members[1]?.baseContribution || 0;
+          const husbandName = state.members[0]?.name || 'メンバー1';
+          const wifeName = state.members[1]?.name || 'メンバー2';
+          await api('updateBaseContribution', {
+            husband,
+            wife,
+            husbandName,
+            wifeName,
+            members: state.members
+          });
+        } catch (_) {}
       };
     });
 
@@ -507,7 +522,13 @@ function mockBuildInitial(month) {
     success: true, month, actor: { name: state.currentUser, slot: state.currentSlot, verified: false }, transactions: txs,
     receiptItems: mockDb.receiptItems.filter(it => it.date.startsWith(month)),
     shoppingList: mockDb.shopping, monthlyBudgets: [], fixedExpenses: mockDb.fixed, categories: MOCK_CATEGORIES, rules: MOCK_RULES,
-    config: { husbandBaseContribution: hb, wifeBaseContribution: wb, husbandName: hName, wifeName: wName },
+    config: {
+      husbandBaseContribution: hb,
+      wifeBaseContribution: wb,
+      husbandName: hName,
+      wifeName: wName,
+      shoppingPurgeDays: (mockDb.config && mockDb.config.shoppingPurgeDays !== undefined) ? mockDb.config.shoppingPurgeDays : 1
+    },
     transfers: { husband: tr(hb, 'husband'), wife: tr(wb, 'wife') },
     summary: { budget, totalExpense: total, remaining, progressRate: Math.min(100, Math.round(total / budget * 100)),
       daysLeft, dailyAllowance: isCurrent ? Math.max(0, Math.floor(remaining / daysLeft)) : 0, isCurrentMonth: isCurrent },
@@ -585,8 +606,20 @@ async function mockApi(action, data) {
       return { success: true, logs };
     }
     case 'addShoppingItem': mockDb.shopping.unshift({ ...data, isCompleted: false, requestedBy: state.currentUser, createdAt: localDateStr() }); return { success: true };
-    case 'updateShoppingItem': { const s = mockDb.shopping.find(x => x.id === data.id); if (s) s.isCompleted = !!data.isCompleted; return { success: true }; }
+    case 'updateShoppingItem': {
+      const s = mockDb.shopping.find(x => x.id === data.id);
+      if (s) {
+        s.isCompleted = !!data.isCompleted;
+        s.completedAt = data.isCompleted ? new Date().toISOString() : null;
+      }
+      return { success: true };
+    }
     case 'deleteShoppingItem': mockDb.shopping = mockDb.shopping.filter(s => s.id !== data.id); return { success: true };
+    case 'updateShoppingPurgeDays': {
+      mockDb.config = mockDb.config || {};
+      mockDb.config.shoppingPurgeDays = Number(data.shoppingPurgeDays !== undefined ? data.shoppingPurgeDays : 1);
+      return { success: true, shoppingPurgeDays: mockDb.config.shoppingPurgeDays };
+    }
     case 'updateMonthlyBudget': {
       const prev = mockDb.budgets[data.month];
       mockDb.budgets[data.month] = data.amount;
@@ -1300,6 +1333,9 @@ function applyData(data) {
       if (data.config.wifeBaseContribution) state.members[1].baseContribution = Number(data.config.wifeBaseContribution);
     }
   }
+  if (data.config && data.config.shoppingPurgeDays !== undefined) {
+    state.config.shoppingPurgeDays = Number(data.config.shoppingPurgeDays);
+  }
   if (data.pair) {
     state.pairId = data.pair.id;
     state.pairName = data.pair.name;
@@ -1318,6 +1354,7 @@ function applyData(data) {
   }
   renderAll();
   hideMainSkeleton();
+  restoreUiState();
 }
 
 // ==========================================
@@ -1612,22 +1649,53 @@ function renderShoppingList() {
   const un = $('uncompletedShoppingList'), done = $('completedShoppingList');
   const open = state.shoppingList.filter(s => !s.isCompleted);
   const closed = state.shoppingList.filter(s => s.isCompleted);
-  $('uncompletedCount').textContent = open.length;
-  $('completedCount').textContent = closed.length;
-  un.innerHTML = open.length ? open.map(it => `
-    <div class="flex items-center justify-between p-3 rounded-xl bg-slate-50 border border-slate-100">
-      <label class="flex items-center gap-2.5 cursor-pointer">
-        <input type="checkbox" data-action="buy-shop" data-id="${esc(it.id)}" class="w-5 h-5 rounded text-brand-500 focus:ring-brand-400">
-        <div><span class="text-sm font-bold text-slate-800">${esc(it.title)}</span>
-        <span class="text-[10px] text-slate-400 block">${esc(it.requestedBy)}が追加</span></div>
-      </label>
-      <button data-action="delete-shop" data-id="${esc(it.id)}" class="text-slate-300 hover:text-rose-500 p-1" aria-label="削除"><i data-lucide="trash-2" class="w-4 h-4"></i></button>
-    </div>`).join('') : '<div class="py-6 text-center text-xs text-slate-400">現在買うものはありません✨</div>';
-  done.innerHTML = closed.map(it => `
-    <div class="flex items-center justify-between p-2 rounded-lg bg-slate-50/50 text-slate-400">
-      <div class="flex items-center gap-2 line-through text-xs"><i data-lucide="check" class="w-3.5 h-3.5 text-brand-500"></i><span>${esc(it.title)}</span></div>
-      <button data-action="delete-shop" data-id="${esc(it.id)}" class="text-slate-300 hover:text-rose-500 p-1" aria-label="削除"><i data-lucide="x" class="w-3.5 h-3.5"></i></button>
-    </div>`).join('');
+  if ($('uncompletedCount')) $('uncompletedCount').textContent = open.length;
+  if ($('completedCount')) $('completedCount').textContent = closed.length;
+
+  // 自動削除バッジの更新
+  if ($('completedPurgeBadge')) {
+    const days = state.config.shoppingPurgeDays !== undefined ? state.config.shoppingPurgeDays : 1;
+    let badgeText = '';
+    if (days === -1) badgeText = '自動削除: OFF';
+    else if (days === 0) badgeText = '購入後に即時削除';
+    else if (days === 1) badgeText = '購入から1日後に自動削除';
+    else badgeText = `購入から${days}日後に自動削除`;
+    $('completedPurgeBadge').textContent = badgeText;
+  }
+
+  if (un) {
+    un.innerHTML = open.length ? open.map(it => `
+      <div class="flex items-center justify-between p-3 rounded-xl bg-slate-50 border border-slate-100 hover:border-slate-200 transition-colors">
+        <label class="flex items-center gap-2.5 cursor-pointer flex-1 mr-2">
+          <input type="checkbox" data-action="buy-shop" data-id="${esc(it.id)}" class="w-5 h-5 rounded text-brand-500 focus:ring-brand-400 cursor-pointer">
+          <div class="flex-1">
+            <span class="text-sm font-bold text-slate-800 break-all">${esc(it.title)}</span>
+            <span class="text-[10px] text-slate-400 block">${esc(it.requestedBy || 'メンバー')}が追加</span>
+          </div>
+        </label>
+        <button data-action="delete-shop" data-id="${esc(it.id)}" class="text-slate-300 hover:text-rose-500 p-1 rounded-lg transition-colors" aria-label="削除"><i data-lucide="trash-2" class="w-4 h-4"></i></button>
+      </div>`).join('') : '<div class="py-6 text-center text-xs text-slate-400">現在買うものはありません✨</div>';
+  }
+
+  if (done) {
+    done.innerHTML = closed.length ? closed.map(it => `
+      <div class="flex items-center justify-between p-2.5 rounded-xl bg-slate-50/70 border border-slate-100/60 text-slate-400">
+        <div class="flex items-center gap-2 flex-1 mr-2">
+          <button type="button" data-action="unbuy-shop" data-id="${esc(it.id)}" title="買うものリストに戻す" class="w-5 h-5 rounded border border-brand-400 bg-brand-50 text-brand-600 flex items-center justify-center hover:bg-brand-100 transition-colors cursor-pointer shrink-0">
+            <i data-lucide="check" class="w-3.5 h-3.5"></i>
+          </button>
+          <div class="flex-1">
+            <span class="line-through text-xs text-slate-500 break-all font-medium">${esc(it.title)}</span>
+          </div>
+        </div>
+        <div class="flex items-center gap-1">
+          <button type="button" data-action="unbuy-shop" data-id="${esc(it.id)}" class="text-[11px] text-brand-600 hover:text-brand-700 bg-white border border-brand-200 px-2 py-0.5 rounded-md font-medium transition-colors">
+            戻す
+          </button>
+          <button data-action="delete-shop" data-id="${esc(it.id)}" class="text-slate-300 hover:text-rose-500 p-1" aria-label="削除"><i data-lucide="x" class="w-3.5 h-3.5"></i></button>
+        </div>
+      </div>`).join('') : '<div class="py-4 text-center text-xs text-slate-400">購入済みのアイテムはありません</div>';
+  }
 }
 
 function renderFixedExpenses() {
@@ -1665,6 +1733,10 @@ function renderSettings() {
   if ($('settingHusbandBase')) $('settingHusbandBase').value = state.config.husbandBaseContribution;
   if ($('settingWifeBase')) $('settingWifeBase').value = state.config.wifeBaseContribution;
   if ($('privacyMaskToggle')) $('privacyMaskToggle').checked = state.privacyMask;
+  if ($('settingShoppingPurgeDays')) {
+    const purgeDays = state.config.shoppingPurgeDays !== undefined ? state.config.shoppingPurgeDays : 1;
+    $('settingShoppingPurgeDays').value = String(purgeDays);
+  }
 
   // 動的メンバー一覧＆カラー設定を描画
   renderSettingMembersList();
@@ -2106,9 +2178,23 @@ async function completeShoppingItem(id) {
   const item = state.shoppingList.find(s => s.id === id);
   if (!item) return;
   item.isCompleted = true;
+  item.completedAt = new Date().toISOString();
   renderShoppingList();
   lucide.createIcons();
+  showToast('購入済みに移動しました');
   const res = await api('updateShoppingItem', { id, title: item.title, category: item.category, isCompleted: true });
+  if (!res.success) { handleApiError(res); await loadInitialData(); }
+}
+
+async function uncompleteShoppingItem(id) {
+  const item = state.shoppingList.find(s => s.id === id);
+  if (!item) return;
+  item.isCompleted = false;
+  item.completedAt = null;
+  renderShoppingList();
+  lucide.createIcons();
+  showToast('買うものリストに戻しました');
+  const res = await api('updateShoppingItem', { id, title: item.title, category: item.category, isCompleted: false });
   if (!res.success) { handleApiError(res); await loadInitialData(); }
 }
 
@@ -2290,6 +2376,9 @@ async function toggleTransferStatus(slot) {
 // ==========================================
 function setScope(scope) {
   state.activeScope = scope;
+  try {
+    localStorage.setItem('pairbudget_active_scope', scope);
+  } catch (_) {}
   const on = 'px-3 py-1.5 rounded-lg bg-white text-brand-700 shadow-sm transition-all flex items-center gap-1';
   const off = 'px-3 py-1.5 rounded-lg text-slate-500 transition-all flex items-center gap-1 hover:text-slate-800';
   $('scopeSharedBtn').className = scope === 'shared' ? on : off;
@@ -2301,6 +2390,9 @@ function setScope(scope) {
 }
 
 window.switchTab = function (tabName) {
+  try {
+    localStorage.setItem('pairbudget_active_tab', tabName);
+  } catch (_) {}
   ['home', 'shopping', 'history', 'settings'].forEach(t => {
     const cap = t.charAt(0).toUpperCase() + t.slice(1);
     const tabEl = $(`tabContent${cap}`);
@@ -2329,6 +2421,26 @@ window.switchTab = function (tabName) {
   if (tabName === 'home') renderCharts(); // 非表示中に描画したグラフのサイズ崩れを防ぐ
   lucide.createIcons();
 };
+
+/**
+ * リロード前の画面状態（タブ・モード・スコープ）を復元
+ */
+function restoreUiState() {
+  try {
+    const savedMode = localStorage.getItem('pairbudget_active_mode');
+    if (savedMode && (savedMode === 'budget' || savedMode === 'events')) {
+      switchAppMode(savedMode);
+    }
+    const savedTab = localStorage.getItem('pairbudget_active_tab');
+    if (savedTab && ['home', 'shopping', 'history', 'settings'].includes(savedTab)) {
+      switchTab(savedTab);
+    }
+    const savedScope = localStorage.getItem('pairbudget_active_scope');
+    if (savedScope && (savedScope === 'shared' || savedScope === 'personal')) {
+      setScope(savedScope);
+    }
+  } catch (_) {}
+}
 
 function showToast(msg, opts = {}) {
   const toast = $('toast');
@@ -2408,7 +2520,14 @@ function setupEventListeners() {
     renderHistoryList();
     if ($('auditLogList')?.children.length > 1) loadAuditLog();
     lucide.createIcons();
-    showToast('プライバシー設定を更新しました');
+    showToast('✅ プライバシー設定を保存しました');
+  });
+  $('settingShoppingPurgeDays')?.addEventListener('change', async e => {
+    const days = parseInt(e.target.value, 10);
+    state.config.shoppingPurgeDays = days;
+    await writeAndRefresh('updateShoppingPurgeDays', { shoppingPurgeDays: days }, '✅ 購入済みアイテムの自動削除期間を保存しました', '設定を保存しています…');
+    renderShoppingList();
+    lucide.createIcons();
   });
   $('onboardingCreateForm')?.addEventListener('submit', submitOnboardingCreate);
   $('onboardingJoinForm')?.addEventListener('submit', submitOnboardingJoin);
@@ -2439,12 +2558,16 @@ function setupEventListeners() {
       case 'edit-fixed': { const fx = state.fixedExpenses.find(f => f.id === id); if (fx) openFixedModal(fx); break; }
       case 'tx-history': e.preventDefault(); openTxHistory(id); break;
       case 'delete-shop': deleteShoppingItemById(id); break;
+      case 'unbuy-shop': uncompleteShoppingItem(id); break;
+      case 'buy-shop': completeShoppingItem(id); break;
       case 'remove-receipt-row': el.closest('[data-row]')?.remove(); updateReceiptTotal(); break;
     }
   });
   document.addEventListener('change', e => {
     const el = e.target.closest('[data-action="buy-shop"]');
-    if (el && el.checked) { el.checked = false; openBuySyncModal(el.dataset.id); }
+    if (el && el.checked) {
+      completeShoppingItem(el.dataset.id);
+    }
   });
 }
 
@@ -2481,6 +2604,9 @@ async function initLiff() {
 
 function switchAppMode(mode) {
   state.currentMode = mode;
+  try {
+    localStorage.setItem('pairbudget_active_mode', mode);
+  } catch (_) {}
   const isBudget = mode === 'budget';
 
   $('budgetView')?.classList.toggle('hidden', !isBudget);
@@ -3263,6 +3389,7 @@ document.addEventListener('DOMContentLoaded', async () => {
   updatePairHeader();
   applyMemberColors();
   checkUrlInviteParam();
+  restoreUiState();
   // 起動直後にローカルキャッシュがあれば即座に描画して白画面待ちをゼロにする
   const cached = loadInitCache(state.viewMonth);
   if (cached && state.gasApiUrl) applyData(cached);
