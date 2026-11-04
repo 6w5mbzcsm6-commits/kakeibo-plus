@@ -38,9 +38,14 @@
 <body class="bg-slate-50 text-slate-800 antialiased min-h-screen pb-24 select-none font-sans">
 
   <!-- デモモード / 接続状態バナー -->
-  <div id="mockBanner" class="hidden bg-amber-500 text-white text-xs py-1.5 px-4 text-center font-medium shadow-sm flex items-center justify-center gap-1.5 sticky top-0 z-50">
-    <i data-lucide="info" class="w-3.5 h-3.5"></i>
-    <span>デモモードで動作中（ローカル検証環境）</span>
+  <div id="mockBanner" class="hidden bg-amber-500 text-white text-xs py-1.5 px-4 text-center font-medium shadow-sm flex items-center justify-center gap-2 sticky top-0 z-50">
+    <div class="flex items-center gap-1.5">
+      <i data-lucide="info" class="w-3.5 h-3.5"></i>
+      <span id="mockBannerText">デモモードで動作中（ローカル検証環境）</span>
+    </div>
+    <button type="button" onclick="openDiagnosticsModal()" class="underline font-bold bg-amber-600/70 hover:bg-amber-600 px-2 py-0.5 rounded text-[11px] ml-1 flex items-center gap-1 cursor-pointer">
+      <span>🔍</span> 原因を診断する
+    </button>
   </div>
 
   <!-- 最上部モード切替ナビゲーション & 世帯ペア情報 -->
@@ -405,6 +410,21 @@
 
         <!-- 右列: データ説明・バージョン情報 -->
         <div class="space-y-4">
+          <!-- システム接続診断カード -->
+          <section class="bg-white rounded-2xl p-4 shadow-sm border border-slate-100 space-y-2">
+            <div class="flex items-center justify-between">
+              <h3 class="text-sm font-bold text-slate-800 flex items-center gap-1.5">
+                <i data-lucide="activity" class="w-4 h-4 text-brand-500"></i> 設定・接続の自己診断
+              </h3>
+              <button type="button" onclick="openDiagnosticsModal()" class="bg-brand-50 hover:bg-brand-100 text-brand-700 px-3 py-1.5 rounded-xl text-xs font-bold border border-brand-200 flex items-center gap-1 transition-colors cursor-pointer">
+                <i data-lucide="search" class="w-3.5 h-3.5"></i> 診断を実行
+              </button>
+            </div>
+            <p class="text-[11px] text-slate-500 leading-relaxed">
+              Vercel（サーバー）や Supabase（DB）、LINEの設定に漏れがないかワンクリックで自動チェックします。
+            </p>
+          </section>
+
           <!-- AI-OCRとデータの扱い -->
           <section class="bg-white rounded-2xl p-4 shadow-sm border border-slate-100 space-y-1">
             <h3 class="text-sm font-bold text-slate-800 flex items-center gap-1.5">
@@ -1122,6 +1142,38 @@
         </div>
         <button id="submitAddEventExpenseBtn" class="w-full bg-indigo-600 hover:bg-indigo-500 text-white font-bold py-2.5 rounded-xl text-xs shadow-sm transition-colors">
           立替を記録する
+        </button>
+      </div>
+    </div>
+  </div>
+
+  <!-- 10. システム設定＆接続診断モーダル -->
+  <div id="diagnosticsModal" class="hidden fixed inset-0 z-50 bg-black/60 backdrop-blur-sm flex items-center justify-center p-4">
+    <div class="bg-white w-full max-w-lg rounded-3xl p-5 shadow-2xl space-y-4 max-h-[90vh] overflow-y-auto">
+      <div class="flex items-center justify-between pb-2 border-b border-slate-100">
+        <h3 class="text-base font-bold text-slate-900 flex items-center gap-2">
+          <span>🔍 システム設定・接続の自己診断</span>
+        </h3>
+        <button type="button" onclick="closeDiagnosticsModal()" class="text-slate-400 hover:text-slate-600 p-1">
+          <i data-lucide="x" class="w-5 h-5"></i>
+        </button>
+      </div>
+
+      <div id="diagnosticsLoading" class="text-center py-8 space-y-3">
+        <div class="w-8 h-8 border-3 border-brand-500 border-t-transparent rounded-full animate-spin mx-auto"></div>
+        <p class="text-xs font-bold text-slate-600">クラウドサーバーとデータベースの状態を検査中…</p>
+      </div>
+
+      <div id="diagnosticsResult" class="hidden space-y-3 text-xs">
+        <!-- JSで動的に検査結果カードを出力 -->
+      </div>
+
+      <div class="pt-2 border-t border-slate-100 flex justify-between items-center">
+        <button type="button" onclick="runSystemDiagnostics()" class="text-xs text-brand-600 font-bold hover:underline flex items-center gap-1 cursor-pointer">
+          <i data-lucide="refresh-cw" class="w-3.5 h-3.5"></i> 再診断する
+        </button>
+        <button type="button" onclick="closeDiagnosticsModal()" class="bg-slate-900 hover:bg-slate-800 text-white font-bold px-4 py-2 rounded-xl text-xs transition-colors cursor-pointer">
+          閉じる
         </button>
       </div>
     </div>

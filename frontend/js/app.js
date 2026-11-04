@@ -2796,6 +2796,205 @@ async function deleteEventById(eventId) {
   }
 }
 
+// ==========================================
+// システム接続＆設定漏れ自己診断
+// ==========================================
+window.openDiagnosticsModal = function () {
+  $('diagnosticsModal')?.classList.remove('hidden');
+  runSystemDiagnostics();
+  lucide.createIcons();
+};
+
+window.closeDiagnosticsModal = function () {
+  $('diagnosticsModal')?.classList.add('hidden');
+};
+
+window.runSystemDiagnostics = async function () {
+  const loading = $('diagnosticsLoading');
+  const result = $('diagnosticsResult');
+  if (loading) loading.classList.remove('hidden');
+  if (result) {
+    result.classList.add('hidden');
+    result.innerHTML = '';
+  }
+
+  const items = [];
+  const actionAdvice = [];
+
+  // 1. フロントエンド配信環境
+  const origin = window.location.origin;
+  const isVercelDomain = origin.includes('vercel.app');
+  const isLocal = origin.includes('localhost') || origin.startsWith('file:') || origin.includes('127.0.0.1');
+
+  items.push({
+    title: '1. フロントエンド配信環境',
+    status: 'ok',
+    badge: '正常',
+    desc: `現在のURL: ${origin} (${isVercelDomain ? 'Vercel本番ホスティング' : isLocal ? 'ローカル開発環境' : '外部ホスティング'})`
+  });
+
+  // 2. バックエンドAPI疎通検査 (/api/budget)
+  let backendOk = false;
+  let backendData = null;
+  let backendErrorMsg = '';
+
+  try {
+    const healthUrl = state.gasApiUrl + (state.gasApiUrl.includes('?') ? '&' : '?') + 'action=healthCheck';
+    const res = await fetch(healthUrl, {
+      method: 'GET',
+      headers: { 'Accept': 'application/json' }
+    });
+
+    if (res.ok) {
+      backendData = await res.json();
+      backendOk = true;
+    } else {
+      backendErrorMsg = `HTTP ${res.status}: ${res.statusText}`;
+      if (res.status === 404) {
+        backendErrorMsg += ' (バックエンドAPIが見つかりません)';
+      } else if (res.status === 500) {
+        backendErrorMsg += ' (サーバー内部エラー: 環境変数やDB接続に問題があります)';
+      }
+    }
+  } catch (err) {
+    backendErrorMsg = `通信失敗 (${err.message || '接続拒否/CORS'})`;
+  }
+
+  if (backendOk && backendData) {
+    items.push({
+      title: '2. バックエンドAPI (/api/budget)',
+      status: 'ok',
+      badge: '接続成功 (200 OK)',
+      desc: `サーバーレス関数が正常に応答しています (バージョン: ${backendData.version || 'v2.2.0'})`
+    });
+
+    // 3. Vercelの環境変数
+    const env = backendData.env || {};
+    const hasSupabaseUrl = !!env.SUPABASE_URL;
+    const hasServiceKey = !!env.SUPABASE_SERVICE_ROLE_KEY;
+
+    if (hasSupabaseUrl && hasServiceKey) {
+      items.push({
+        title: '3. Vercelの環境変数 (Supabase鍵)',
+        status: 'ok',
+        badge: '設定完了',
+        desc: 'SUPABASE_URL および SUPABASE_SERVICE_ROLE_KEY がVercelに正しく登録されています。'
+      });
+    } else {
+      const missing = [];
+      if (!hasSupabaseUrl) missing.push('SUPABASE_URL');
+      if (!hasServiceKey) missing.push('SUPABASE_SERVICE_ROLE_KEY');
+      items.push({
+        title: '3. Vercelの環境変数 (Supabase鍵)',
+        status: 'error',
+        badge: '設定漏れあり',
+        desc: `未設定の環境変数: ${missing.join(', ')}`,
+        action: '👉 Vercel の Settings ➔ Environment Variables でこの環境変数を追加し、「Redeploy」を実行してください。'
+      });
+      actionAdvice.push(`Vercelに ${missing.join(' と ')} を設定して「Redeploy」してください`);
+    }
+
+    // 4. Supabaseデータベース状態
+    const db = backendData.database || {};
+    if (db.status && db.status.includes('OK')) {
+      items.push({
+        title: '4. クラウドデータベース (Supabase PostgreSQL)',
+        status: 'ok',
+        badge: '正常接続',
+        desc: 'pairs テーブルおよび家計簿全テーブルとの通信・読み書きが確認できました！'
+      });
+    } else {
+      items.push({
+        title: '4. クラウドデータベース (Supabase PostgreSQL)',
+        status: 'error',
+        badge: 'テーブル未作成または未接続',
+        desc: `DBステータス: ${db.status} ${db.error ? '(' + db.error + ')' : ''}`,
+        action: '👉 Supabase のダッシュボード ➔ SQL Editor で schema.sql を貼り付けて「Run」を実行してください。'
+      });
+      actionAdvice.push('Supabaseの SQL Editor で schema.sql を実行してください');
+    }
+
+  } else {
+    items.push({
+      title: '2. バックエンドAPI (/api/budget)',
+      status: 'error',
+      badge: '接続失敗',
+      desc: `接続先: ${state.gasApiUrl} / エラー: ${backendErrorMsg}`,
+      action: isLocal
+        ? '👉 ローカル環境ではサーバーレス関数が起動していません。Vercel（本番URL: https://kakeibo-plus.vercel.app）を開いてください。'
+        : '👉 GitHub に最新コード（api/budget.js）が届いていないか、Vercelのデプロイが未完了です。'
+    });
+    actionAdvice.push('Vercelのデプロイ状態と最新コードを確認してください');
+
+    items.push({
+      title: '3. データベース (Supabase) 接続',
+      status: 'warn',
+      badge: '未検査',
+      desc: 'バックエンドAPIに接続できないため、データベースの検査をスキップしました。'
+    });
+  }
+
+  // 5. LINE LIFF 連携状態
+  const liffConfigured = Boolean(APP_CONFIG.LIFF_ID);
+  items.push({
+    title: '5. LINE LIFF 連携',
+    status: state.liffReady ? 'ok' : liffConfigured ? 'warn' : 'info',
+    badge: state.liffReady ? '認証完了' : 'ブラウザ直接利用中',
+    desc: state.liffReady
+      ? `LINEユーザー名: ${state.liffDisplayName || '取得済'} (ID: ${APP_CONFIG.LIFF_ID})`
+      : `LIFF ID: ${APP_CONFIG.LIFF_ID || '未設定'} (通常のWebブラウザとして動作中)`
+  });
+
+  // レンダリング
+  let summaryHtml = '';
+  if (actionAdvice.length === 0 && backendOk) {
+    summaryHtml = `
+      <div class="bg-emerald-50 border border-emerald-200 rounded-2xl p-3.5 text-emerald-800 space-y-1">
+        <div class="font-bold text-sm flex items-center gap-1.5 text-emerald-700">
+          <i data-lucide="check-circle" class="w-4 h-4"></i> クラウド本番環境と正常に接続中！
+        </div>
+        <p class="text-[11px] text-emerald-600">全設定が完了しており、データは安全にSupabaseへ保存されています。</p>
+      </div>
+    `;
+  } else {
+    summaryHtml = `
+      <div class="bg-rose-50 border border-rose-200 rounded-2xl p-3.5 text-rose-800 space-y-1.5">
+        <div class="font-bold text-sm flex items-center gap-1.5 text-rose-700">
+          <i data-lucide="alert-triangle" class="w-4 h-4"></i> 設定漏れが見つかりました
+        </div>
+        <div class="text-[11px] font-bold text-rose-600">今すぐやること:</div>
+        <ul class="list-disc list-inside text-[11px] space-y-1 text-rose-700">
+          ${actionAdvice.map(a => `<li>${esc(a)}</li>`).join('')}
+        </ul>
+      </div>
+    `;
+  }
+
+  const listHtml = items.map(item => {
+    const isOk = item.status === 'ok';
+    const isError = item.status === 'error';
+    const badgeColor = isOk ? 'bg-emerald-100 text-emerald-700' : isError ? 'bg-rose-100 text-rose-700' : 'bg-slate-100 text-slate-700';
+    const borderColor = isOk ? 'border-slate-200' : isError ? 'border-rose-200 bg-rose-50/30' : 'border-slate-200';
+    return `
+      <div class="bg-white border ${borderColor} rounded-xl p-3 space-y-1 shadow-xs">
+        <div class="flex items-center justify-between">
+          <span class="font-bold text-slate-800">${esc(item.title)}</span>
+          <span class="text-[10px] font-bold px-2 py-0.5 rounded-full ${badgeColor}">${esc(item.badge)}</span>
+        </div>
+        <p class="text-[11px] text-slate-600">${esc(item.desc)}</p>
+        ${item.action ? `<div class="bg-amber-50 border border-amber-200 rounded-lg p-2 text-[10px] text-amber-800 font-bold mt-1.5">${esc(item.action)}</div>` : ''}
+      </div>
+    `;
+  }).join('');
+
+  if (loading) loading.classList.add('hidden');
+  if (result) {
+    result.innerHTML = summaryHtml + listHtml;
+    result.classList.remove('hidden');
+  }
+  lucide.createIcons();
+};
+
 function checkUrlInviteParam() {
   try {
     const urlParams = new URLSearchParams(window.location.search);

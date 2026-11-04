@@ -1997,6 +1997,52 @@ async function processNaturalLanguageMessage(supabase, text, userId) {
 }
 
 // ==========================================
+// ヘルスチェック ＆ 設定漏れ自己診断
+// ==========================================
+async function handleHealthCheck(req) {
+  const envCheck = {
+    SUPABASE_URL: !!process.env.SUPABASE_URL,
+    SUPABASE_SERVICE_ROLE_KEY: !!process.env.SUPABASE_SERVICE_ROLE_KEY,
+    GEMINI_API_KEY: !!process.env.GEMINI_API_KEY,
+    LINE_CHANNEL_SECRET: !!process.env.LINE_CHANNEL_SECRET,
+    LINE_CHANNEL_ACCESS_TOKEN: !!process.env.LINE_CHANNEL_ACCESS_TOKEN,
+    DEMO_MODE: process.env.DEMO_MODE || 'false'
+  };
+
+  let dbStatus = '未接続';
+  let dbError = null;
+
+  if (envCheck.SUPABASE_URL && envCheck.SUPABASE_SERVICE_ROLE_KEY) {
+    try {
+      const client = getSupabase();
+      const { data, error } = await client.from('pairs').select('id').limit(1);
+      if (error) {
+        dbStatus = 'エラー (テーブル未作成)';
+        dbError = error.message;
+      } else {
+        dbStatus = '正常接続 (OK)';
+      }
+    } catch (e) {
+      dbStatus = '接続例外エラー';
+      dbError = e.message;
+    }
+  } else {
+    dbStatus = '環境変数が未設定のため未接続';
+  }
+
+  return {
+    success: true,
+    version: 'v2.2.0',
+    timestamp: new Date().toISOString(),
+    env: envCheck,
+    database: {
+      status: dbStatus,
+      error: dbError
+    }
+  };
+}
+
+// ==========================================
 // Vercel Serverless Function メインハンドラ
 // ==========================================
 
@@ -2013,6 +2059,21 @@ export default async function handler(req, res) {
   // OPTIONS プリフライト対応
   if (req.method === 'OPTIONS') {
     return res.status(204).end();
+  }
+
+  // ヘルスチェック・設定診断（Supabase未接続でも安全に応答可能）
+  const queryAction = req.query?.action;
+  let bodyAction = null;
+  if (req.body) {
+    if (typeof req.body === 'string') {
+      try { bodyAction = JSON.parse(req.body)?.action; } catch (_) {}
+    } else {
+      bodyAction = req.body?.action;
+    }
+  }
+  if (queryAction === 'healthCheck' || bodyAction === 'healthCheck') {
+    const report = await handleHealthCheck(req);
+    return res.status(200).json(report);
   }
 
   let supabase;
