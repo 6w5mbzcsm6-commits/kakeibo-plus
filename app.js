@@ -2915,11 +2915,18 @@ window.runSystemDiagnostics = async function () {
         badge: '正常接続',
         desc: 'pairs テーブルおよび家計簿全テーブルとの通信・読み書きが確認できました！'
       });
+    } else if (!hasSupabaseUrl || !hasServiceKey) {
+      items.push({
+        title: '4. クラウドデータベース (Supabase PostgreSQL)',
+        status: 'warn',
+        badge: '環境変数待ち',
+        desc: '3番のVercel環境変数が反映（Redeploy）されると自動的に接続されます。'
+      });
     } else {
       items.push({
         title: '4. クラウドデータベース (Supabase PostgreSQL)',
         status: 'error',
-        badge: 'テーブル未作成または未接続',
+        badge: 'テーブル未作成または接続エラー',
         desc: `DBステータス: ${db.status} ${db.error ? '(' + db.error + ')' : ''}`,
         action: '👉 Supabase のダッシュボード ➔ SQL Editor で schema.sql を貼り付けて「Run」を実行してください。'
       });

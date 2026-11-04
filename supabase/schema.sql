@@ -303,6 +303,22 @@ alter table events enable row level security;
 alter table event_expenses enable row level security;
 
 -- サービスロールに対する全権限ポリシー（anon/publicからの直接アクセスは完全遮断）
+-- 再実行してもエラーにならないよう DROP POLICY IF EXISTS を先行実行
+drop policy if exists "Service role full access on pairs" on pairs;
+drop policy if exists "Service role full access on users" on users;
+drop policy if exists "Service role full access on categories" on categories;
+drop policy if exists "Service role full access on rules" on rules;
+drop policy if exists "Service role full access on receipts" on receipts;
+drop policy if exists "Service role full access on receipt_items" on receipt_items;
+drop policy if exists "Service role full access on transactions" on transactions;
+drop policy if exists "Service role full access on shopping_list" on shopping_list;
+drop policy if exists "Service role full access on fixed_expenses" on fixed_expenses;
+drop policy if exists "Service role full access on monthly_budgets" on monthly_budgets;
+drop policy if exists "Service role full access on audit_logs" on audit_logs;
+drop policy if exists "Service role full access on app_settings" on app_settings;
+drop policy if exists "Service role full access on events" on events;
+drop policy if exists "Service role full access on event_expenses" on event_expenses;
+
 create policy "Service role full access on pairs" on pairs for all to service_role using (true) with check (true);
 create policy "Service role full access on users" on users for all to service_role using (true) with check (true);
 create policy "Service role full access on categories" on categories for all to service_role using (true) with check (true);

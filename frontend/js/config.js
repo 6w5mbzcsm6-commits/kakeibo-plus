@@ -6,7 +6,9 @@
  * ここに設定するとLINE内ブラウザでも自動で読み込まれます。
  */
 window.PAIRBUDGET_CONFIG = {
-  API_URL: 'https://kakeibo-plus.vercel.app/api/budget',
+  API_URL: (typeof window !== 'undefined' && window.location.hostname.endsWith('.vercel.app'))
+    ? '/api/budget'
+    : 'https://futari-kakeibo.vercel.app/api/budget',
   GAS_URL: '',
   LIFF_ID: '2012227672-F2wXP3LP'
 };
