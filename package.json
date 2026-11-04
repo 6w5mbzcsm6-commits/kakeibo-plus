@@ -1,19 +1,10 @@
 {
   "name": "pair-budget-app",
-  "version": "2.0.0",
+  "version": "2.2.0",
   "description": "ふたり家計簿 (PairBudget) - Vercel Serverless Functions + Supabase PostgreSQL",
-  "main": "api/budget.js",
   "type": "module",
-  "scripts": {
-    "dev": "vercel dev",
-    "deploy": "vercel --prod"
-  },
   "dependencies": {
-    "@supabase/supabase-js": "^2.49.1",
-    "@google/genai": "^0.1.2"
-  },
-  "devDependencies": {
-    "vercel": "^39.3.0"
+    "@supabase/supabase-js": "^2.49.1"
   },
   "engines": {
     "node": ">=18.0.0"
