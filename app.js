@@ -964,6 +964,7 @@ async function submitOnboardingCreate(e) {
   showToast('家計簿グループを作成中…', { loading: true });
 
   try {
+    state.isMockMode = false;
     const res = await api('createPair', { name: groupName, userName });
     hideToast();
 
@@ -1037,6 +1038,7 @@ async function submitOnboardingJoin(e) {
   showToast('グループに参加中…', { loading: true });
 
   try {
+    state.isMockMode = false;
     const res = await api('joinPair', { inviteCode, name: userName });
     hideToast();
 
@@ -1178,10 +1180,20 @@ async function loadInitialData(month, opts = {}) {
   }
 
   try {
+    state.isMockMode = false;
     const res = await api('getInitialData', { month: targetMonth });
     if (state.viewMonth !== targetMonth) return; // 月送り連打時の古いレスポンスを破棄
 
     if (!res || !res.success) {
+      if (res && (res.code === 'UNREGISTERED' || res.code === 'AUTH' || res.code === 'SETUP_REQUIRED')) {
+        // バックエンド自体は正常稼働中（未登録または認証案内）なのでデモモードには落とさない
+        state.isMockMode = false;
+        state.backendVersion = res.version || 'v2.2.0';
+        handleApiError(res);
+        renderAll();
+        if (!usedCache && !opts.silent) hideToast();
+        return;
+      }
       if (res) handleApiError(res);
       // バックエンド障害時はデモモードに自動フォールバックして描画
       state.isMockMode = true;

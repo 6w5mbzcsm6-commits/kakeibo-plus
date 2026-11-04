@@ -102,7 +102,11 @@ function generateInviteCode() {
 }
 
 function isDemoAllowed() {
-  return process.env.DEMO_MODE === 'true';
+  // 明示的に STRICT_LINE_AUTH=true が設定されていない限り、PCブラウザやGitHub Pagesからのアクセスも許可する
+  if (process.env.STRICT_LINE_AUTH === 'true') {
+    return process.env.DEMO_MODE === 'true';
+  }
+  return process.env.DEMO_MODE !== 'false';
 }
 
 // ==========================================
@@ -642,7 +646,7 @@ async function handleGetInitialData(supabase, targetMonth, actor, requestedPairI
 
   return {
     success: true,
-    version: '2.1.0-multipair',
+    version: 'v2.2.0',
     pair: {
       id: pairId,
       name: config.pairName,
@@ -2201,6 +2205,7 @@ export default async function handler(req, res) {
       if (!actor.allowed) {
         return res.status(200).json({
           success: false,
+          version: 'v2.2.0',
           code: actor.code,
           error: actor.error,
           userId: actor.userId || '',
