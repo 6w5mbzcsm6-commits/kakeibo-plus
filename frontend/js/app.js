@@ -9,7 +9,7 @@
  */
 
 const APP_CONFIG = window.PAIRBUDGET_CONFIG || {};
-const FRONTEND_VERSION = 'v2.2.0';
+const FRONTEND_VERSION = 'v2.4.0';
 const MAX_HISTORY_MONTHS = 36;
 const FIELD_LABELS = {
   date: '日付', title: '品名', amount: '金額', category: 'カテゴリ', isShared: '共同',
@@ -77,6 +77,14 @@ const state = {
   trendChart: null,
   busy: false,
 
+  categoryBudgets: (() => {
+    try { return JSON.parse(localStorage.getItem('pairbudget_category_budgets') || '{}'); } catch (_) { return {}; }
+  })(),
+  surplusPolicy: localStorage.getItem('pairbudget_surplus_policy') || 'savings',
+  savingsConfig: (() => {
+    try { return JSON.parse(localStorage.getItem('pairbudget_savings_config') || '{"initialSavings":0,"monthlyInterests":{}}'); } catch (_) { return { initialSavings: 0, monthlyInterests: {} }; }
+  })(),
+
   summary: { budget: 240000, totalExpense: 0, remaining: 240000, progressRate: 0, daysLeft: 0, dailyAllowance: 0, isCurrentMonth: true },
   transfers: {
     husband: { baseContribution: 60000, privateOnSharedCard: 0, advancedForShared: 0, totalTransfer: 60000, isPaid: false },
@@ -88,7 +96,11 @@ const state = {
     husbandName: 'メンバー1',
     wifeName: 'メンバー2',
     husbandColor: localStorage.getItem('pairbudget_member1_color') || 'emerald',
-    wifeColor: localStorage.getItem('pairbudget_member2_color') || 'amber'
+    wifeColor: localStorage.getItem('pairbudget_member2_color') || 'amber',
+    shoppingPurgeDays: 1,
+    categoryBudgets: {},
+    surplusPolicy: 'savings',
+    savingsConfig: { initialSavings: 0, monthlyInterests: {} }
   },
   members: [], // マルチメンバー（ふたり〜シェアハウス対応）
   transactions: [],
@@ -527,7 +539,10 @@ function mockBuildInitial(month) {
       wifeBaseContribution: wb,
       husbandName: hName,
       wifeName: wName,
-      shoppingPurgeDays: (mockDb.config && mockDb.config.shoppingPurgeDays !== undefined) ? mockDb.config.shoppingPurgeDays : 1
+      shoppingPurgeDays: (mockDb.config && mockDb.config.shoppingPurgeDays !== undefined) ? mockDb.config.shoppingPurgeDays : 1,
+      categoryBudgets: (mockDb.config && mockDb.config.categoryBudgets) ? mockDb.config.categoryBudgets : state.categoryBudgets,
+      surplusPolicy: (mockDb.config && mockDb.config.surplusPolicy) ? mockDb.config.surplusPolicy : state.surplusPolicy,
+      savingsConfig: (mockDb.config && mockDb.config.savingsConfig) ? mockDb.config.savingsConfig : state.savingsConfig
     },
     transfers: { husband: tr(hb, 'husband'), wife: tr(wb, 'wife') },
     summary: { budget, totalExpense: total, remaining, progressRate: Math.min(100, Math.round(total / budget * 100)),
@@ -619,6 +634,21 @@ async function mockApi(action, data) {
       mockDb.config = mockDb.config || {};
       mockDb.config.shoppingPurgeDays = Number(data.shoppingPurgeDays !== undefined ? data.shoppingPurgeDays : 1);
       return { success: true, shoppingPurgeDays: mockDb.config.shoppingPurgeDays };
+    }
+    case 'updateCategoryBudgets': {
+      mockDb.config = mockDb.config || {};
+      mockDb.config.categoryBudgets = data.categoryBudgets || {};
+      return { success: true, categoryBudgets: mockDb.config.categoryBudgets };
+    }
+    case 'updateSurplusPolicy': {
+      mockDb.config = mockDb.config || {};
+      mockDb.config.surplusPolicy = data.surplusPolicy || 'savings';
+      return { success: true, surplusPolicy: mockDb.config.surplusPolicy };
+    }
+    case 'updateSavingsConfig': {
+      mockDb.config = mockDb.config || {};
+      mockDb.config.savingsConfig = data.savingsConfig || { initialSavings: 0, monthlyInterests: {} };
+      return { success: true, savingsConfig: mockDb.config.savingsConfig };
     }
     case 'updateMonthlyBudget': {
       const prev = mockDb.budgets[data.month];
@@ -1336,6 +1366,20 @@ function applyData(data) {
   if (data.config && data.config.shoppingPurgeDays !== undefined) {
     state.config.shoppingPurgeDays = Number(data.config.shoppingPurgeDays);
   }
+  if (data.config) {
+    if (data.config.categoryBudgets) {
+      state.categoryBudgets = data.config.categoryBudgets;
+      try { localStorage.setItem('pairbudget_category_budgets', JSON.stringify(state.categoryBudgets)); } catch (_) {}
+    }
+    if (data.config.surplusPolicy) {
+      state.surplusPolicy = data.config.surplusPolicy;
+      try { localStorage.setItem('pairbudget_surplus_policy', state.surplusPolicy); } catch (_) {}
+    }
+    if (data.config.savingsConfig) {
+      state.savingsConfig = data.config.savingsConfig;
+      try { localStorage.setItem('pairbudget_savings_config', JSON.stringify(state.savingsConfig)); } catch (_) {}
+    }
+  }
   if (data.pair) {
     state.pairId = data.pair.id;
     state.pairName = data.pair.name;
@@ -1366,6 +1410,8 @@ function renderAll() {
   renderCategoryDropdown();
   renderTransferCard();
   renderBudgetSummary();
+  renderSavingsCard();
+  renderCategoryBudgets();
   renderCharts();
   renderRecentTransactions();
   renderShoppingList();
@@ -1490,15 +1536,241 @@ window.toggleMemberTransferStatus = async function (memberId) {
 
 function renderBudgetSummary() {
   const s = state.summary;
-  $('budgetProgressRate').textContent = `${s.progressRate}% 消化`;
+  if ($('budgetProgressRate')) $('budgetProgressRate').textContent = `${s.progressRate}% 消化`;
   const bar = $('budgetProgressBar');
-  bar.style.width = `${s.progressRate}%`;
-  const tone = s.progressRate > 90 ? 'bg-rose-500' : s.progressRate > 75 ? 'bg-amber-500' : 'bg-brand-500';
-  bar.className = `${tone} h-full rounded-full transition-all duration-500`;
-  $('remainingBudget').textContent = yen(s.remaining);
-  $('daysLeft').textContent = s.isCurrentMonth ? s.daysLeft : '-';
-  $('dailyAllowance').textContent = s.isCurrentMonth ? `${yen(s.dailyAllowance)} / 日` : '（過去の月）';
-  $('totalExpenseSummary').textContent = `支出合計: ${yen(s.totalExpense)}`;
+  if (bar) {
+    bar.style.width = `${s.progressRate}%`;
+    const tone = s.progressRate > 90 ? 'bg-rose-500' : s.progressRate > 75 ? 'bg-amber-500' : 'bg-brand-500';
+    bar.className = `${tone} h-full rounded-full transition-all duration-500`;
+  }
+
+  // 残金ラベル・金額
+  if ($('remainingBudget')) $('remainingBudget').textContent = yen(s.remaining);
+
+  // 「今月使えるお金」＆過去月の表示刷新
+  const dailyLabel = $('dailyAllowanceLabel');
+  const dailyEl = $('dailyAllowance');
+  const dailySub = $('dailyAllowanceSub');
+
+  if (s.isCurrentMonth) {
+    if (dailyLabel) dailyLabel.textContent = '今月使えるお金';
+    if (dailyEl) {
+      dailyEl.textContent = yen(s.remaining);
+      dailyEl.className = s.remaining < 0 ? 'text-base font-black text-rose-600' : 'text-base font-black text-brand-600';
+    }
+    if (dailySub) {
+      dailySub.textContent = `1日あたり目安: ${yen(s.dailyAllowance)} / 日 (残${s.daysLeft}日)`;
+      dailySub.className = 'text-[10px] text-slate-400 block';
+    }
+  } else {
+    // 過去月の月次収支結果表示（「過去の月」を廃止し黒字/赤字をスタイリッシュに表示）
+    if (dailyLabel) dailyLabel.textContent = '月次収支結果';
+    if (dailyEl) {
+      if (s.remaining >= 0) {
+        dailyEl.textContent = `+${yen(s.remaining)}（黒字達成✨）`;
+        dailyEl.className = 'text-xs font-black text-emerald-600';
+      } else {
+        dailyEl.textContent = `-${yen(Math.abs(s.remaining))}（予算超過）`;
+        dailyEl.className = 'text-xs font-black text-rose-600';
+      }
+    }
+    if (dailySub) {
+      dailySub.textContent = '当月の生活費精算確定';
+      dailySub.className = 'text-[10px] text-slate-400 block';
+    }
+  }
+
+  // 余剰金 返金予定額バナー（返金モード: ratio / equal 時）
+  const refundBanner = $('surplusRefundBanner');
+  if (refundBanner) {
+    if (state.surplusPolicy !== 'savings' && s.remaining > 0) {
+      refundBanner.classList.remove('hidden');
+      const refundTotal = s.remaining;
+      if ($('surplusRefundTotalBadge')) $('surplusRefundTotalBadge').textContent = `余剰金 ${yen(refundTotal)}`;
+
+      const members = state.members || [];
+      const mCount = members.length || 2;
+      const detailsEl = $('surplusRefundDetails');
+      if (detailsEl) {
+        if (state.surplusPolicy === 'equal') {
+          // 均等割り
+          const perPerson = Math.floor(refundTotal / mCount);
+          detailsEl.innerHTML = members.map((m, i) => `
+            <span class="bg-white/80 border border-emerald-200 px-2 py-0.5 rounded-md font-medium">
+              ${esc(m.name || `メンバー${i + 1}`)}: <b>+${yen(perPerson)}</b> 返金
+            </span>
+          `).join('');
+        } else {
+          // 拠出比率按分
+          const totalBase = members.reduce((sum, m) => sum + (Number(m.baseContribution) || 0), 0);
+          detailsEl.innerHTML = members.map((m, i) => {
+            const mBase = Number(m.baseContribution) || 0;
+            const ratio = totalBase > 0 ? mBase / totalBase : 1 / mCount;
+            const mRefund = Math.round(refundTotal * ratio);
+            return `
+              <span class="bg-white/80 border border-emerald-200 px-2 py-0.5 rounded-md font-medium">
+                ${esc(m.name || `メンバー${i + 1}`)} (${Math.round(ratio * 100)}%): <b>+${yen(mRefund)}</b> 返金
+              </span>
+            `;
+          }).join('');
+        }
+      }
+    } else {
+      refundBanner.classList.add('hidden');
+    }
+  }
+
+  if ($('totalExpenseSummary')) $('totalExpenseSummary').textContent = `支出合計: ${yen(s.totalExpense)}`;
+}
+
+/**
+ * 共同積立・貯金カード描画 (ユーザー画像デザイン完全再現)
+ */
+function renderSavingsCard() {
+  const card = $('savingsSummaryCard');
+  if (!card) return;
+
+  if (state.surplusPolicy !== 'savings') {
+    card.classList.add('hidden');
+    return;
+  }
+  card.classList.remove('hidden');
+
+  const initialSavings = Number(state.savingsConfig.initialSavings || 0);
+  const monthlyInterests = state.savingsConfig.monthlyInterests || {};
+
+  // 過去〜当月の月別推移（monthlyTotals）
+  const totals = (state.monthlyTotals || []).slice().sort((a, b) => (a.month > b.month ? 1 : -1));
+
+  let totalBalance = initialSavings;
+  let totalInterests = 0;
+  const rows = [];
+
+  totals.forEach(t => {
+    const budget = Number(t.budget || 240000);
+    const sharedSpent = Number(t.shared || 0);
+    const balance = budget - sharedSpent; // 収支
+    const interest = Number(monthlyInterests[t.month] || 0);
+
+    totalBalance += balance + interest;
+    totalInterests += interest;
+
+    const [, m] = t.month.split('-');
+    const monthLabel = `${Number(m)}月`;
+
+    const balanceFormatted = balance >= 0
+      ? `<span class="text-emerald-600 font-bold font-mono">+${balance.toLocaleString()}</span>`
+      : `<span class="text-rose-600 font-bold font-mono">-${Math.abs(balance).toLocaleString()}</span>`;
+
+    const interestFormatted = interest > 0
+      ? `<span class="font-bold text-slate-800 font-mono">${interest.toLocaleString()}</span>`
+      : `<span class="text-slate-400 font-mono">0</span>`;
+
+    rows.push(`
+      <tr class="hover:bg-slate-50/80 transition-colors">
+        <td class="py-2 px-3 font-bold text-slate-700">${monthLabel}</td>
+        <td class="py-2 px-3 text-right">${balanceFormatted}</td>
+        <td class="py-2 px-3 text-right">
+          <button type="button" onclick="openSavingsInterestModal('${t.month}')" class="hover:underline inline-flex items-center gap-1 text-slate-700 cursor-pointer" title="利息を編集">
+            ${interestFormatted}
+            <i data-lucide="edit-2" class="w-2.5 h-2.5 text-slate-300"></i>
+          </button>
+        </td>
+      </tr>
+    `);
+  });
+
+  if ($('totalSavingsBalance')) $('totalSavingsBalance').textContent = yen(totalBalance);
+  if ($('initialSavingsLabel')) $('initialSavingsLabel').textContent = yen(initialSavings);
+  if ($('totalInterestsLabel')) $('totalInterestsLabel').textContent = yen(totalInterests);
+  if ($('savingsCountMonths')) $('savingsCountMonths').textContent = `${totals.length}ヶ月分蓄積`;
+
+  const tbody = $('savingsMonthlyTableBody');
+  if (tbody) {
+    tbody.innerHTML = rows.length ? rows.slice(-6).reverse().join('') : '<tr><td colspan="3" class="py-3 text-center text-slate-400">データがありません</td></tr>';
+  }
+
+  // 月初に共同口座へ残すお金ガイド
+  if ($('guideNextMonthBudget')) $('guideNextMonthBudget').textContent = yen(state.summary.budget);
+  // 前月共同カード引落分
+  const lastMonthStr = shiftMonth(state.viewMonth, -1);
+  const lastMonthCardTotal = state.transactions
+    .filter(t => t.isShared && t.paymentType === 'shared_card' && t.date.startsWith(lastMonthStr))
+    .reduce((sum, t) => sum + Number(t.amount || 0), 0);
+  if ($('guideLastMonthSharedCard')) $('guideLastMonthSharedCard').textContent = yen(lastMonthCardTotal);
+  if ($('guideAdjustment')) $('guideAdjustment').textContent = yen(0);
+
+  lucide.createIcons();
+}
+
+/**
+ * 部門（カテゴリ）別 予算のこり状況リスト描画
+ */
+function renderCategoryBudgets() {
+  const container = $('categoryBudgetsSummaryList');
+  if (!container) return;
+
+  const budgets = state.categoryBudgets || {};
+  const categories = state.categories || [];
+  if (!categories.length) return;
+
+  // カテゴリ別支出を計算
+  const spentMap = {};
+  scopedTransactions().forEach(t => {
+    spentMap[t.category] = (spentMap[t.category] || 0) + Number(t.amount || 0);
+  });
+
+  const cardsHtml = categories.map(cat => {
+    const budget = Number(budgets[cat.name] || 0);
+    const spent = spentMap[cat.name] || 0;
+    const hasBudget = budget > 0;
+    const remaining = budget - spent;
+    const rate = hasBudget ? Math.round((spent / budget) * 100) : 0;
+
+    let barColor = 'bg-brand-500';
+    let statusText = '';
+    if (hasBudget) {
+      if (remaining < 0) {
+        barColor = 'bg-rose-500';
+        statusText = `<span class="text-rose-600 font-bold">⚠️ ${yen(Math.abs(remaining))} オーバー</span>`;
+      } else if (rate >= 80) {
+        barColor = 'bg-amber-500';
+        statusText = `<span class="text-amber-700 font-bold">残り ${yen(remaining)}</span>`;
+      } else {
+        barColor = 'bg-emerald-500';
+        statusText = `<span class="text-emerald-700 font-bold">残り ${yen(remaining)}</span>`;
+      }
+    } else {
+      statusText = `<span class="text-slate-400">予算未設定</span>`;
+    }
+
+    return `
+      <div class="p-2.5 rounded-xl bg-slate-50/80 border border-slate-100 hover:border-slate-200 transition-colors space-y-1.5">
+        <div class="flex items-center justify-between text-xs">
+          <span class="font-bold text-slate-800 flex items-center gap-1.5">
+            <span class="w-2.5 h-2.5 rounded-full" style="background-color: ${cat.color || '#94a3b8'}"></span>
+            ${esc(cat.name)}
+          </span>
+          <div>${statusText}</div>
+        </div>
+
+        ${hasBudget ? `
+          <div class="w-full bg-slate-200/80 h-1.5 rounded-full overflow-hidden">
+            <div class="${barColor} h-full rounded-full transition-all duration-300" style="width: ${Math.min(100, rate)}%"></div>
+          </div>
+          <div class="flex justify-between text-[10px] text-slate-400">
+            <span>使用 ${yen(spent)}</span>
+            <span>予算 ${yen(budget)} (${rate}%)</span>
+          </div>
+        ` : `
+          <div class="text-[10px] text-slate-400">支出: ${yen(spent)}</div>
+        `}
+      </div>
+    `;
+  }).join('');
+
+  container.innerHTML = cardsHtml;
+  lucide.createIcons();
 }
 
 /** スコープ（共同/自分）に応じた表示対象の支出 */
@@ -1738,14 +2010,134 @@ function renderSettings() {
     $('settingShoppingPurgeDays').value = String(purgeDays);
   }
 
+  // 余剰金精算ルール選択ラジオ
+  const policyRadios = document.querySelectorAll('input[name="surplusPolicy"]');
+  policyRadios.forEach(radio => {
+    radio.checked = radio.value === state.surplusPolicy;
+  });
+
   // 動的メンバー一覧＆カラー設定を描画
   renderSettingMembersList();
   applyMemberColors();
+
+  // 部門別予算入力リスト描画
+  renderCategoryBudgetsInputs();
+
+  // 生活費予算警告バナー更新
+  updateBudgetOverWarningBox();
 
   // バージョン表示
   if ($('frontVersionLabel')) $('frontVersionLabel').textContent = FRONTEND_VERSION;
   if ($('backVersionLabel')) {
     $('backVersionLabel').textContent = state.backendVersion || (state.isMockMode ? 'demo' : '未取得');
+  }
+}
+
+/**
+ * 設定タブの部門別予算入力リスト描画
+ */
+function renderCategoryBudgetsInputs() {
+  const container = $('categoryBudgetsInputsList');
+  if (!container) return;
+
+  const categories = state.categories || [];
+  const budgets = state.categoryBudgets || {};
+
+  container.innerHTML = categories.map(cat => {
+    const bVal = budgets[cat.name] !== undefined ? budgets[cat.name] : '';
+    return `
+      <div class="flex items-center justify-between p-2 rounded-xl bg-slate-50 border border-slate-100">
+        <label class="text-xs font-bold text-slate-700 flex items-center gap-1.5 flex-1">
+          <span class="w-2.5 h-2.5 rounded-full" style="background-color: ${cat.color || '#94a3b8'}"></span>
+          ${esc(cat.name)}
+        </label>
+        <div class="flex items-center gap-1">
+          <span class="text-xs text-slate-400 font-mono">¥</span>
+          <input type="number" data-category-budget="${esc(cat.name)}" value="${bVal}" placeholder="0" class="w-24 bg-white border border-slate-200 rounded-lg px-2 py-1 text-xs font-mono text-right focus:outline-none focus:ring-1 focus:ring-brand-400">
+        </div>
+      </div>
+    `;
+  }).join('');
+
+  // 入力イベントで差額バッジをリアルタイム更新
+  container.querySelectorAll('input[data-category-budget]').forEach(input => {
+    input.addEventListener('input', updateCategoryBudgetsDiffBadge);
+  });
+  updateCategoryBudgetsDiffBadge();
+}
+
+function updateCategoryBudgetsDiffBadge() {
+  const badge = $('categoryBudgetsDiffBadge');
+  if (!badge) return;
+  const container = $('categoryBudgetsInputsList');
+  if (!container) return;
+
+  let totalAllocated = 0;
+  container.querySelectorAll('input[data-category-budget]').forEach(inp => {
+    const val = parseInt(inp.value, 10);
+    if (!isNaN(val) && val > 0) totalAllocated += val;
+  });
+
+  const totalBudget = state.summary.budget || 240000;
+  const diff = totalBudget - totalAllocated;
+
+  if (diff === 0) {
+    badge.className = 'text-[11px] font-bold px-2 py-0.5 rounded-full bg-emerald-100 text-emerald-800';
+    badge.textContent = 'ぴったり全額割り振り済✨';
+  } else if (diff > 0) {
+    badge.className = 'text-[11px] font-bold px-2 py-0.5 rounded-full bg-slate-100 text-slate-700';
+    badge.textContent = `未割り振り: ${yen(diff)}`;
+  } else {
+    badge.className = 'text-[11px] font-bold px-2 py-0.5 rounded-full bg-rose-100 text-rose-800';
+    badge.textContent = `予算オーバー: ${yen(Math.abs(diff))}`;
+  }
+}
+
+/**
+ * 設定タブの生活費予算設定 警告バナー更新（2段階チェック）
+ */
+function updateBudgetOverWarningBox() {
+  const box = $('budgetOverWarningBox');
+  const input = $('settingBudgetInput');
+  if (!box || !input) return;
+
+  const budget = parseInt(input.value, 10) || 0;
+  const totalContribution = (state.members || []).reduce((s, m) => s + (Number(m.baseContribution) || 0), 0);
+
+  // メンバー拠出合計ラベル
+  if ($('membersTotalContributionLabel')) {
+    const details = (state.members || []).map((m, i) => `${m.name || `メンバー${i + 1}`}: ${yen(m.baseContribution || 0)}`).join(' / ');
+    $('membersTotalContributionLabel').textContent = `👥 拠出合計: ${yen(totalContribution)}（${details}）`;
+  }
+
+  if (budget <= totalContribution) {
+    const diff = totalContribution - budget;
+    box.className = 'p-2.5 rounded-xl text-xs leading-relaxed bg-emerald-50 border border-emerald-200 text-emerald-800';
+    box.innerHTML = `✅ メンバーの拠出額合計（${yen(totalContribution)}）の範囲内です（余剰予定: ${yen(diff)}）`;
+  } else {
+    const overAmt = budget - totalContribution;
+    if (state.surplusPolicy === 'savings') {
+      // 積立モード時: 現在の共同貯蓄残高を加味
+      const initialSavings = Number(state.savingsConfig.initialSavings || 0);
+      const monthlyInterests = state.savingsConfig.monthlyInterests || {};
+      let totalSavings = initialSavings;
+      (state.monthlyTotals || []).forEach(t => {
+        totalSavings += (Number(t.budget || 240000) - Number(t.shared || 0)) + Number(monthlyInterests[t.month] || 0);
+      });
+
+      if (budget <= totalContribution + totalSavings) {
+        const afterSavings = (totalContribution + totalSavings) - budget;
+        box.className = 'p-2.5 rounded-xl text-xs leading-relaxed bg-amber-50 border border-amber-200 text-amber-800';
+        box.innerHTML = `💡 ふたりの拠出金合計（${yen(totalContribution)}）から ${yen(overAmt)} オーバーしていますが、現在の共同積立貯蓄（${yen(totalSavings)}）から補填可能です（補填後の貯蓄目安: ${yen(afterSavings)}）`;
+      } else {
+        box.className = 'p-2.5 rounded-xl text-xs leading-relaxed bg-rose-50 border border-rose-200 text-rose-800';
+        box.innerHTML = `🚨 メンバー拠出金＋現在の共同積立貯蓄（合計 ${yen(totalContribution + totalSavings)}）を ${yen(budget - (totalContribution + totalSavings))} オーバーしています！貯蓄を取り崩しても資金が不足します`;
+      }
+    } else {
+      // 返金モード時 (ratio / equal)
+      box.className = 'p-2.5 rounded-xl text-xs leading-relaxed bg-rose-50 border border-rose-200 text-rose-800';
+      box.innerHTML = `⚠️ ふたりの拠出金合計（${yen(totalContribution)}）から ${yen(overAmt)} オーバーしています！拠出額を増やすか予算を見直してください`;
+    }
   }
 }
 
@@ -2465,6 +2857,89 @@ function hideToast() {
   if ($('toastProgressWrap')) $('toastProgressWrap').classList.add('hidden');
 }
 
+/**
+ * 共同積立・利息モーダル操作
+ */
+window.openSavingsModal = function () {
+  const modal = $('savingsModal');
+  if (!modal) return;
+  if ($('savingsInitialInput')) $('savingsInitialInput').value = state.savingsConfig.initialSavings || '';
+
+  const list = $('savingsInterestsList');
+  if (list) {
+    const totals = (state.monthlyTotals || []).slice().sort((a, b) => (a.month > b.month ? 1 : -1));
+    const interests = state.savingsConfig.monthlyInterests || {};
+    list.innerHTML = totals.map(t => {
+      const [y, m] = t.month.split('-');
+      const val = interests[t.month] !== undefined ? interests[t.month] : '';
+      return `
+        <div class="flex items-center justify-between p-2 rounded-xl bg-white border border-slate-200">
+          <span class="font-bold text-slate-700">${y}年${Number(m)}月</span>
+          <div class="flex items-center gap-1">
+            <span class="text-xs text-slate-400 font-mono">利息: ¥</span>
+            <input type="number" data-savings-month="${t.month}" value="${val}" placeholder="0" class="w-20 bg-slate-50 border border-slate-200 rounded-lg px-2 py-1 text-xs font-mono text-right focus:outline-none focus:ring-1 focus:ring-emerald-400">
+          </div>
+        </div>
+      `;
+    }).join('');
+  }
+
+  modal.classList.remove('hidden');
+  lucide.createIcons();
+};
+
+window.closeSavingsModal = function () {
+  $('savingsModal')?.classList.add('hidden');
+};
+
+window.openSavingsInterestModal = function (targetMonth) {
+  openSavingsModal();
+  setTimeout(() => {
+    const input = document.querySelector(`input[data-savings-month="${targetMonth}"]`);
+    if (input) {
+      input.focus();
+      input.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    }
+  }, 150);
+};
+
+async function handleSaveSavingsModal() {
+  const initial = parseInt($('savingsInitialInput')?.value, 10) || 0;
+  const interests = {};
+  document.querySelectorAll('input[data-savings-month]').forEach(inp => {
+    const m = inp.dataset.savingsMonth;
+    const v = parseInt(inp.value, 10);
+    if (!isNaN(v) && v >= 0) interests[m] = v;
+  });
+
+  state.savingsConfig = {
+    initialSavings: initial,
+    monthlyInterests: interests
+  };
+  try { localStorage.setItem('pairbudget_savings_config', JSON.stringify(state.savingsConfig)); } catch (_) {}
+  closeSavingsModal();
+  renderSavingsCard();
+  updateBudgetOverWarningBox();
+
+  await writeAndRefresh('updateSavingsConfig', { savingsConfig: state.savingsConfig }, '✅ 積立・利息データを保存しました', '設定を保存しています…');
+}
+
+window.copyWebhookUrl = function () {
+  const url = $('webhookUrlInput')?.value || 'https://futari-kakeibo.vercel.app/api/budget';
+  navigator.clipboard.writeText(url).then(() => {
+    showToast('📋 Webhook URLをコピーしました');
+  }).catch(() => {
+    showToast(url);
+  });
+};
+
+window.goToCategoryBudgetsSetting = function () {
+  switchTab('settings');
+  setTimeout(() => {
+    $('categoryBudgetsSection')?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  }, 100);
+};
+
 function setupEventListeners() {
   $('scopeSharedBtn')?.addEventListener('click', () => setScope('shared'));
   $('scopePersonalBtn')?.addEventListener('click', () => setScope('personal'));
@@ -2510,6 +2985,49 @@ function setupEventListeners() {
   });
 
   $('saveBudgetBtn')?.addEventListener('click', handleSaveBudget);
+  $('settingBudgetInput')?.addEventListener('input', () => {
+    updateBudgetOverWarningBox();
+    updateCategoryBudgetsDiffBadge();
+  });
+  $('matchBudgetToContributionBtn')?.addEventListener('click', () => {
+    const total = (state.members || []).reduce((s, m) => s + (Number(m.baseContribution) || 0), 0);
+    if ($('settingBudgetInput')) {
+      $('settingBudgetInput').value = total;
+      updateBudgetOverWarningBox();
+      updateCategoryBudgetsDiffBadge();
+      showToast(`👥 拠出合計（${yen(total)}）に合わせました`);
+    }
+  });
+
+  // 部門別予算保存ボタン
+  $('saveCategoryBudgetsBtn')?.addEventListener('click', async () => {
+    const budgets = {};
+    document.querySelectorAll('input[data-category-budget]').forEach(inp => {
+      const catName = inp.dataset.categoryBudget;
+      const val = parseInt(inp.value, 10);
+      if (!isNaN(val) && val >= 0) budgets[catName] = val;
+    });
+    state.categoryBudgets = budgets;
+    try { localStorage.setItem('pairbudget_category_budgets', JSON.stringify(budgets)); } catch (_) {}
+    renderCategoryBudgets();
+    await writeAndRefresh('updateCategoryBudgets', { categoryBudgets: budgets }, '✅ 部門別予算を保存しました', '部門別予算を保存しています…');
+  });
+
+  // 余剰金精算ルール選択ラジオ
+  document.querySelectorAll('input[name="surplusPolicy"]').forEach(r => {
+    r.addEventListener('change', async e => {
+      state.surplusPolicy = e.target.value;
+      try { localStorage.setItem('pairbudget_surplus_policy', state.surplusPolicy); } catch (_) {}
+      renderBudgetSummary();
+      renderSavingsCard();
+      updateBudgetOverWarningBox();
+      await writeAndRefresh('updateSurplusPolicy', { surplusPolicy: state.surplusPolicy }, '✅ 余剰金の精算ルールを保存しました', '設定を保存しています…');
+    });
+  });
+
+  // 共同積立モーダル保存ボタン
+  $('saveSavingsModalBtn')?.addEventListener('click', handleSaveSavingsModal);
+
   $('saveMemberSettingsBtn')?.addEventListener('click', handleBaseChange);
   $('settingHusbandBase')?.addEventListener('change', handleBaseChange);
   $('settingWifeBase')?.addEventListener('change', handleBaseChange);

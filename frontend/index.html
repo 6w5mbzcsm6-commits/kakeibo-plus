@@ -78,7 +78,10 @@
           🌱
         </div>
         <div>
-          <h1 class="text-base font-bold text-slate-900 leading-tight">ふたり家計簿</h1>
+          <div class="flex items-center gap-1.5">
+            <h1 class="text-base font-bold text-slate-900 leading-tight">ふたり家計簿</h1>
+            <span class="bg-brand-50 text-brand-700 text-[10px] font-bold px-1.5 py-0.5 rounded-full border border-brand-200">v2.4.0</span>
+          </div>
           <!-- 月ナビゲーション（過去36ヶ月まで遡れる） -->
           <div class="flex items-center gap-1 -ml-1">
             <button id="prevMonthBtn" aria-label="前の月" class="w-9 h-9 flex items-center justify-center text-slate-400 hover:text-slate-700 disabled:opacity-30">
@@ -261,7 +264,7 @@
           <!-- 予算消化状況メーター -->
           <section class="bg-white rounded-2xl p-4 shadow-sm border border-slate-100">
             <div class="flex items-center justify-between mb-2">
-              <div class="text-xs font-bold text-slate-500 uppercase tracking-wider">今月の予算消化状況</div>
+              <div class="text-xs font-bold text-slate-500 uppercase tracking-wider">今月の生活費 予算消化状況</div>
               <div class="text-xs font-bold text-brand-600" id="budgetProgressRate">0% 消化</div>
             </div>
 
@@ -272,13 +275,100 @@
 
             <div class="grid grid-cols-2 gap-2 text-center pt-1 border-t border-slate-50">
               <div>
-                <span class="text-[11px] text-slate-400 block">残金</span>
+                <span id="remainingBudgetLabel" class="text-[11px] text-slate-400 block">生活費予算 残金</span>
                 <span id="remainingBudget" class="text-base font-black text-slate-900">¥0</span>
+                <span id="remainingBudgetSub" class="text-[10px] text-slate-400 block"></span>
               </div>
               <div class="border-l border-slate-100">
-                <span class="text-[11px] text-slate-400 block">今日使える目安 (残<span id="daysLeft">0</span>日)</span>
-                <span id="dailyAllowance" class="text-base font-black text-brand-600">¥0 / 日</span>
+                <span id="dailyAllowanceLabel" class="text-[11px] text-slate-400 block">今月使えるお金</span>
+                <span id="dailyAllowance" class="text-base font-black text-brand-600">¥0</span>
+                <span id="dailyAllowanceSub" class="text-[10px] text-slate-400 block">1日あたり目安: ¥0 (残0日)</span>
               </div>
+            </div>
+
+            <!-- 余剰金 返金予定バナー (返金モード: ratio / equal 時に表示) -->
+            <div id="surplusRefundBanner" class="hidden mt-3 p-3 rounded-xl bg-emerald-50 border border-emerald-100 text-xs text-emerald-800 space-y-1">
+              <div class="font-bold flex items-center justify-between">
+                <span class="flex items-center gap-1.5"><i data-lucide="gift" class="w-3.5 h-3.5 text-emerald-600"></i> 今月の黒字・返金予定額</span>
+                <span id="surplusRefundTotalBadge" class="text-[10px] bg-emerald-200/80 text-emerald-900 px-2 py-0.5 rounded-full font-bold"></span>
+              </div>
+              <div id="surplusRefundDetails" class="text-[11px] text-emerald-700 flex flex-wrap gap-2 pt-0.5"></div>
+            </div>
+          </section>
+
+          <!-- 💰 ふたりの共同積立・貯金カード (積立モード: savings 時に表示・ユーザー画像再現) -->
+          <section id="savingsSummaryCard" class="bg-white rounded-2xl p-4 shadow-sm border border-slate-100 space-y-3">
+            <div class="flex items-center justify-between">
+              <div>
+                <h3 class="text-sm font-bold text-slate-800 flex items-center gap-1.5">
+                  <i data-lucide="piggy-bank" class="w-4 h-4 text-emerald-600"></i> ふたりの共同積立・貯蓄
+                </h3>
+                <p class="text-[11px] text-slate-400">毎月の余剰金＋利息をふたりの口座へ蓄積</p>
+              </div>
+              <button type="button" onclick="openSavingsModal()" class="text-xs text-emerald-700 font-bold bg-emerald-50 hover:bg-emerald-100 border border-emerald-200 px-2.5 py-1 rounded-lg transition-colors flex items-center gap-1 cursor-pointer">
+                <i data-lucide="edit-3" class="w-3.5 h-3.5"></i> 利息・初期設定
+              </button>
+            </div>
+
+            <!-- 累計積立残高ハイライト -->
+            <div class="p-3.5 rounded-xl bg-gradient-to-br from-emerald-500 to-teal-600 text-white shadow-sm space-y-1">
+              <div class="flex items-center justify-between text-xs opacity-90">
+                <span>現在の共同積立・貯蓄合計</span>
+                <span id="savingsCountMonths" class="text-[10px] bg-white/20 px-2 py-0.5 rounded-full font-medium"></span>
+              </div>
+              <div class="text-2xl font-black tracking-tight" id="totalSavingsBalance">¥0</div>
+              <div class="text-[10px] text-emerald-100 flex items-center justify-between pt-1 border-t border-white/15">
+                <span>初期繰越: <b id="initialSavingsLabel" class="text-white">¥0</b></span>
+                <span>累計利息: <b id="totalInterestsLabel" class="text-white">¥0</b></span>
+              </div>
+            </div>
+
+            <!-- 月別 収支 ＆ 利息（税引き後）一覧表 (ユーザー画像デザインの完全再現) -->
+            <div>
+              <div class="flex items-center justify-between mb-1.5">
+                <span class="text-xs font-bold text-slate-700 flex items-center gap-1">
+                  <i data-lucide="table" class="w-3.5 h-3.5 text-slate-400"></i> 月別 収支 ＆ 利息（税引き後）
+                </span>
+                <span class="text-[10px] text-slate-400">直近の推移</span>
+              </div>
+              <div class="border border-slate-100 rounded-xl overflow-hidden shadow-xs">
+                <table class="w-full text-xs text-left">
+                  <thead class="bg-slate-50 text-[11px] font-bold text-slate-600 border-b border-slate-100">
+                    <tr>
+                      <th class="py-2 px-3">月</th>
+                      <th class="py-2 px-3 text-right">収支</th>
+                      <th class="py-2 px-3 text-right">利息 (税引後)</th>
+                    </tr>
+                  </thead>
+                  <tbody id="savingsMonthlyTableBody" class="divide-y divide-slate-100 text-slate-700">
+                    <!-- JSで動的レンダリング -->
+                  </tbody>
+                </table>
+              </div>
+            </div>
+
+            <!-- 📌 月初に共同口座へ残すお金（精算目安）自動計算ガイド (画像下部メモ再現) -->
+            <div class="p-3 rounded-xl bg-slate-50 border border-slate-200/70 text-xs text-slate-600 space-y-1.5">
+              <div class="font-bold text-slate-800 flex items-center gap-1.5 text-[11px]">
+                <i data-lucide="info" class="w-3.5 h-3.5 text-brand-500"></i> 月初に共同口座へ残すお金（精算目安）
+              </div>
+              <div class="text-[11px] text-slate-500 leading-relaxed space-y-0.5">
+                <div class="flex justify-between">
+                  <span>① 翌月の生活費予算目安:</span>
+                  <b id="guideNextMonthBudget" class="font-mono text-slate-700">¥240,000</b>
+                </div>
+                <div class="flex justify-between">
+                  <span>② 前月生活費のクレカ引落分:</span>
+                  <b id="guideLastMonthSharedCard" class="font-mono text-slate-700">¥0</b>
+                </div>
+                <div class="flex justify-between">
+                  <span>③ 個人カード立替/私物精算控除:</span>
+                  <b id="guideAdjustment" class="font-mono text-slate-700">¥0</b>
+                </div>
+              </div>
+              <p class="text-[10px] text-slate-400 border-t border-slate-200/60 pt-1 leading-normal">
+                ※ ①＋②−③ を共同口座に残し、残金は積立・貯金用口座へ移動することで家計が綺麗に整います。
+              </p>
             </div>
           </section>
         </div>
@@ -313,6 +403,24 @@
             </div>
             <div class="h-48 relative flex items-center justify-center">
               <canvas id="categoryChart"></canvas>
+            </div>
+          </section>
+
+          <!-- 📊 部門（カテゴリ）別 予算のこり状況カード -->
+          <section id="categoryBudgetsSummaryCard" class="bg-white rounded-2xl p-4 shadow-sm border border-slate-100 space-y-3">
+            <div class="flex items-center justify-between">
+              <div>
+                <h3 class="text-sm font-bold text-slate-800 flex items-center gap-1.5">
+                  <i data-lucide="bar-chart-2" class="w-4 h-4 text-brand-500"></i> 部門別 予算のこり状況
+                </h3>
+                <p class="text-[11px] text-slate-400">カテゴリ別の消化率と残りの目安</p>
+              </div>
+              <button type="button" onclick="goToCategoryBudgetsSetting()" class="text-xs text-brand-600 font-bold hover:underline flex items-center gap-0.5 cursor-pointer">
+                <span>部門予算を設定</span> &rarr;
+              </button>
+            </div>
+            <div id="categoryBudgetsSummaryList" class="space-y-2.5">
+              <!-- JSで動的レンダリング -->
             </div>
           </section>
 
@@ -464,16 +572,28 @@
         <div class="space-y-4">
           <!-- 月別予算設定 -->
           <section class="bg-white rounded-2xl p-4 shadow-sm border border-slate-100 space-y-3">
-            <h3 class="text-sm font-bold text-slate-800 flex items-center gap-1.5">
-              <i data-lucide="sliders" class="w-4 h-4 text-brand-500"></i> 今月の生活費予算設定
-            </h3>
+            <div class="flex items-center justify-between">
+              <h3 class="text-sm font-bold text-slate-800 flex items-center gap-1.5">
+                <i data-lucide="sliders" class="w-4 h-4 text-brand-500"></i> 今月の生活費予算設定
+              </h3>
+              <span id="membersTotalContributionLabel" class="text-[11px] text-slate-500 font-bold"></span>
+            </div>
+
             <div>
-              <label class="text-xs font-medium text-slate-600 block mb-1">今月の予算額 (円)</label>
+              <div class="flex items-center justify-between mb-1">
+                <label for="settingBudgetInput" class="text-xs font-medium text-slate-600">今月の予算額 (円)</label>
+                <button type="button" id="matchBudgetToContributionBtn" class="text-[11px] text-brand-600 hover:text-brand-700 font-bold flex items-center gap-0.5 bg-brand-50 hover:bg-brand-100 px-2 py-0.5 rounded-lg border border-brand-200 transition-colors cursor-pointer">
+                  <span>👥 拠出額合計に合わせる</span>
+                </button>
+              </div>
               <div class="flex gap-2">
-                <input type="number" id="settingBudgetInput" class="flex-1 bg-slate-50 border border-slate-200 rounded-xl px-3 py-2 text-sm focus:outline-none" value="240000">
-                <button id="saveBudgetBtn" class="bg-brand-500 text-white px-4 py-2 rounded-xl text-xs font-bold hover:bg-brand-600">保存</button>
+                <input type="number" id="settingBudgetInput" class="flex-1 bg-slate-50 border border-slate-200 rounded-xl px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-brand-400" value="240000">
+                <button id="saveBudgetBtn" class="bg-brand-500 text-white px-4 py-2 rounded-xl text-xs font-bold hover:bg-brand-600 shadow-sm transition-colors">保存</button>
               </div>
             </div>
+
+            <!-- リアルタイム予算判定バナー (2段階チェック) -->
+            <div id="budgetOverWarningBox" class="p-2.5 rounded-xl text-xs leading-relaxed transition-all"></div>
           </section>
 
           <!-- メンバー管理・基本拠出・カラー設定 (マルチメンバー・シェアハウス対応) -->
@@ -496,12 +616,81 @@
             </div>
 
             <div class="pt-1 flex gap-2">
-              <button id="saveMemberSettingsBtn" class="flex-1 bg-slate-900 hover:bg-slate-800 text-white py-2.5 rounded-xl text-xs font-bold shadow-sm transition-colors flex items-center justify-center gap-1.5">
+              <button id="saveMemberSettingsBtn" class="flex-1 bg-slate-900 hover:bg-slate-800 text-white py-2.5 rounded-xl text-xs font-bold shadow-sm transition-colors flex items-center justify-center gap-1.5 cursor-pointer">
                 <i data-lucide="check" class="w-3.5 h-3.5"></i> メンバー設定を保存
               </button>
-              <button type="button" onclick="openPairModal()" class="bg-slate-100 hover:bg-slate-200 text-slate-700 px-3 py-2.5 rounded-xl text-xs font-bold transition-colors flex items-center gap-1 shrink-0">
+              <button type="button" onclick="openPairModal()" class="bg-slate-100 hover:bg-slate-200 text-slate-700 px-3 py-2.5 rounded-xl text-xs font-bold transition-colors flex items-center gap-1 shrink-0 cursor-pointer">
                 <i data-lucide="share-2" class="w-3.5 h-3.5"></i> 招待コード
               </button>
+            </div>
+          </section>
+
+          <!-- 📊 部門（カテゴリ）別 予算の割り振り設定 -->
+          <section id="categoryBudgetsSection" class="bg-white rounded-2xl p-4 shadow-sm border border-slate-100 space-y-3">
+            <div class="flex items-center justify-between">
+              <div>
+                <h3 class="text-sm font-bold text-slate-800 flex items-center gap-1.5">
+                  <i data-lucide="pie-chart" class="w-4 h-4 text-brand-500"></i> 部門（カテゴリ）別 予算の割り振り
+                </h3>
+                <p class="text-[11px] text-slate-400">今月の生活費予算を各カテゴリに割り振ります</p>
+              </div>
+              <span id="categoryBudgetsDiffBadge" class="text-[11px] font-bold px-2 py-0.5 rounded-full"></span>
+            </div>
+
+            <!-- カテゴリ別予算入力グリッド (動的レンダリング) -->
+            <div id="categoryBudgetsInputsList" class="space-y-2">
+              <!-- JSで動的レンダリング -->
+            </div>
+
+            <div class="pt-1">
+              <button type="button" id="saveCategoryBudgetsBtn" class="w-full bg-slate-900 hover:bg-slate-800 text-white py-2.5 rounded-xl text-xs font-bold shadow-sm transition-colors flex items-center justify-center gap-1.5 cursor-pointer">
+                <i data-lucide="check" class="w-3.5 h-3.5"></i> 部門別予算を保存
+              </button>
+            </div>
+          </section>
+
+          <!-- 🏦 余った予算の扱い（月末精算ルール選択） -->
+          <section id="surplusPolicySection" class="bg-white rounded-2xl p-4 shadow-sm border border-slate-100 space-y-3">
+            <div>
+              <h3 class="text-sm font-bold text-slate-800 flex items-center gap-1.5">
+                <i data-lucide="landmark" class="w-4 h-4 text-emerald-600"></i> 余った予算の扱い（月末精算ルール）
+              </h3>
+              <p class="text-[11px] text-slate-400">月末に生活費が黒字（余り）になったときの精算方針</p>
+            </div>
+
+            <div class="space-y-2">
+              <label class="flex items-start gap-2.5 p-3 rounded-xl border border-slate-200 hover:border-emerald-300 bg-slate-50/50 cursor-pointer transition-all">
+                <input type="radio" name="surplusPolicy" value="savings" class="mt-0.5 text-emerald-600 focus:ring-emerald-500">
+                <div class="flex-1">
+                  <div class="flex items-center gap-1.5">
+                    <span class="text-xs font-bold text-slate-800">ふたりの共同積立（貯金）に繰り越す</span>
+                    <span class="bg-emerald-100 text-emerald-800 text-[9px] font-black px-1.5 py-0.2 rounded">推奨</span>
+                  </div>
+                  <p class="text-[11px] text-slate-400 mt-0.5 leading-relaxed">
+                    余ったお金を返金せず、共同貯蓄口座へストック。将来の旅行や家電買い替え、赤字月の補填に活用します。
+                  </p>
+                </div>
+              </label>
+
+              <label class="flex items-start gap-2.5 p-3 rounded-xl border border-slate-200 hover:border-emerald-300 bg-slate-50/50 cursor-pointer transition-all">
+                <input type="radio" name="surplusPolicy" value="ratio" class="mt-0.5 text-emerald-600 focus:ring-emerald-500">
+                <div class="flex-1">
+                  <span class="text-xs font-bold text-slate-800">ふたりの拠出比率（支払比率）に応じて返金</span>
+                  <p class="text-[11px] text-slate-400 mt-0.5 leading-relaxed">
+                    基本拠出額の割合（例: 6:4 など）に応じて、黒字分を各自の個人口座へ返金・相殺します。
+                  </p>
+                </div>
+              </label>
+
+              <label class="flex items-start gap-2.5 p-3 rounded-xl border border-slate-200 hover:border-emerald-300 bg-slate-50/50 cursor-pointer transition-all">
+                <input type="radio" name="surplusPolicy" value="equal" class="mt-0.5 text-emerald-600 focus:ring-emerald-500">
+                <div class="flex-1">
+                  <span class="text-xs font-bold text-slate-800">比率によらず 5:5（均等割り）で返金</span>
+                  <p class="text-[11px] text-slate-400 mt-0.5 leading-relaxed">
+                    拠出額の多寡にかかわらず、余剰金を人数で完全に等分して返金します。
+                  </p>
+                </div>
+              </label>
             </div>
           </section>
 
@@ -544,8 +733,77 @@
           </section>
         </div>
 
-        <!-- 右列: データ説明・バージョン情報 -->
+        <!-- 右列: LINE連携・銀行API構想・診断・バージョン情報 -->
         <div class="space-y-4">
+          <!-- 💬 LINE公式アカウント連携 (第2ステップ) -->
+          <section id="lineIntegrationCard" class="bg-white rounded-2xl p-4 shadow-sm border border-slate-100 space-y-3">
+            <div class="flex items-center justify-between">
+              <h3 class="text-sm font-bold text-slate-800 flex items-center gap-1.5">
+                <i data-lucide="message-square" class="w-4 h-4 text-emerald-600"></i> LINE連携（トークから記録）
+              </h3>
+              <span class="text-[10px] bg-emerald-100 text-emerald-800 font-bold px-2 py-0.5 rounded-full">第2ステップ対応</span>
+            </div>
+            <p class="text-xs text-slate-500 leading-relaxed">
+              LINE公式アカウントのトークルームにレシート写真や文字を送るだけで、家計簿へ全自動記録できます。
+            </p>
+
+            <div class="p-3 rounded-xl bg-slate-50 border border-slate-200/70 space-y-2 text-xs">
+              <div class="font-bold text-slate-700">Webhook URL設定（LINE Developers）</div>
+              <div class="flex gap-1.5">
+                <input type="text" id="webhookUrlInput" readonly value="https://futari-kakeibo.vercel.app/api/budget" class="flex-1 bg-white border border-slate-200 rounded-lg px-2.5 py-1.5 text-xs text-slate-600 font-mono select-all">
+                <button type="button" onclick="copyWebhookUrl()" class="bg-slate-800 hover:bg-slate-700 text-white px-3 py-1.5 rounded-lg text-xs font-bold shrink-0 transition-colors cursor-pointer">
+                  コピー
+                </button>
+              </div>
+            </div>
+
+            <!-- トークからの使い方ガイド -->
+            <div class="space-y-1.5 text-xs">
+              <div class="font-bold text-slate-700 text-[11px]">💬 トークからの送信例:</div>
+              <ul class="space-y-1 text-slate-600 text-[11px]">
+                <li class="flex items-center gap-1.5">
+                  <span>📷</span> <b>レシート写真を送信:</b> AIが店名・合計・品目をOCR解析して自動記録
+                </li>
+                <li class="flex items-center gap-1.5">
+                  <span>🛒</span> <b>「買う 牛乳」:</b> 買うものリストに即座に追加
+                </li>
+                <li class="flex items-center gap-1.5">
+                  <span>💸</span> <b>「スーパー 2500」:</b> 今日の支出（共同費）として登録
+                </li>
+                <li class="flex items-center gap-1.5">
+                  <span>📊</span> <b>「残金」「今月」:</b> 今月使えるお金・積立残高を即座に回答
+                </li>
+              </ul>
+            </div>
+          </section>
+
+          <!-- 🏦 銀行口座API連携構想 (最終ステップ) -->
+          <section id="bankIntegrationCard" class="bg-white rounded-2xl p-4 shadow-sm border border-slate-100 space-y-2.5">
+            <div class="flex items-center justify-between">
+              <h3 class="text-sm font-bold text-slate-800 flex items-center gap-1.5">
+                <i data-lucide="shield-check" class="w-4 h-4 text-indigo-600"></i> 銀行口座API連携（安全構想）
+              </h3>
+              <span class="text-[10px] bg-indigo-50 text-indigo-700 font-bold px-2 py-0.5 rounded-full border border-indigo-200">最終ステップ</span>
+            </div>
+            <p class="text-xs text-slate-500 leading-relaxed">
+              共同口座の残高・明細をリアルタイム同期するための安全設計仕様です。
+            </p>
+            <div class="p-3 rounded-xl bg-slate-50 border border-slate-200/60 space-y-1.5 text-[11px] text-slate-600">
+              <div class="flex items-center gap-1.5 font-bold text-slate-800">
+                <span class="text-indigo-600">✓</span> 参照系トークン完全分離（送金・振込権限なし）
+              </div>
+              <div class="flex items-center gap-1.5 font-bold text-slate-800">
+                <span class="text-indigo-600">✓</span> リードオンリーAPIによる残高照会のみ
+              </div>
+              <div class="flex items-center gap-1.5 font-bold text-slate-800">
+                <span class="text-indigo-600">✓</span> 異常検知時のセッション即時自動遮断
+              </div>
+              <p class="text-[10px] text-slate-400 pt-1 border-t border-slate-200/50">
+                ※ 金融機関のOAuth2.0/OpenID Connect規格に準拠した安全な連携基盤を準備中です。
+              </p>
+            </div>
+          </section>
+
           <!-- システム接続診断カード -->
           <section class="bg-white rounded-2xl p-4 shadow-sm border border-slate-100 space-y-2">
             <div class="flex items-center justify-between">
@@ -573,7 +831,7 @@
           <footer class="pt-2 pb-6 text-center text-[10px] text-slate-400 font-mono flex items-center justify-center gap-2 select-none">
             <span class="inline-flex items-center gap-1 bg-slate-100 text-slate-600 px-2 py-0.5 rounded-full">
               <span>Web</span>
-              <b id="frontVersionLabel" class="text-slate-800">v2.2.0</b>
+              <b id="frontVersionLabel" class="text-slate-800">v2.4.0</b>
             </span>
             <span>/</span>
             <span class="inline-flex items-center gap-1 bg-slate-100 text-slate-600 px-2 py-0.5 rounded-full">
@@ -1089,6 +1347,54 @@
   </div>
 
   <!-- ===================== 新機能モーダル群 ===================== -->
+
+  <!-- 共同積立・利息設定モーダル (savingsModal) -->
+  <div id="savingsModal" class="hidden fixed inset-0 z-50 bg-black/50 backdrop-blur-sm flex items-center justify-center p-4">
+    <div class="bg-white w-full max-w-md rounded-3xl p-5 shadow-2xl space-y-4 max-h-[90vh] overflow-y-auto">
+      <div class="flex items-center justify-between pb-3 border-b border-slate-100">
+        <h3 class="text-base font-bold text-slate-900 flex items-center gap-1.5">
+          <i data-lucide="piggy-bank" class="w-5 h-5 text-emerald-600"></i>
+          <span>共同積立・利息（税引き後）設定</span>
+        </h3>
+        <button type="button" onclick="closeSavingsModal()" class="text-slate-400 hover:text-slate-600 p-1 cursor-pointer">
+          <i data-lucide="x" class="w-5 h-5"></i>
+        </button>
+      </div>
+
+      <div class="space-y-3 text-xs">
+        <!-- 初期繰越額 -->
+        <div class="bg-slate-50 border border-slate-200/80 rounded-2xl p-3.5 space-y-2">
+          <label for="savingsInitialInput" class="font-bold text-slate-700 block">
+            ふたりの初期貯金額・繰越残高 (円)
+          </label>
+          <input type="number" id="savingsInitialInput" placeholder="例: 100000" class="w-full bg-white border border-slate-200 rounded-xl px-3 py-2 text-sm font-mono focus:outline-none focus:ring-2 focus:ring-emerald-400">
+          <p class="text-[10px] text-slate-400">
+            アプリ開始前にすでに口座にあった貯蓄額や、結婚祝い金などの初期残高を入力します。
+          </p>
+        </div>
+
+        <!-- 月別 利息入力リスト (過去数ヶ月分) -->
+        <div class="bg-slate-50 border border-slate-200/80 rounded-2xl p-3.5 space-y-2">
+          <div class="flex items-center justify-between">
+            <span class="font-bold text-slate-700">各月の税引き後利息 (円)</span>
+            <span class="text-[10px] text-slate-400">銀行通帳の利息をそのまま入力</span>
+          </div>
+          <div id="savingsInterestsList" class="space-y-2 max-h-48 overflow-y-auto pr-1">
+            <!-- JSで動的レンダリング -->
+          </div>
+        </div>
+      </div>
+
+      <div class="pt-2 flex gap-2">
+        <button type="button" onclick="closeSavingsModal()" class="flex-1 bg-slate-100 hover:bg-slate-200 text-slate-700 py-2.5 rounded-xl text-xs font-bold transition-colors cursor-pointer">
+          キャンセル
+        </button>
+        <button type="button" id="saveSavingsModalBtn" class="flex-1 bg-emerald-600 hover:bg-emerald-700 text-white py-2.5 rounded-xl text-xs font-bold shadow-sm transition-colors cursor-pointer flex items-center justify-center gap-1">
+          <i data-lucide="check" class="w-3.5 h-3.5"></i> 設定を保存
+        </button>
+      </div>
+    </div>
+  </div>
 
   <!-- 1. 世帯ペア管理・招待モーダル (pairModal) -->
   <div id="pairModal" class="hidden fixed inset-0 z-50 bg-black/50 backdrop-blur-sm flex items-center justify-center p-4">

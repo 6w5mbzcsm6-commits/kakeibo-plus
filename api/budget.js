@@ -379,7 +379,10 @@ async function getConfigData(supabase, pairId) {
     wifeUserId: '',
     husbandName: 'メンバー1',
     wifeName: 'メンバー2',
-    shoppingPurgeDays: 1
+    shoppingPurgeDays: 1,
+    categoryBudgets: {},
+    surplusPolicy: 'savings',
+    savingsConfig: { initialSavings: 0, monthlyInterests: {} }
   };
 
   (settingsRes.data || []).forEach(s => {
@@ -388,6 +391,17 @@ async function getConfigData(supabase, pairId) {
     if (s.key === 'husbandName') config.husbandName = s.value;
     if (s.key === 'wifeName') config.wifeName = s.value;
     if (s.key === 'shoppingPurgeDays') config.shoppingPurgeDays = Number(s.value !== undefined ? s.value : 1);
+    if (s.key === 'surplusPolicy') config.surplusPolicy = ['savings', 'ratio', 'equal'].includes(s.value) ? s.value : 'savings';
+    if (s.key === 'categoryBudgets') {
+      try {
+        config.categoryBudgets = JSON.parse(s.value);
+      } catch (_) {}
+    }
+    if (s.key === 'savingsConfig') {
+      try {
+        config.savingsConfig = JSON.parse(s.value);
+      } catch (_) {}
+    }
     if (s.key === 'membersConfig') {
       try {
         config.members = JSON.parse(s.value);
@@ -767,7 +781,7 @@ async function handleGetInitialData(supabase, targetMonth, actor, requestedPairI
 
   return {
     success: true,
-    version: 'v2.2.0',
+    version: 'v2.4.0',
     pair: {
       id: pairId,
       name: config.pairName,
@@ -787,7 +801,10 @@ async function handleGetInitialData(supabase, targetMonth, actor, requestedPairI
       wifeBaseContribution: Number(config.wifeBaseContribution) || 60000,
       husbandName: config.husbandName,
       wifeName: config.wifeName,
-      shoppingPurgeDays: Number(config.shoppingPurgeDays !== undefined ? config.shoppingPurgeDays : 1)
+      shoppingPurgeDays: Number(config.shoppingPurgeDays !== undefined ? config.shoppingPurgeDays : 1),
+      categoryBudgets: config.categoryBudgets || {},
+      surplusPolicy: config.surplusPolicy || 'savings',
+      savingsConfig: config.savingsConfig || { initialSavings: 0, monthlyInterests: {} }
     },
     members: config.members || null,
     transfers: transfers,
@@ -1185,6 +1202,45 @@ async function handleDeleteShoppingItem(supabase, id, actor) {
   const { error } = await supabase.from('shopping_list').delete().eq('id', id).eq('pair_id', pairId);
   if (error) return { success: false, error: '削除に失敗しました' };
   return { success: true };
+}
+
+/**
+ * 部門（カテゴリ）別予算更新
+ */
+async function handleUpdateCategoryBudgets(supabase, data, actor) {
+  const pairId = getTargetPairId(actor, data);
+  const budgets = typeof data.categoryBudgets === 'object' && data.categoryBudgets !== null ? data.categoryBudgets : {};
+  const { error } = await supabase
+    .from('app_settings')
+    .upsert({ pair_id: pairId, key: 'categoryBudgets', value: JSON.stringify(budgets) }, { onConflict: 'pair_id, key' });
+  if (error) return { success: false, error: '部門別予算の保存に失敗しました' };
+  return { success: true, categoryBudgets: budgets };
+}
+
+/**
+ * 余剰金の月末精算ルール更新 (savings / ratio / equal)
+ */
+async function handleUpdateSurplusPolicy(supabase, data, actor) {
+  const pairId = getTargetPairId(actor, data);
+  const policy = ['savings', 'ratio', 'equal'].includes(data.surplusPolicy) ? data.surplusPolicy : 'savings';
+  const { error } = await supabase
+    .from('app_settings')
+    .upsert({ pair_id: pairId, key: 'surplusPolicy', value: policy }, { onConflict: 'pair_id, key' });
+  if (error) return { success: false, error: '精算ルールの保存に失敗しました' };
+  return { success: true, surplusPolicy: policy };
+}
+
+/**
+ * 共同積立・利息設定更新
+ */
+async function handleUpdateSavingsConfig(supabase, data, actor) {
+  const pairId = getTargetPairId(actor, data);
+  const savingsConfig = typeof data.savingsConfig === 'object' && data.savingsConfig !== null ? data.savingsConfig : { initialSavings: 0, monthlyInterests: {} };
+  const { error } = await supabase
+    .from('app_settings')
+    .upsert({ pair_id: pairId, key: 'savingsConfig', value: JSON.stringify(savingsConfig) }, { onConflict: 'pair_id, key' });
+  if (error) return { success: false, error: '積立データの保存に失敗しました' };
+  return { success: true, savingsConfig };
 }
 
 /**
@@ -2158,6 +2214,80 @@ async function processNaturalLanguageMessage(supabase, text, userId) {
   return `✅ 記録しました！\n━━━━━━━━━━━━━━\n品名: ${title}\n金額: ¥${amount.toLocaleString()}\nカテゴリ: ${category}\n種別: ${typeDesc}\n支払者: ${payer}\n━━━━━━━━━━━━━━`;
 }
 
+/**
+ * LINE経由で送られたレシート画像を取得・AI解析し、家計簿へ自動保存
+ */
+async function processLineImageMessage(supabase, messageId, userId, lineToken) {
+  if (!lineToken) return 'LINE連携トークンが未設定です';
+
+  // 1. LINEサーバーから画像バイナリを取得
+  const contentUrl = `https://api-data.line.me/v2/bot/message/${encodeURIComponent(messageId)}/content`;
+  const imgRes = await fetch(contentUrl, {
+    headers: { Authorization: `Bearer ${lineToken}` }
+  });
+  if (!imgRes.ok) {
+    throw new Error(`LINE画像取得失敗: ${imgRes.status}`);
+  }
+  const contentType = imgRes.headers.get('content-type') || 'image/jpeg';
+  const arrayBuffer = await imgRes.arrayBuffer();
+  const base64Image = Buffer.from(arrayBuffer).toString('base64');
+
+  // 2. ユーザー特定
+  const { data: user } = await supabase.from('users').select('*, pairs(*)').eq('line_user_id', userId).maybeSingle();
+  const pairId = user?.pair_id || DEFAULT_PAIR_ID;
+  const actor = {
+    allowed: true,
+    verified: true,
+    name: user?.display_name || 'LINEメンバー',
+    userId,
+    slot: user?.slot || 'husband',
+    pairId
+  };
+
+  // 3. Gemini OCR 解析
+  const scanResult = await handleScanReceipt({
+    imageBase64: base64Image,
+    mimeType: contentType
+  }, actor);
+
+  if (!scanResult.success || !scanResult.receipt) {
+    return 'レシートをうまく読み取れませんでした💦 明るい場所で全体が写るように撮り直してみてください📷';
+  }
+
+  const receipt = scanResult.receipt;
+  if (!receipt.items || receipt.items.length === 0) {
+    return `店名「${receipt.store || '不明'}」は検出されましたが、購入明細が読み取れませんでした💦`;
+  }
+
+  // 4. 家計簿への自動保存（receipts + receipt_items + transactions）
+  const saveRes = await handleSaveReceipt(supabase, {
+    store: receipt.store || 'レシート店舗',
+    date: receipt.date || todayStr(),
+    items: receipt.items,
+    isShared: true,
+    paymentType: 'shared_card',
+    payer: actor.name,
+    category: '食費'
+  }, actor);
+
+  if (!saveRes.success) {
+    return `レシートの読み取りには成功しましたが、保存に失敗しました: ${saveRes.error}`;
+  }
+
+  const itemsPreview = receipt.items.slice(0, 4).map(it => `・${it.name}: ¥${it.price.toLocaleString()}`).join('\n');
+  const moreCount = receipt.items.length > 4 ? `\n...他 ${receipt.items.length - 4}件` : '';
+
+  return `🧾 レシートを自動記録しました！\n` +
+    `━━━━━━━━━━━━━━\n` +
+    `🏪 店名: ${receipt.store || '未設定'}\n` +
+    `📅 日付: ${receipt.date}\n` +
+    `💰 合計: ¥${receipt.total.toLocaleString()}（明細 ${receipt.items.length}件）\n` +
+    `💳 支払: 共同カード / ${actor.name}\n` +
+    `━━━━━━━━━━━━━━\n` +
+    itemsPreview + moreCount + `\n\n` +
+    `アプリの「履歴」タブに反映されました✨`;
+}
+
 // ==========================================
 // ヘルスチェック ＆ 設定漏れ自己診断
 // ==========================================
@@ -2216,7 +2346,7 @@ async function handleHealthCheck(req) {
 
   return {
     success: true,
-    version: 'v2.3 (Multi-member & Enhanced Diagnostics)',
+    version: 'v2.4.0',
     resolvedUrl: resolvedUrl ? resolvedUrl.replace(/\/\/[^@]+@/, '//***@') : '未設定',
     keyType: keyType,
     env: envCheck,
@@ -2355,6 +2485,14 @@ export default async function handler(req, res) {
               console.error('LINEイベント処理エラー:', err);
               await sendLineReply(ev.replyToken, 'エラーが発生しました🙏', lineToken);
             }
+          } else if (ev.type === 'message' && ev.message?.type === 'image') {
+            try {
+              const reply = await processLineImageMessage(supabase, ev.message.id, ev.source.userId, lineToken);
+              await sendLineReply(ev.replyToken, reply, lineToken);
+            } catch (err) {
+              console.error('LINE画像イベント処理エラー:', err);
+              await sendLineReply(ev.replyToken, 'レシート画像の読み取りに失敗しました。明るい場所で全体を撮影してもう一度お送りください🙏', lineToken);
+            }
           }
         }
         return res.status(200).json({ status: 'ok' });
@@ -2388,7 +2526,7 @@ export default async function handler(req, res) {
       if (!actor.allowed) {
         return res.status(200).json({
           success: false,
-          version: 'v2.2.0',
+          version: 'v2.4.0',
           code: actor.code,
           error: actor.error,
           userId: actor.userId || '',
@@ -2440,6 +2578,15 @@ export default async function handler(req, res) {
           break;
         case 'updateShoppingPurgeDays':
           result = await handleUpdateShoppingPurgeDays(supabase, data, actor);
+          break;
+        case 'updateCategoryBudgets':
+          result = await handleUpdateCategoryBudgets(supabase, data, actor);
+          break;
+        case 'updateSurplusPolicy':
+          result = await handleUpdateSurplusPolicy(supabase, data, actor);
+          break;
+        case 'updateSavingsConfig':
+          result = await handleUpdateSavingsConfig(supabase, data, actor);
           break;
         case 'updateMonthlyBudget':
           result = await handleUpdateMonthlyBudget(supabase, data, actor);
