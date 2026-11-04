@@ -38,11 +38,13 @@
   }
 }
 
-/* タブおよびビュー切り替えの非表示を最優先（Tailwind md:grid等のカスケード上書きを防止） */
-.hidden,
+/* タブおよびビュー切り替えの非表示を最優先（レスポンシブの hidden md:flex を潰さないよう対象を限定） */
 [id^="tabContent"].hidden,
 #budgetView.hidden,
-#eventsView.hidden {
+#eventsView.hidden,
+[id$="Modal"].hidden,
+#mockBanner.hidden,
+#toast.hidden {
   display: none !important;
 }
 
