@@ -1126,6 +1126,7 @@ window.finishOnboarding = function () {
   localStorage.setItem('pairbudget_pair_id', state.pairId);
   $('registerMemberModal')?.classList.add('hidden');
   hideBanner();
+  resetViewportZoom();
   loadInitialData(state.viewMonth, { skipCache: true });
 };
 
@@ -1948,6 +1949,7 @@ function fillReceiptForm(r) {
 function closeReceiptModal() {
   $('receiptModal').classList.add('hidden');
   $('receiptFileInput').value = '';
+  resetViewportZoom();
 }
 
 async function handleReceiptSubmit(e) {
@@ -2010,7 +2012,10 @@ function openExpenseModal(editItem) {
   lucide.createIcons();
 }
 
-function closeExpenseModal() { $('expenseModal').classList.add('hidden'); }
+function closeExpenseModal() {
+  $('expenseModal').classList.add('hidden');
+  resetViewportZoom();
+}
 window.closeExpenseModal = closeExpenseModal;
 
 async function handleExpenseSubmit(e) {
@@ -2170,6 +2175,7 @@ function openFixedModal(editItem) {
 
 function closeFixedModal() {
   $('fixedExpenseModal').classList.add('hidden');
+  resetViewportZoom();
 }
 
 async function handleFixedSubmit(e) {
@@ -2515,6 +2521,7 @@ function openPairModal() {
 
 function closePairModal() {
   $('pairModal')?.classList.add('hidden');
+  resetViewportZoom();
 }
 
 async function submitCreatePair() {
@@ -2680,6 +2687,7 @@ function openCreateEventModal() {
 
 function closeCreateEventModal() {
   $('createEventModal')?.classList.add('hidden');
+  resetViewportZoom();
 }
 
 async function submitCreateEvent() {
@@ -2726,6 +2734,7 @@ function closeEventDetailModal() {
   $('eventDetailModal')?.classList.add('hidden');
   state.activeEventId = null;
   state.currentSettlement = null;
+  resetViewportZoom();
 }
 
 function renderEventDetail(s) {
@@ -2873,6 +2882,7 @@ function openAddEventExpenseModal() {
 
 function closeAddEventExpenseModal() {
   $('addEventExpenseModal')?.classList.add('hidden');
+  resetViewportZoom();
 }
 
 async function submitAddEventExpense() {
@@ -2945,6 +2955,7 @@ window.openDiagnosticsModal = function () {
 
 window.closeDiagnosticsModal = function () {
   $('diagnosticsModal')?.classList.add('hidden');
+  resetViewportZoom();
 };
 
 window.runSystemDiagnostics = async function () {
@@ -3157,6 +3168,75 @@ window.runSystemDiagnostics = async function () {
   lucide.createIcons();
 };
 
+// ==========================================
+// スマホ入力ズーム自動リセット機能 (iOS / Android / LINE WebView)
+// ==========================================
+let zoomResetTimer = null;
+let restoreViewportTimer = null;
+
+function resetViewportZoom() {
+  const meta = document.querySelector('meta[name="viewport"]');
+  if (!meta) return;
+
+  clearTimeout(zoomResetTimer);
+  clearTimeout(restoreViewportTimer);
+
+  // 一時的に maximum-scale=1.0, minimum-scale=1.0 にしてズーム比率を元の1.0倍へ強制復帰
+  meta.setAttribute('content', 'width=device-width, initial-scale=1.0, maximum-scale=1.0, minimum-scale=1.0, viewport-fit=cover');
+
+  // もしズームによって横スクロール位置がずれていた場合、左端にスムーズに戻す
+  if (window.scrollX !== 0) {
+    window.scrollTo({ left: 0, top: window.scrollY, behavior: 'smooth' });
+  }
+
+  // 約300ms後に元のビューポート設定に戻し、次回タップ時にも快適にズーム可能にする
+  restoreViewportTimer = setTimeout(() => {
+    meta.setAttribute('content', 'width=device-width, initial-scale=1.0, viewport-fit=cover');
+  }, 300);
+}
+
+function setupMobileZoomReset() {
+  const isInputEl = el => el && (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA' || el.tagName === 'SELECT');
+
+  // 1. 入力開始時 (touchstart / focusin): 標準ズーム許可状態を保持
+  document.addEventListener('focusin', e => {
+    if (isInputEl(e.target)) {
+      clearTimeout(zoomResetTimer);
+      clearTimeout(restoreViewportTimer);
+      const meta = document.querySelector('meta[name="viewport"]');
+      if (meta) {
+        meta.setAttribute('content', 'width=device-width, initial-scale=1.0, viewport-fit=cover');
+      }
+    }
+  }, true);
+
+  // 2. 入力完了・フォーカス解除時 (focusout):
+  // 60ms後に次のフォーカス先を確認し、別の入力欄へ移動していなければ等倍にスムーズに戻す
+  document.addEventListener('focusout', e => {
+    if (isInputEl(e.target)) {
+      clearTimeout(zoomResetTimer);
+      zoomResetTimer = setTimeout(() => {
+        const nextEl = document.activeElement;
+        if (!isInputEl(nextEl)) {
+          resetViewportZoom();
+        }
+      }, 60);
+    }
+  }, true);
+
+  // 3. フォーム送信時にも即座にズームリセット
+  document.addEventListener('submit', () => {
+    setTimeout(resetViewportZoom, 50);
+  }, true);
+
+  // 4. モーダルクローズ時や背景タップ時にもリセット
+  document.addEventListener('click', e => {
+    if (e.target.closest('[id$="CloseBtn"]') || e.target.closest('[data-action*="close"]') || e.target.classList.contains('fixed')) {
+      setTimeout(resetViewportZoom, 50);
+    }
+  }, true);
+}
+
 function checkUrlInviteParam() {
   try {
     const urlParams = new URLSearchParams(window.location.search);
@@ -3175,6 +3255,7 @@ function checkUrlInviteParam() {
 
 document.addEventListener('DOMContentLoaded', async () => {
   initMembers();
+  setupMobileZoomReset();
   lucide.createIcons();
   setupEventListeners();
   updatePairHeader();
