@@ -115,3 +115,19 @@
     transform: translateY(0);
   }
 }
+
+/* スマホ（iOS Safari / LINEブラウザ）で入力後に画面が拡大されたまま戻らなくなるOS挙動を防止し、
+   代わりに入力欄自体をフォーカス中にふわっと拡大（入力終了で即座に元のサイズへ自動復帰）させる */
+@media screen and (max-width: 767px) {
+  input:not([type="checkbox"]):not([type="radio"]),
+  select,
+  textarea {
+    font-size: 16px !important;
+    transition: transform 0.18s cubic-bezier(0.16, 1, 0.3, 1), box-shadow 0.18s ease;
+  }
+  input:not([type="checkbox"]):not([type="radio"]):focus,
+  select:focus,
+  textarea:focus {
+    transform: scale(1.02);
+  }
+}

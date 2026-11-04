@@ -334,6 +334,14 @@ create policy "Service role full access on app_settings" on app_settings for all
 create policy "Service role full access on events" on events for all to service_role using (true) with check (true);
 create policy "Service role full access on event_expenses" on event_expenses for all to service_role using (true) with check (true);
 
+-- テーブルおよびシーケンスに対する service_role の権限付与 (ERROR 42501 permission denied 対策)
+grant usage on schema public to anon, authenticated, service_role;
+grant all on all tables in schema public to service_role;
+grant all on all sequences in schema public to service_role;
+grant all on all routines in schema public to service_role;
+alter default privileges in schema public grant all on tables to service_role;
+alter default privileges in schema public grant all on sequences to service_role;
+
 -- ==============================================================================
 -- 初期シードデータ投入
 -- ==============================================================================
