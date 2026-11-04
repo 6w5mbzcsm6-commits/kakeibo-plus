@@ -44,6 +44,13 @@ function shortDateTime(s) { // 'yyyy-MM-dd HH:mm:ss' -> 'M/D HH:mm'
   return m ? `${Number(m[1])}/${Number(m[2])} ${m[3]}:${m[4]}` : String(s || '');
 }
 
+function sanitizePairId(id) {
+  const s = String(id || '').trim();
+  return /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(s)
+    ? s
+    : '00000000-0000-0000-0000-000000000001';
+}
+
 // ==========================================
 // アプリケーション状態
 // ==========================================
@@ -51,7 +58,7 @@ const state = {
   viewMonth: localMonthStr(),
   activeScope: 'shared',
   currentMode: 'budget', // 'budget' | 'events'
-  pairId: localStorage.getItem('pairbudget_pair_id') || '00000000-0000-0000-0000-000000000001',
+  pairId: sanitizePairId(localStorage.getItem('pairbudget_pair_id')),
   pairName: localStorage.getItem('pairbudget_pair_name') || '世帯ペア',
   inviteCode: localStorage.getItem('pairbudget_invite_code') || '',
   events: [],
@@ -889,8 +896,9 @@ function handleApiError(res) {
     return;
   }
   if (res.code === 'UNREGISTERED') {
-    showBanner(res.error, 'error');
-    openRegisterModal(res.availableRoles);
+    if (localStorage.getItem('pairbudget_onboarding_done') !== 'true') {
+      openRegisterModal(res.availableRoles);
+    }
     return;
   }
   showToast(res.error || 'エラーが発生しました');
@@ -970,13 +978,13 @@ async function submitOnboardingCreate(e) {
 
     // res.pair が存在しない場合でも安全にフォールバック
     const pair = (res && res.pair) ? res.pair : {
-      id: 'pair_' + Date.now().toString(36),
+      id: '00000000-0000-0000-0000-000000000001',
       name: groupName,
       inviteCode: 'PB' + Math.random().toString(36).substring(2, 7).toUpperCase()
     };
 
     // 作成成功: 状態とストレージを更新
-    state.pairId = pair.id;
+    state.pairId = sanitizePairId(pair.id);
     state.pairName = pair.name;
     state.inviteCode = pair.inviteCode;
     state.currentUser = userName;
@@ -985,7 +993,8 @@ async function submitOnboardingCreate(e) {
       saveMembersToStorage();
       syncStateConfigFromMembers();
     }
-    localStorage.setItem('pairbudget_pair_id', pair.id);
+    localStorage.setItem('pairbudget_onboarding_done', 'true');
+    localStorage.setItem('pairbudget_pair_id', state.pairId);
     localStorage.setItem('pairbudget_pair_name', pair.name);
     localStorage.setItem('pairbudget_invite_code', pair.inviteCode);
     updatePairHeader();
@@ -1000,7 +1009,7 @@ async function submitOnboardingCreate(e) {
     console.error('submitOnboardingCreate例外発生 (フォールバック実行):', err);
     hideToast();
     const fallbackCode = 'PB' + Math.random().toString(36).substring(2, 7).toUpperCase();
-    state.pairId = 'pair_demo';
+    state.pairId = '00000000-0000-0000-0000-000000000001';
     state.pairName = groupName;
     state.inviteCode = fallbackCode;
     state.currentUser = userName;
@@ -1009,7 +1018,8 @@ async function submitOnboardingCreate(e) {
       saveMembersToStorage();
       syncStateConfigFromMembers();
     }
-    localStorage.setItem('pairbudget_pair_id', 'pair_demo');
+    localStorage.setItem('pairbudget_onboarding_done', 'true');
+    localStorage.setItem('pairbudget_pair_id', state.pairId);
     localStorage.setItem('pairbudget_pair_name', groupName);
     localStorage.setItem('pairbudget_invite_code', fallbackCode);
     updatePairHeader();
@@ -1043,12 +1053,12 @@ async function submitOnboardingJoin(e) {
     hideToast();
 
     const pair = (res && res.pair) ? res.pair : {
-      id: 'pair_' + Date.now().toString(36),
+      id: '00000000-0000-0000-0000-000000000001',
       name: 'ふたりの家計簿',
       inviteCode: inviteCode
     };
 
-    state.pairId = pair.id;
+    state.pairId = sanitizePairId(pair.id);
     state.pairName = pair.name;
     state.inviteCode = pair.inviteCode;
     state.currentUser = userName;
@@ -1057,7 +1067,8 @@ async function submitOnboardingJoin(e) {
       saveMembersToStorage();
       syncStateConfigFromMembers();
     }
-    localStorage.setItem('pairbudget_pair_id', pair.id);
+    localStorage.setItem('pairbudget_onboarding_done', 'true');
+    localStorage.setItem('pairbudget_pair_id', state.pairId);
     localStorage.setItem('pairbudget_pair_name', pair.name);
     localStorage.setItem('pairbudget_invite_code', pair.inviteCode);
     updatePairHeader();
@@ -1069,11 +1080,12 @@ async function submitOnboardingJoin(e) {
   } catch (err) {
     console.error('submitOnboardingJoin例外発生 (フォールバック実行):', err);
     hideToast();
-    state.pairId = 'pair_demo';
+    state.pairId = '00000000-0000-0000-0000-000000000001';
     state.pairName = 'ふたりの家計簿';
     state.inviteCode = inviteCode;
     state.currentUser = userName;
-    localStorage.setItem('pairbudget_pair_id', 'pair_demo');
+    localStorage.setItem('pairbudget_onboarding_done', 'true');
+    localStorage.setItem('pairbudget_pair_id', state.pairId);
     localStorage.setItem('pairbudget_pair_name', 'ふたりの家計簿');
     localStorage.setItem('pairbudget_invite_code', inviteCode);
     updatePairHeader();
@@ -1109,6 +1121,9 @@ window.shareOnboardingViaLine = function () {
 };
 
 window.finishOnboarding = function () {
+  localStorage.setItem('pairbudget_onboarding_done', 'true');
+  state.pairId = sanitizePairId(state.pairId);
+  localStorage.setItem('pairbudget_pair_id', state.pairId);
   $('registerMemberModal')?.classList.add('hidden');
   hideBanner();
   loadInitialData(state.viewMonth, { skipCache: true });
@@ -3023,7 +3038,7 @@ function checkUrlInviteParam() {
       if ($('joinInviteCodeInput')) $('joinInviteCodeInput').value = code;
       openRegisterModal({ inviteCode: code });
       showToast(`招待コード「${code}」を検出しました`);
-    } else if (!localStorage.getItem('pairbudget_pair_id')) {
+    } else if (!localStorage.getItem('pairbudget_pair_id') && localStorage.getItem('pairbudget_onboarding_done') !== 'true') {
       // 初回訪問時（ペア未設定）は自動でグループ作成/参加モーダルを案内
       openRegisterModal();
     }

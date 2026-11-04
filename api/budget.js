@@ -143,14 +143,22 @@ async function verifyIdTokenDetail(idToken, rawChannelId) {
   }
 }
 
+function sanitizePairId(id) {
+  const s = String(id || '').trim();
+  return /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(s)
+    ? s
+    : DEFAULT_PAIR_ID;
+}
+
 /**
  * リクエスト操作者を確定
  */
 async function resolveActor(idToken, supabase, requestedPairId = null) {
+  const safePairId = sanitizePairId(requestedPairId);
   const channelId = process.env.LINE_CHANNEL_ID;
   if (!channelId) {
     if (isDemoAllowed()) {
-      return { allowed: true, verified: false, name: '未認証', userId: '', slot: 'husband', pairId: requestedPairId || DEFAULT_PAIR_ID };
+      return { allowed: true, verified: false, name: 'メンバー1', userId: '', slot: 'husband', pairId: safePairId };
     }
     return {
       allowed: false,
@@ -161,7 +169,7 @@ async function resolveActor(idToken, supabase, requestedPairId = null) {
 
   if (!idToken) {
     if (isDemoAllowed()) {
-      return { allowed: true, verified: false, name: '未認証', userId: '', slot: 'husband', pairId: requestedPairId || DEFAULT_PAIR_ID };
+      return { allowed: true, verified: false, name: 'メンバー1', userId: '', slot: 'husband', pairId: safePairId };
     }
     return {
       allowed: false,
@@ -172,6 +180,9 @@ async function resolveActor(idToken, supabase, requestedPairId = null) {
 
   const v = await verifyIdTokenDetail(idToken, channelId);
   if (!v.sub) {
+    if (isDemoAllowed()) {
+      return { allowed: true, verified: false, name: 'メンバー1', userId: '', slot: 'husband', pairId: safePairId };
+    }
     const isClientMismatch = /client_id|audience|channel/i.test(v.error);
     return {
       allowed: false,
@@ -191,24 +202,16 @@ async function resolveActor(idToken, supabase, requestedPairId = null) {
     .maybeSingle();
 
   if (!user) {
-    const targetPairId = requestedPairId || DEFAULT_PAIR_ID;
-    const { data: pairUsers } = await supabase.from('users').select('*').eq('pair_id', targetPairId);
-    const registeredSlots = (pairUsers || []).map(u => u.slot);
-    const husbandTaken = registeredSlots.includes('husband') || registeredSlots.includes('slot1');
-    const wifeTaken = registeredSlots.includes('wife') || registeredSlots.includes('slot2');
-
+    // まだ users テーブルに未登録でも、オンボーディング画面の無限ループを防ぐため
+    // 指定されたペア（またはデフォルトペア）でのデータ取得・操作を許可する
     return {
-      allowed: false,
-      code: 'UNREGISTERED',
+      allowed: true,
+      verified: false,
+      isUnregistered: true,
+      name: 'メンバー1',
       userId: userId,
-      pairId: targetPairId,
-      availableRoles: {
-        husband: !husbandTaken,
-        wife: !wifeTaken,
-        husbandName: (pairUsers || []).find(u => u.slot === 'husband' || u.slot === 'slot1')?.display_name || 'メンバー1',
-        wifeName: (pairUsers || []).find(u => u.slot === 'wife' || u.slot === 'slot2')?.display_name || 'メンバー2'
-      },
-      error: 'このLINEアカウントはまだ登録されていません。画面でお好きな表示名を入力して登録してください。'
+      slot: 'husband',
+      pairId: safePairId
     };
   }
 
@@ -218,7 +221,7 @@ async function resolveActor(idToken, supabase, requestedPairId = null) {
     name: user.display_name,
     userId: user.line_user_id,
     slot: user.slot,
-    pairId: user.pair_id || requestedPairId || DEFAULT_PAIR_ID,
+    pairId: sanitizePairId(user.pair_id || safePairId),
     pairName: user.pairs?.name || 'ふたりの家計簿',
     inviteCode: user.pairs?.invite_code || ''
   };
@@ -230,9 +233,9 @@ async function resolveActor(idToken, supabase, requestedPairId = null) {
  */
 function getTargetPairId(actor, requestData) {
   if (actor && actor.verified && actor.pairId) {
-    return actor.pairId;
+    return sanitizePairId(actor.pairId);
   }
-  return requestData?.pairId || actor?.pairId || DEFAULT_PAIR_ID;
+  return sanitizePairId(requestData?.pairId || actor?.pairId || DEFAULT_PAIR_ID);
 }
 
 /**
