@@ -8,6 +8,9 @@
 import { createClient } from '@supabase/supabase-js';
 import crypto from 'node:crypto';
 
+// Vercel Serverless Function タイムアウト設定 (最大60秒)
+export const maxDuration = 60;
+
 // ==========================================
 // 定数・環境変数
 // ==========================================
@@ -781,7 +784,7 @@ async function handleGetInitialData(supabase, targetMonth, actor, requestedPairI
 
   return {
     success: true,
-    version: 'v2.4.2',
+    version: 'v2.4.4',
     pair: {
       id: pairId,
       name: config.pairName,
@@ -1463,14 +1466,12 @@ async function getAvailableGeminiModels(apiKey) {
   }
 
   const fallbackModels = [
-    'gemini-3.8-flash',
-    'gemini-3.6-flash',
-    'gemini-3.5-flash',
-    'gemini-3.5-flash-lite',
-    'gemini-3-flash-preview',
     'gemini-2.5-flash-lite',
     'gemini-2.5-flash',
-    'gemini-2.0-flash'
+    'gemini-2.0-flash',
+    'gemini-3.5-flash-lite',
+    'gemini-3.8-flash',
+    'gemini-3.5-flash'
   ];
 
   if (!apiKey) return fallbackModels;
@@ -1490,12 +1491,12 @@ async function getAvailableGeminiModels(apiKey) {
     const data = await res.json();
     const rawList = Array.isArray(data.models) ? data.models : [];
 
-    // generateContent をサポートし、gemini 系かつ除外対象でないモデルを抽出
+    // generateContent をサポートし、gemini 系かつ画像・特殊除外対象でないモデルを抽出
     const candidates = rawList
       .filter(m => {
         const canGenerate = Array.isArray(m.supportedGenerationMethods) && m.supportedGenerationMethods.includes('generateContent');
         const isGemini = /^models\/gemini/i.test(m.name || '');
-        const isExcluded = /embedding|imagen|veo|aqa|tts|audio|robotics|computer-use|learnlm|gemma/i.test(m.name || '');
+        const isExcluded = /embedding|imagen|image|veo|aqa|tts|audio|live|robotics|computer-use|learnlm|gemma|thinking|customtools|bisheng/i.test(m.name || '');
         return canGenerate && isGemini && !isExcluded;
       })
       .map(m => (m.name || '').replace(/^models\//i, '').trim())
@@ -1505,15 +1506,22 @@ async function getAvailableGeminiModels(apiKey) {
       return fallbackModels;
     }
 
-    // スコアリングソート関数
+    // スコアリングソート関数（高速な標準Flash・Flash-liteを最優先）
     function scoreModel(name) {
       let score = 0;
       const lower = name.toLowerCase();
 
-      // flash優先（標準 flash > flash-lite）
+      // 純粋な標準 Flash モデル（正規表現に完全一致）に +5000 の最優先ボーナス
+      if (/^gemini-\d+(?:\.\d+)?-flash(?:-lite)?(?:-001|-002|-latest)?$/i.test(lower)) {
+        score += 5000;
+      }
+
+      // flash優先（思考モードがなく超高速な flash-lite や高速 flash を最優先）
       if (lower.includes('flash')) {
         score += 1000;
-        if (!lower.includes('flash-lite')) {
+        if (lower.includes('flash-lite')) {
+          score += 300; // 最速・タイムアウト知らず
+        } else {
           score += 200;
         }
       } else if (lower.includes('pro')) {
@@ -1530,6 +1538,8 @@ async function getAvailableGeminiModels(apiKey) {
       // 安定版優先
       if (!lower.includes('exp') && !lower.includes('preview') && !lower.includes('thinking')) {
         score += 100;
+      } else {
+        score -= 500;
       }
 
       return score;
@@ -1575,34 +1585,11 @@ async function handleScanReceipt(data, actor) {
     '- 品名はレシート表記のまま。ポイント・小計・合計・お釣り・税額の行は明細に含めない。\n' +
     '- date は yyyy-MM-dd。読み取れなければ空文字。\n' +
     '- total はレシートに印字された支払合計（税込）の整数円。読み取れなければ0。\n' +
-    '必ず以下のJSON形式のみで出力してください: {"store":"店名","date":"yyyy-MM-dd","total":0,"items":[{"name":"品名","quantity":1,"price":0}]}';
+    '必ず以下のJSON形式のみで出力してください:\n' +
+    '{"store":"店名","date":"yyyy-MM-dd","total":702,"items":[{"name":"品名","quantity":1,"price":390},{"name":"割引名","quantity":1,"price":-78}]}';
 
-  const bodyWithSchema = {
-    contents: [{ parts: [{ text: prompt }, { inline_data: { mime_type: mime, data: b64 } }] }],
-    generationConfig: {
-      responseMimeType: 'application/json',
-      temperature: 0,
-      responseSchema: {
-        type: 'OBJECT',
-        properties: {
-          store: { type: 'STRING' },
-          date: { type: 'STRING' },
-          total: { type: 'INTEGER' },
-          items: {
-            type: 'ARRAY',
-            items: {
-              type: 'OBJECT',
-              properties: { name: { type: 'STRING' }, quantity: { type: 'INTEGER' }, price: { type: 'INTEGER' } },
-              required: ['name', 'quantity', 'price']
-            }
-          }
-        },
-        required: ['store', 'date', 'total', 'items']
-      }
-    }
-  };
-
-  const bodyWithoutSchema = {
+  // 最速・高互換のリクエストBody（余計なresponseSchemaを持たせずresponseMimeTypeのみで超高速推論）
+  const requestBody = {
     contents: [{ parts: [{ text: prompt }, { inline_data: { mime_type: mime, data: b64 } }] }],
     generationConfig: {
       responseMimeType: 'application/json',
@@ -1632,43 +1619,26 @@ async function handleScanReceipt(data, actor) {
   for (const model of modelsToTry) {
     try {
       const url = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:generateContent`;
+      // 各モデルごとに最大8秒でタイムアウトし、次のモデルへフォールバック
       res = await fetch(url, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
           'x-goog-api-key': apiKey
         },
-        body: JSON.stringify(bodyWithSchema)
+        body: JSON.stringify(requestBody),
+        signal: AbortSignal.timeout(8000)
       });
-
-      // 400 でスキーマ起因エラーの疑いがある場合はスキーマなしで再試行
-      if (res.status === 400) {
-        const errText = await res.text();
-        if (/schema|generationConfig|invalid argument/i.test(errText)) {
-          console.warn(`Gemini schema retry without schema for ${model}: ${errText.slice(0, 100)}`);
-          res = await fetch(url, {
-            method: 'POST',
-            headers: {
-              'Content-Type': 'application/json',
-              'x-goog-api-key': apiKey
-            },
-            body: JSON.stringify(bodyWithoutSchema)
-          });
-        } else {
-          lastErrorDetail = `${model}: 400 ${errText.slice(0, 100)}`;
-          triedDetails.push(lastErrorDetail);
-          if (/API_KEY_INVALID|key not valid/i.test(errText)) break;
-          continue;
-        }
-      }
 
       if (res.ok) break;
 
-      lastErrorDetail = `${model}: ${res.status} ${(await res.text()).slice(0, 100)}`;
+      const errText = await res.text();
+      lastErrorDetail = `${model}: ${res.status} ${errText.slice(0, 100)}`;
       triedDetails.push(lastErrorDetail);
       console.warn(`Gemini try failed: ${lastErrorDetail}`);
+      if (res.status === 400 && /API_KEY_INVALID|key not valid/i.test(errText)) break;
     } catch (err) {
-      lastErrorDetail = `${model}: ${err.message}`;
+      lastErrorDetail = `${model}: ${err.name === 'TimeoutError' ? 'タイムアウト(8s)' : err.message}`;
       triedDetails.push(lastErrorDetail);
     }
   }
@@ -1676,7 +1646,7 @@ async function handleScanReceipt(data, actor) {
   if (!res || !res.ok) {
     return {
       success: false,
-      error: `AI読み取りに失敗しました (試行モデル: ${triedDetails.join(' | ')}): ${lastErrorDetail.slice(0, 150)}`
+      error: `AI読み取りに失敗しました (試行: ${triedDetails.join(' | ')}): ${lastErrorDetail.slice(0, 150)}`
     };
   }
 
@@ -2514,7 +2484,7 @@ async function handleHealthCheck(req) {
 
   return {
     success: true,
-    version: 'v2.4.2',
+    version: 'v2.4.4',
     resolvedUrl: resolvedUrl ? resolvedUrl.replace(/\/\/[^@]+@/, '//***@') : '未設定',
     keyType: keyType,
     env: envCheck,
@@ -2695,7 +2665,7 @@ export default async function handler(req, res) {
       if (!actor.allowed) {
         return res.status(200).json({
           success: false,
-          version: 'v2.4.2',
+          version: 'v2.4.4',
           code: actor.code,
           error: actor.error,
           userId: actor.userId || '',

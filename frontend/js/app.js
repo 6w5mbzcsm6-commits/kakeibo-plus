@@ -9,7 +9,7 @@
  */
 
 const APP_CONFIG = window.PAIRBUDGET_CONFIG || {};
-const FRONTEND_VERSION = 'v2.4.2';
+const FRONTEND_VERSION = 'v2.4.4';
 const MAX_HISTORY_MONTHS = 36;
 const FIELD_LABELS = {
   date: '日付', title: '品名', amount: '金額', category: 'カテゴリ', isShared: '共同',
@@ -915,7 +915,16 @@ async function callGas(action, data, extra = {}) {
       body: JSON.stringify({ action, data: data || {}, idToken, pairId: state.pairId, ...extra })
     });
     if (!res.ok) {
-      throw new Error(`HTTP ${res.status}: ${res.statusText}`);
+      let errBody = '';
+      try {
+        const errJson = await res.json();
+        errBody = errJson.error || errJson.message || JSON.stringify(errJson);
+      } catch (_) {
+        try {
+          errBody = (await res.text()).slice(0, 150);
+        } catch (_) {}
+      }
+      throw new Error(`サーバーエラー (${res.status}): ${errBody || res.statusText}`);
     }
     const contentType = res.headers.get('content-type') || '';
     if (contentType.includes('text/html')) {
@@ -2405,6 +2414,92 @@ function guessCategoryByStore(store) {
   return hit && state.categories.some(c => c.name === hit.category) ? hit.category : (state.categories.some(c => c.name === '食費') ? '食費' : (state.categories[0] || {}).name);
 }
 
+// ==========================================
+// レシートスキャナーアニメーション制御
+// ==========================================
+let receiptScanTimer = null;
+let receiptScanStepTimer = null;
+let receiptScanObjectUrl = null;
+
+function startReceiptScanAnimation(file) {
+  stopReceiptScanAnimation();
+
+  // 1. プレビュー画像のセット
+  const previewImg = $('receiptScanPreviewImg');
+  if (previewImg && file) {
+    try {
+      receiptScanObjectUrl = URL.createObjectURL(file);
+      previewImg.src = receiptScanObjectUrl;
+    } catch (_) {
+      previewImg.src = '';
+    }
+  }
+
+  // 2. ステップテキストとプログレスバーの初期化
+  const stepText = $('receiptScanStepText');
+  const progressBar = $('receiptScanProgressBar');
+  const ticker = $('receiptCalcTicker');
+
+  const steps = [
+    { at: 0, text: '📸 レシート画像の傾き・文字領域を検出中…', progress: '18%' },
+    { at: 1100, text: '🔍 店名・購入日・明細行をレーザースキャン中…', progress: '48%' },
+    { at: 2300, text: '🧮 単価×数量・割引・消費税をAI計算中…', progress: '78%' },
+    { at: 3600, text: '✨ 家計簿フォーマットへ自動変換しています…', progress: '92%' }
+  ];
+
+  if (stepText) stepText.textContent = steps[0].text;
+  if (progressBar) progressBar.style.width = steps[0].progress;
+
+  const timeouts = [];
+  steps.slice(1).forEach(s => {
+    timeouts.push(setTimeout(() => {
+      if (stepText) stepText.textContent = s.text;
+      if (progressBar) progressBar.style.width = s.progress;
+    }, s.at));
+  });
+  receiptScanStepTimer = timeouts;
+
+  // 3. リアルタイム計算ティッカーの高速回転（AIが超高速で計算している演出）
+  const tickerDummies = [
+    '🧮 ¥390 × 1 + ¥390 - ¥78 => Σ ¥702',
+    '🧮 ¥158 × 2 + ¥218 × 1 => Σ ¥534 [TAX 8%]',
+    '🧮 割引 -¥100 / 小計 ¥1,280 => Σ ¥1,180',
+    '🧮 ¥248 × 1 + ¥90 × 2 => Σ ¥428 [TAX 10%]',
+    '🧮 ¥1,480 × 1 - 5%OFF => Σ ¥1,406',
+    '🧮 ¥702 (税込合計一致確認中…)',
+    '🧮 店名: 無印良品 / 日付: 2026-11-05',
+    '🧮 明細行 3件 検出 [SUM OK]'
+  ];
+
+  let tickerIdx = 0;
+  receiptScanTimer = setInterval(() => {
+    if (!ticker) return;
+    ticker.textContent = tickerDummies[tickerIdx % tickerDummies.length];
+    tickerIdx++;
+  }, 90);
+}
+
+function stopReceiptScanAnimation() {
+  if (receiptScanTimer) {
+    clearInterval(receiptScanTimer);
+    receiptScanTimer = null;
+  }
+  if (Array.isArray(receiptScanStepTimer)) {
+    receiptScanStepTimer.forEach(t => clearTimeout(t));
+    receiptScanStepTimer = null;
+  }
+  if (receiptScanObjectUrl) {
+    try {
+      URL.revokeObjectURL(receiptScanObjectUrl);
+    } catch (_) {}
+    receiptScanObjectUrl = null;
+  }
+  const previewImg = $('receiptScanPreviewImg');
+  if (previewImg) previewImg.src = '';
+  const progressBar = $('receiptScanProgressBar');
+  if (progressBar) progressBar.style.width = '100%';
+}
+
 // レシート画像選択イベントハンドラ（直接タップ対応）
 window.handleReceiptInputChange = function(inputEl) {
   if (!inputEl) return;
@@ -2419,7 +2514,7 @@ async function handleReceiptFile(file) {
   if (!file) return;
   if (file.type && !/^image\//i.test(file.type)) {
     showToast('画像ファイルを選んでください');
-    $('receiptFileInput').value = '';
+    if ($('receiptFileInput')) $('receiptFileInput').value = '';
     return;
   }
   // LINE内ブラウザ(LIFF WebView)では input[type=file] の change イベント内で window.confirm() がブロックされ
@@ -2428,28 +2523,44 @@ async function handleReceiptFile(file) {
   $('receiptModal').classList.remove('hidden');
   $('receiptForm').classList.add('hidden');
   $('receiptLoading').classList.remove('hidden');
+
+  // ワクワクするAIレーザースキャン＆リアルタイム計算アニメーション開始
+  startReceiptScanAnimation(file);
+
   showToast('📷 レシート画像を最適化しています…', { loading: true });
   try {
     const imageBase64 = await resizeImageToBase64(file);
-    showToast('🤖 AIがレシートを読み取り中です（5〜10秒ほどお待ちください）…', { loading: true });
-    state.isMockMode = false;
-    const res = await api('scanReceipt', { imageBase64, mimeType: 'image/jpeg' });
+    showToast('🤖 AIがレシートを読み取り中です（3〜8秒ほどお待ちください）…', { loading: true });
+    
+    // バックエンドURLが設定されている場合は直接callGasを呼び出し、モックフォールバック（ダミーのイオン）を完全抑止する
+    let res = null;
+    if (state.gasApiUrl) {
+      res = await callGas('scanReceipt', { imageBase64, mimeType: 'image/jpeg' });
+    } else {
+      res = await api('scanReceipt', { imageBase64, mimeType: 'image/jpeg' });
+    }
+
     if (!res || !res.success || !res.receipt) {
+      stopReceiptScanAnimation();
       closeReceiptModal();
       handleApiError(res || { error: 'レシートデータの取得に失敗しました' });
       return;
     }
+    stopReceiptScanAnimation();
     fillReceiptForm(res.receipt);
     showToast('✨ レシートを読み取りました！内容を確認してください');
   } catch (err) {
+    stopReceiptScanAnimation();
     closeReceiptModal();
-    showToast(err.message || 'レシートの読み取りに失敗しました');
+    console.error('レシート読み取り失敗:', err);
+    showToast(`❌ レシート読み取り失敗: ${err.message || '通信エラー'}`);
   } finally {
-    $('receiptFileInput').value = '';
+    if ($('receiptFileInput')) $('receiptFileInput').value = '';
   }
 }
 
 function fillReceiptForm(r) {
+  stopReceiptScanAnimation();
   const receipt = r || {};
   scannedTotal = Number(receipt.total) || 0;
   $('receiptStore').value = receipt.store || '';
@@ -2470,8 +2581,9 @@ function fillReceiptForm(r) {
 }
 
 function closeReceiptModal() {
+  stopReceiptScanAnimation();
   $('receiptModal').classList.add('hidden');
-  $('receiptFileInput').value = '';
+  if ($('receiptFileInput')) $('receiptFileInput').value = '';
   resetViewportZoom();
 }
 
