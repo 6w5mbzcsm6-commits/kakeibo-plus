@@ -9,7 +9,7 @@
  */
 
 const APP_CONFIG = window.PAIRBUDGET_CONFIG || {};
-const FRONTEND_VERSION = 'v2.4.5';
+const FRONTEND_VERSION = 'v2.5.0';
 const MAX_HISTORY_MONTHS = 36;
 const FIELD_LABELS = {
   date: '日付', title: '品名', amount: '金額', category: 'カテゴリ', isShared: '共同',
@@ -98,6 +98,7 @@ const state = {
     husbandColor: localStorage.getItem('pairbudget_member1_color') || 'emerald',
     wifeColor: localStorage.getItem('pairbudget_member2_color') || 'amber',
     shoppingPurgeDays: 1,
+    autoCheckShoppingOnReceipt: true,
     categoryBudgets: {},
     surplusPolicy: 'savings',
     savingsConfig: { initialSavings: 0, monthlyInterests: {} }
@@ -540,6 +541,7 @@ function mockBuildInitial(month) {
       husbandName: hName,
       wifeName: wName,
       shoppingPurgeDays: (mockDb.config && mockDb.config.shoppingPurgeDays !== undefined) ? mockDb.config.shoppingPurgeDays : 1,
+      autoCheckShoppingOnReceipt: (mockDb.config && mockDb.config.autoCheckShoppingOnReceipt !== undefined) ? mockDb.config.autoCheckShoppingOnReceipt : true,
       categoryBudgets: (mockDb.config && mockDb.config.categoryBudgets) ? mockDb.config.categoryBudgets : state.categoryBudgets,
       surplusPolicy: (mockDb.config && mockDb.config.surplusPolicy) ? mockDb.config.surplusPolicy : state.surplusPolicy,
       savingsConfig: (mockDb.config && mockDb.config.savingsConfig) ? mockDb.config.savingsConfig : state.savingsConfig
@@ -634,6 +636,47 @@ async function mockApi(action, data) {
       mockDb.config = mockDb.config || {};
       mockDb.config.shoppingPurgeDays = Number(data.shoppingPurgeDays !== undefined ? data.shoppingPurgeDays : 1);
       return { success: true, shoppingPurgeDays: mockDb.config.shoppingPurgeDays };
+    }
+    case 'updateAutoCheckShopping': {
+      mockDb.config = mockDb.config || {};
+      mockDb.config.autoCheckShoppingOnReceipt = !!data.enabled;
+      return { success: true, autoCheckShoppingOnReceipt: mockDb.config.autoCheckShoppingOnReceipt };
+    }
+    case 'getMonthlyReport': {
+      const targetMonth = data.month || state.viewMonth;
+      const txs = mockDb.transactions.filter(t => t.date.startsWith(targetMonth) && t.isShared);
+      const total = txs.reduce((s, t) => s + (Number(t.amount) || 0), 0);
+      const budget = (mockDb.budgets && mockDb.budgets[targetMonth]) || 240000;
+      const balance = budget - total;
+      const catMap = {};
+      txs.forEach(t => {
+        catMap[t.category] = (catMap[t.category] || 0) + Number(t.amount || 0);
+      });
+      const topCats = Object.entries(catMap)
+        .sort((a, b) => b[1] - a[1])
+        .slice(0, 5)
+        .map(([cat, amt]) => ({ category: cat, amount: amt, rate: total > 0 ? Math.round((amt / total) * 100) : 0 }));
+      const chartLabels = topCats.length ? topCats.map(c => c.category) : ['支出なし'];
+      const chartData = topCats.length ? topCats.map(c => c.amount) : [1];
+      const qcUrl = 'https://quickchart.io/chart?w=600&h=360&bkg=white&c=' + encodeURIComponent(JSON.stringify({
+        type: 'doughnut',
+        data: { labels: chartLabels, datasets: [{ data: chartData }] },
+        options: { plugins: { title: { display: true, text: `${targetMonth} 収支` } } }
+      }));
+      const textSummary = `📊 【${targetMonth} ふたり家計簿 収支報告】\n・共同生活費 支出: ¥${total.toLocaleString()}\n・予算差額: ${balance >= 0 ? '+' : '-'}¥${Math.abs(balance).toLocaleString()}\n${balance >= 0 ? '🎉 今月は黒字達成です！' : '⚠️ 予算を超過しました'}`;
+      return {
+        success: true,
+        data: {
+          month: targetMonth,
+          totalSharedExpense: total,
+          monthlyBudget: budget,
+          balance,
+          isDeficit: balance < 0,
+          chartUrl: qcUrl,
+          textSummary,
+          topCategories: topCats
+        }
+      };
     }
     case 'updateCategoryBudgets': {
       mockDb.config = mockDb.config || {};
@@ -1437,6 +1480,9 @@ function applyData(data) {
   if (data.config && data.config.shoppingPurgeDays !== undefined) {
     state.config.shoppingPurgeDays = Number(data.config.shoppingPurgeDays);
   }
+  if (data.config && data.config.autoCheckShoppingOnReceipt !== undefined) {
+    state.config.autoCheckShoppingOnReceipt = !!data.config.autoCheckShoppingOnReceipt;
+  }
   if (data.config) {
     if (data.config.categoryBudgets) {
       state.categoryBudgets = data.config.categoryBudgets;
@@ -2003,8 +2049,8 @@ function createTransactionRow(item, isEditable) {
   const items = item.receiptId && !masked ? state.receiptItems.filter(it => it.receiptId === item.receiptId) : [];
 
   const actions = isEditable ? `
-    <button data-action="tx-history" data-id="${esc(item.id)}" class="text-slate-300 hover:text-slate-600 p-1" aria-label="変更履歴"><i data-lucide="history" class="w-3.5 h-3.5"></i></button>
-    <button data-action="edit-tx" data-id="${esc(item.id)}" class="text-slate-300 hover:text-slate-600 p-1" aria-label="編集"><i data-lucide="edit-3" class="w-3.5 h-3.5"></i></button>` : '';
+    <button data-action="tx-history" data-id="${esc(item.id)}" class="text-slate-300 hover:text-slate-600 p-1.5 rounded-lg active:bg-slate-100" aria-label="変更履歴"><i data-lucide="history" class="w-3.5 h-3.5"></i></button>
+    <button data-action="edit-tx" data-id="${esc(item.id)}" class="text-slate-300 hover:text-slate-600 p-1.5 rounded-lg active:bg-slate-100" aria-label="編集"><i data-lucide="edit-3" class="w-3.5 h-3.5"></i></button>` : '';
 
   const head = `
     <div class="flex items-center gap-2.5 min-w-0">
@@ -2023,11 +2069,21 @@ function createTransactionRow(item, isEditable) {
 
   if (items.length) {
     const lines = items.map(it => `<div class="flex justify-between text-[11px] text-slate-600"><span>ー ${esc(it.name)}${it.quantity > 1 ? ` ×${it.quantity}` : ''}</span><span>${yen(it.price)}</span></div>`).join('');
-    wrap.innerHTML = `<details class="group py-2.5">
+    wrap.innerHTML = `<details class="group py-2.5 rounded-xl transition-colors hover:bg-slate-50/60">
       <summary class="flex items-center justify-between cursor-pointer list-none gap-2">${head}</summary>
       <div class="ml-8 mt-1.5 pl-2 border-l-2 border-brand-100 space-y-0.5">${lines}</div></details>`;
   } else {
-    wrap.innerHTML = `<div class="py-3 flex items-center justify-between gap-2">${head}</div>`;
+    wrap.innerHTML = `<div class="py-3 flex items-center justify-between gap-2 rounded-xl transition-colors hover:bg-slate-50/60 cursor-pointer">${head}</div>`;
+  }
+
+  // スマホ対応: 行全体タップで支出編集モーダルを開く（ボタンや詳細アコーディオン操作は除外）
+  if (isEditable) {
+    wrap.addEventListener('click', (e) => {
+      if (e.target.closest('button') || e.target.closest('summary') || e.target.closest('input') || e.target.closest('a')) {
+        return;
+      }
+      openExpenseModal(item);
+    });
   }
   return wrap;
 }
@@ -2145,6 +2201,10 @@ function renderSettings() {
   if ($('settingShoppingPurgeDays')) {
     const purgeDays = state.config.shoppingPurgeDays !== undefined ? state.config.shoppingPurgeDays : 1;
     $('settingShoppingPurgeDays').value = String(purgeDays);
+  }
+  if ($('settingAutoCheckShoppingToggle')) {
+    const autoCheck = state.config.autoCheckShoppingOnReceipt !== undefined ? !!state.config.autoCheckShoppingOnReceipt : true;
+    $('settingAutoCheckShoppingToggle').checked = autoCheck;
   }
 
   // 余剰金精算ルール選択ラジオ
@@ -2636,6 +2696,73 @@ async function handleReceiptFile(file) {
   }
 }
 
+// ==========================================
+// 重複支出・レシート検知ヘルパー (v2.5.0)
+// ==========================================
+function findDuplicateExpense(date, amount, excludeId) {
+  if (!date || !amount) return null;
+  const numAmount = Number(amount);
+  return state.transactions.find(t =>
+    (!excludeId || t.id !== excludeId) &&
+    t.date === date &&
+    Number(t.amount) === numAmount
+  ) || null;
+}
+
+function updateExpenseDuplicateAlert() {
+  const alertEl = $('expenseDuplicateAlert');
+  const detailsEl = $('expenseDuplicateDetails');
+  if (!alertEl || !detailsEl) return;
+
+  const id = $('expenseId')?.value || '';
+  const date = $('expenseDate')?.value || '';
+  const amount = parseInt($('expenseAmount')?.value || '0', 10);
+
+  if (!date || !amount || amount <= 0) {
+    alertEl.classList.add('hidden');
+    return;
+  }
+
+  const dup = findDuplicateExpense(date, amount, id);
+  if (dup) {
+    detailsEl.textContent = `既存の支出「${dup.title}」（${yen(dup.amount)}、支払者: ${displayPayerName(dup.payer)}）と同日・同額です。二重登録にご注意ください。`;
+    alertEl.classList.remove('hidden');
+  } else {
+    alertEl.classList.add('hidden');
+  }
+}
+
+function checkDuplicateReceipt(date, total) {
+  if (!date || !total) return null;
+  const numTotal = Number(total);
+  return state.transactions.find(t =>
+    t.date === date && Number(t.amount) === numTotal
+  ) || null;
+}
+
+function updateReceiptDuplicateAlert() {
+  const alertEl = $('receiptDuplicateAlert');
+  const detailsEl = $('receiptDuplicateDetails');
+  if (!alertEl || !detailsEl) return;
+
+  const date = $('receiptDate')?.value || '';
+  const rows = collectReceiptRows();
+  const total = rows.reduce((s, r) => s + (Number(r.price) || 0), 0);
+
+  if (!date || !total || total <= 0) {
+    alertEl.classList.add('hidden');
+    return;
+  }
+
+  const dup = checkDuplicateReceipt(date, total);
+  if (dup) {
+    detailsEl.textContent = `同日（${date}）に同じ合計金額（${yen(dup.amount)}）の支出「${dup.title}」（支払者: ${displayPayerName(dup.payer)}）が既に登録されています。`;
+    alertEl.classList.remove('hidden');
+  } else {
+    alertEl.classList.add('hidden');
+  }
+}
+
 function fillReceiptForm(r) {
   stopReceiptScanAnimation();
   const receipt = r || {};
@@ -2654,12 +2781,14 @@ function fillReceiptForm(r) {
   $('receiptLoading').classList.add('hidden');
   $('receiptForm').classList.remove('hidden');
   updateReceiptTotal();
+  updateReceiptDuplicateAlert();
   lucide.createIcons();
 }
 
 function closeReceiptModal() {
   stopReceiptScanAnimation();
   $('receiptModal').classList.add('hidden');
+  $('receiptDuplicateAlert')?.classList.add('hidden');
   if ($('receiptFileInput')) $('receiptFileInput').value = '';
   resetViewportZoom();
 }
@@ -2670,15 +2799,33 @@ async function handleReceiptSubmit(e) {
   if (items.some(r => !r.name)) { showToast('品名が空の行があります'); return; }
   if (items.some(r => !Number.isInteger(r.quantity) || r.quantity < 1 || r.quantity > 99)) { showToast('数量は1〜99で入力してください'); return; }
   if (items.some(r => !Number.isInteger(r.price) || r.price === 0)) { showToast('金額が空または0の行があります'); return; }
-  if (items.reduce((s, r) => s + r.price, 0) <= 0) { showToast('合計金額が0円以下です'); return; }
+  const total = items.reduce((s, r) => s + r.price, 0);
+  if (total <= 0) { showToast('合計金額が0円以下です'); return; }
 
   const payload = {
     store: $('receiptStore').value.trim(), date: $('receiptDate').value, category: $('receiptCategory').value,
     isShared: $('receiptIsShared').value === 'true', paymentType: $('receiptPaymentType').value,
     payer: $('receiptPayer').value, items
   };
+
+  // 重複レシート・同日同額チェックと確認ダイアログ
+  const dup = checkDuplicateReceipt(payload.date, total);
+  if (dup) {
+    const ok = window.confirm(`⚠️ 重複の可能性：\n同じ日付（${payload.date}）に同じ合計金額（${yen(dup.amount)}）の支出「${dup.title}」がすでに存在します。\n\n本当にこのレシートを保存しますか？`);
+    if (!ok) return;
+  }
+
   closeReceiptModal();
-  await writeAndRefresh('saveReceipt', payload, 'レシートを保存しました（明細も記録）', '🧾 レシートと明細を保存しています…');
+  const res = await writeAndRefresh('saveReceipt', payload, 'レシートを保存しました（明細も記録）', '🧾 レシートと明細を保存しています…');
+  
+  // 買い物リストから自動消込されたアイテムがあればトースト案内
+  if (res && Array.isArray(res.autoCheckedShoppingItems) && res.autoCheckedShoppingItems.length > 0) {
+    const titles = res.autoCheckedShoppingItems.map(it => it.title).filter(Boolean);
+    const summary = titles.length <= 3 ? titles.join('、') : `${titles.slice(0, 3).join('、')} 他${titles.length - 3}品`;
+    setTimeout(() => {
+      showToast(`🛒 買い物リストから「${summary}」を購入済みにしました！`, { duration: 4000 });
+    }, 1500);
+  }
 }
 
 // ==========================================
@@ -2687,6 +2834,7 @@ async function handleReceiptSubmit(e) {
 function openExpenseModal(editItem) {
   $('expenseForm').reset();
   $('expenseDate').value = localDateStr();
+  $('expenseDuplicateAlert')?.classList.add('hidden');
   const del = $('expenseDeleteBtn');
   const lockNote = $('expenseLockNote');
   if (editItem) {
@@ -2721,11 +2869,13 @@ function openExpenseModal(editItem) {
     renderExpensePayerChips(myName);
   }
   $('expenseModal').classList.remove('hidden');
+  updateExpenseDuplicateAlert();
   lucide.createIcons();
 }
 
 function closeExpenseModal() {
   $('expenseModal').classList.add('hidden');
+  $('expenseDuplicateAlert')?.classList.add('hidden');
   resetViewportZoom();
 }
 window.closeExpenseModal = closeExpenseModal;
@@ -2747,6 +2897,13 @@ async function handleExpenseSubmit(e) {
   };
   const existing = id ? state.transactions.find(t => t.id === id) : null;
   if (existing) payload.memo = existing.memo;
+
+  // 重複支出（同日・同額）チェックと確認ダイアログ
+  const dup = findDuplicateExpense(payload.date, payload.amount, id);
+  if (dup) {
+    const ok = window.confirm(`⚠️ 重複の可能性：\n既存の支出「${dup.title}」（${yen(dup.amount)}、支払者: ${displayPayerName(dup.payer)}）と同じ日付・金額です。\n\n本当に登録しますか？`);
+    if (!ok) return;
+  }
 
   // 楽観的UI更新: モーダルを即座に閉じ、画面上のリストにも即時反映して体感待ち時間をゼロにする
   closeExpenseModal();
@@ -3056,9 +3213,178 @@ window.switchTab = function (tabName) {
       }`;
     }
   });
+
+  // 設定タブでは右下FABを非表示にして入力や保存に専念させる
+  const fab = $('fabContainer');
+  if (fab) {
+    if (tabName === 'settings') {
+      fab.classList.add('fab-hidden');
+    } else {
+      fab.classList.remove('fab-hidden');
+    }
+  }
+
   if (tabName === 'home') renderCharts(); // 非表示中に描画したグラフのサイズ崩れを防ぐ
   lucide.createIcons();
 };
+
+// ==========================================
+// FAB操作ボタン 折りたたみ・スクロール制御 (v2.5.0)
+// ==========================================
+let isFabCompact = false;
+function toggleFabCompact(forceState) {
+  const fab = $('fabContainer');
+  const icon = $('fabToggleIcon');
+  if (!fab) return;
+  if (typeof forceState === 'boolean') {
+    isFabCompact = forceState;
+  } else {
+    isFabCompact = !isFabCompact;
+  }
+  fab.classList.toggle('fab-compact', isFabCompact);
+  if (icon) {
+    icon.setAttribute('data-lucide', isFabCompact ? 'chevron-up' : 'chevron-down');
+    lucide.createIcons();
+  }
+}
+window.toggleFabCompact = toggleFabCompact;
+
+// スクロール時に邪魔にならないよう自動でコンパクト化
+let lastScrollY = window.scrollY;
+let scrollFabTimeout = null;
+window.addEventListener('scroll', () => {
+  const currentY = window.scrollY;
+  const fab = $('fabContainer');
+  if (!fab || fab.classList.contains('fab-hidden')) return;
+
+  if (currentY > lastScrollY && currentY > 80) {
+    // 下スクロール中: コンパクト化
+    fab.classList.add('fab-compact');
+  } else if (currentY < lastScrollY) {
+    // 上スクロール中: 展開
+    if (!isFabCompact) {
+      fab.classList.remove('fab-compact');
+    }
+  }
+  lastScrollY = currentY;
+
+  clearTimeout(scrollFabTimeout);
+  scrollFabTimeout = setTimeout(() => {
+    if (!isFabCompact && fab) {
+      fab.classList.remove('fab-compact');
+    }
+  }, 1400);
+}, { passive: true });
+
+// ==========================================
+// 📊 月次収支レポート モーダル (v2.5.0)
+// ==========================================
+async function openMonthlyReportModal(targetMonth) {
+  const m = targetMonth || state.viewMonth || localMonthStr();
+  const modal = $('monthlyReportModal');
+  if (!modal) return;
+  modal.classList.remove('hidden');
+  lucide.createIcons();
+
+  if ($('monthlyReportMonthPicker')) {
+    $('monthlyReportMonthPicker').value = m;
+  }
+  await loadMonthlyReportData(m);
+}
+window.openMonthlyReportModal = openMonthlyReportModal;
+
+function closeMonthlyReportModal() {
+  $('monthlyReportModal')?.classList.add('hidden');
+  resetViewportZoom();
+}
+window.closeMonthlyReportModal = closeMonthlyReportModal;
+
+async function loadMonthlyReportData(month) {
+  const loading = $('monthlyReportLoading');
+  const content = $('monthlyReportContent');
+  if (loading) loading.classList.remove('hidden');
+  if (content) content.classList.add('hidden');
+
+  try {
+    let res = null;
+    if (state.gasApiUrl) {
+      res = await callGas('getMonthlyReport', { month });
+    } else {
+      res = await api('getMonthlyReport', { month });
+    }
+
+    if (!res || !res.success || !res.data) {
+      throw new Error(res?.error || '月次レポートの取得に失敗しました');
+    }
+    const data = res.data;
+
+    if ($('monthlyReportChartImg')) {
+      $('monthlyReportChartImg').src = data.chartUrl;
+    }
+    if ($('monthlyReportPeriod')) {
+      const parts = String(data.month).split('-');
+      $('monthlyReportPeriod').textContent = `${parts[0]}年${Number(parts[1])}月 収支サマリー`;
+    }
+    if ($('monthlyReportStatusBadge')) {
+      $('monthlyReportStatusBadge').textContent = data.isDeficit ? '⚠️ 予算超過' : '🎉 黒字達成';
+      $('monthlyReportStatusBadge').className = data.isDeficit
+        ? 'bg-rose-500/20 text-rose-300 px-2 py-0.5 rounded-full font-bold text-[10px]'
+        : 'bg-emerald-500/20 text-emerald-300 px-2 py-0.5 rounded-full font-bold text-[10px]';
+    }
+    if ($('monthlyReportTotalShared')) {
+      $('monthlyReportTotalShared').textContent = yen(data.totalSharedExpense);
+    }
+    if ($('monthlyReportBalanceLabel')) {
+      $('monthlyReportBalanceLabel').textContent = data.isDeficit ? '赤字超過額' : '予算 残金';
+    }
+    if ($('monthlyReportBalance')) {
+      $('monthlyReportBalance').textContent = (data.balance < 0 ? '-' : '+') + yen(Math.abs(data.balance));
+      $('monthlyReportBalance').className = data.isDeficit
+        ? 'text-lg font-black text-rose-400'
+        : 'text-lg font-black text-emerald-400';
+    }
+    if ($('monthlyReportCategoryList')) {
+      if (!data.topCategories || data.topCategories.length === 0) {
+        $('monthlyReportCategoryList').innerHTML = '<div class="text-slate-400 text-center py-2">この月の共同支出はありません</div>';
+      } else {
+        $('monthlyReportCategoryList').innerHTML = data.topCategories.map((c, idx) => `
+          <div class="flex items-center justify-between py-1 border-b border-slate-100 last:border-none">
+            <span class="text-slate-700 font-medium">${idx + 1}. ${esc(c.category)} (${c.rate}%)</span>
+            <span class="font-bold text-slate-900">${yen(c.amount)}</span>
+          </div>
+        `).join('');
+      }
+    }
+    if ($('monthlyReportText')) {
+      $('monthlyReportText').value = data.textSummary;
+    }
+    if (content) content.classList.remove('hidden');
+  } catch (err) {
+    console.error('月次レポート取得失敗:', err);
+    showToast(`❌ レポート取得失敗: ${err.message || '通信エラー'}`);
+  } finally {
+    if (loading) loading.classList.add('hidden');
+    lucide.createIcons();
+  }
+}
+
+function onMonthlyReportMonthChange(val) {
+  if (val) loadMonthlyReportData(val);
+}
+window.onMonthlyReportMonthChange = onMonthlyReportMonthChange;
+
+function copyMonthlyReportText() {
+  const ta = $('monthlyReportText');
+  if (!ta || !ta.value) return;
+  navigator.clipboard.writeText(ta.value).then(() => {
+    showToast('📋 レポート文面をクリップボードにコピーしました！LINE等に貼り付けできます');
+  }).catch(() => {
+    ta.select();
+    document.execCommand('copy');
+    showToast('📋 レポート文面をコピーしました！');
+  });
+}
+window.copyMonthlyReportText = copyMonthlyReportText;
 
 /**
  * リロード前の画面状態（タブ・モード・スコープ）を復元
@@ -3240,15 +3566,22 @@ function setupEventListeners() {
   $('openExpenseModalBtn')?.addEventListener('click', () => openExpenseModal(null));
   $('expenseForm')?.addEventListener('submit', handleExpenseSubmit);
   $('expenseDeleteBtn')?.addEventListener('click', handleExpenseDelete);
+  $('expenseDate')?.addEventListener('change', updateExpenseDuplicateAlert);
+  $('expenseAmount')?.addEventListener('input', updateExpenseDuplicateAlert);
   $('receiptFileInput')?.addEventListener('change', e => handleReceiptFile(e.target.files[0]));
 
   $('receiptForm')?.addEventListener('submit', handleReceiptSubmit);
   $('receiptCloseBtn')?.addEventListener('click', closeReceiptModal);
+  $('receiptDate')?.addEventListener('change', updateReceiptDuplicateAlert);
   $('receiptAddRowBtn')?.addEventListener('click', () => {
     $('receiptItemRows')?.insertAdjacentHTML('beforeend', receiptRowHtml({ name: '', quantity: 1, price: '' }));
+    updateReceiptDuplicateAlert();
     lucide.createIcons();
   });
-  $('receiptItemRows')?.addEventListener('input', updateReceiptTotal);
+  $('receiptItemRows')?.addEventListener('input', () => {
+    updateReceiptTotal();
+    updateReceiptDuplicateAlert();
+  });
 
   $('addShoppingForm')?.addEventListener('submit', handleAddShoppingSubmit);
   $('buySyncForm')?.addEventListener('submit', handleBuySyncSubmit);
@@ -3335,6 +3668,11 @@ function setupEventListeners() {
     await writeAndRefresh('updateShoppingPurgeDays', { shoppingPurgeDays: days }, '✅ 購入済みアイテムの自動削除期間を保存しました', '設定を保存しています…');
     renderShoppingList();
     lucide.createIcons();
+  });
+  $('settingAutoCheckShoppingToggle')?.addEventListener('change', async e => {
+    const enabled = e.target.checked;
+    state.config.autoCheckShoppingOnReceipt = enabled;
+    await writeAndRefresh('updateAutoCheckShopping', { enabled }, enabled ? '✅ レシート読取時の自動消込を有効にしました' : 'レシート読取時の自動消込を無効にしました', '設定を保存しています…');
   });
   $('onboardingCreateForm')?.addEventListener('submit', submitOnboardingCreate);
   $('onboardingJoinForm')?.addEventListener('submit', submitOnboardingJoin);

@@ -364,6 +364,29 @@ async function writeAudit(supabase, actor, pairId, action, targetType, targetId,
 // ==========================================
 // 設定・メンバー情報ヘルパー (ペア別)
 // ==========================================
+async function getAppSetting(supabase, pairId, key, defaultVal = null) {
+  try {
+    const { data } = await supabase.from('app_settings').select('value').eq('pair_id', pairId || DEFAULT_PAIR_ID).eq('key', key).maybeSingle();
+    if (!data || data.value === null || data.value === undefined) return defaultVal;
+    try {
+      return JSON.parse(data.value);
+    } catch (_) {
+      return data.value;
+    }
+  } catch (_) {
+    return defaultVal;
+  }
+}
+
+async function setAppSetting(supabase, pairId, key, value) {
+  try {
+    const strVal = typeof value === 'object' && value !== null ? JSON.stringify(value) : String(value);
+    await supabase.from('app_settings').upsert({ pair_id: pairId || DEFAULT_PAIR_ID, key, value: strVal }, { onConflict: 'pair_id, key' });
+  } catch (err) {
+    console.error(`app_settings保存エラー (${key}):`, err);
+  }
+}
+
 async function getConfigData(supabase, pairId) {
   const targetPairId = pairId || DEFAULT_PAIR_ID;
   const [settingsRes, usersRes, pairRes] = await Promise.all([
@@ -385,7 +408,8 @@ async function getConfigData(supabase, pairId) {
     shoppingPurgeDays: 1,
     categoryBudgets: {},
     surplusPolicy: 'savings',
-    savingsConfig: { initialSavings: 0, monthlyInterests: {} }
+    savingsConfig: { initialSavings: 0, monthlyInterests: {} },
+    autoCheckShoppingOnReceipt: true
   };
 
   (settingsRes.data || []).forEach(s => {
@@ -395,6 +419,7 @@ async function getConfigData(supabase, pairId) {
     if (s.key === 'wifeName') config.wifeName = s.value;
     if (s.key === 'shoppingPurgeDays') config.shoppingPurgeDays = Number(s.value !== undefined ? s.value : 1);
     if (s.key === 'surplusPolicy') config.surplusPolicy = ['savings', 'ratio', 'equal'].includes(s.value) ? s.value : 'savings';
+    if (s.key === 'autoCheckShoppingOnReceipt') config.autoCheckShoppingOnReceipt = s.value !== 'false' && s.value !== false;
     if (s.key === 'categoryBudgets') {
       try {
         config.categoryBudgets = JSON.parse(s.value);
@@ -784,7 +809,7 @@ async function handleGetInitialData(supabase, targetMonth, actor, requestedPairI
 
   return {
     success: true,
-    version: 'v2.4.5',
+    version: 'v2.5.0',
     pair: {
       id: pairId,
       name: config.pairName,
@@ -1764,7 +1789,49 @@ async function handleSaveReceipt(supabase, data, actor) {
     receiptId, date, title: store, amount: total, items
   });
 
-  return { success: true, receiptId, txId, total };
+  // 4. 買い物リストの自動消込（設定が有効な場合）
+  const autoCheckedShoppingItems = [];
+  try {
+    const config = await getConfigData(supabase, pairId);
+    if (config.autoCheckShoppingOnReceipt !== false) {
+      const { data: openShoppingItems } = await supabase
+        .from('shopping_items')
+        .select('*')
+        .eq('pair_id', pairId)
+        .eq('is_completed', false);
+
+      if (openShoppingItems && openShoppingItems.length > 0) {
+        const toCompleteIds = [];
+        for (const shopItem of openShoppingItems) {
+          const shopNorm = normalizeName(shopItem.title || shopItem.name || '');
+          if (!shopNorm) continue;
+          const isPurchased = items.some(it => {
+            const recNorm = normalizeName(it.name);
+            if (!recNorm) return false;
+            if (recNorm === shopNorm) return true;
+            if (shopNorm.length >= 2 && recNorm.includes(shopNorm)) return true;
+            if (recNorm.length >= 2 && shopNorm.includes(recNorm)) return true;
+            return false;
+          });
+          if (isPurchased) {
+            toCompleteIds.push(shopItem.id);
+            autoCheckedShoppingItems.push(shopItem.title || shopItem.name);
+          }
+        }
+
+        if (toCompleteIds.length > 0) {
+          await supabase
+            .from('shopping_items')
+            .update({ is_completed: true, completed_at: new Date().toISOString() })
+            .in('id', toCompleteIds);
+        }
+      }
+    }
+  } catch (err) {
+    console.warn('買い物リスト自動消込エラー (非致命的):', err);
+  }
+
+  return { success: true, receiptId, txId, total, autoCheckedShoppingItems };
 }
 
 /**
@@ -2158,9 +2225,18 @@ async function handleGetEventSettlement(supabase, actor, eventId) {
 // LINE Bot Webhook メッセージ処理部
 // ==========================================
 
-async function sendLineReply(replyToken, text, token) {
+async function sendLineReply(replyToken, messagesOrText, token) {
   if (!token || !replyToken) return;
   try {
+    let messages = [];
+    if (Array.isArray(messagesOrText)) {
+      messages = messagesOrText.slice(0, 5);
+    } else if (typeof messagesOrText === 'object' && messagesOrText !== null) {
+      messages = [messagesOrText];
+    } else {
+      messages = [{ type: 'text', text: String(messagesOrText).slice(0, 4900) }];
+    }
+
     await fetch('https://api.line.me/v2/bot/message/reply', {
       method: 'POST',
       headers: {
@@ -2169,12 +2245,125 @@ async function sendLineReply(replyToken, text, token) {
       },
       body: JSON.stringify({
         replyToken,
-        messages: [{ type: 'text', text: String(text).slice(0, 4900) }]
+        messages
       })
     });
   } catch (err) {
     console.error('LINE返信エラー:', err);
   }
+}
+
+/**
+ * 月次収支レポートデータ生成（Webモーダル & LINE共用）
+ */
+async function getMonthlyReportData(supabase, actor, pairId, targetMonth) {
+  const m = targetMonth || currentMonthStr();
+  const initData = await handleGetInitialData(supabase, m, actor, pairId);
+  const s = initData.summary || {};
+  const config = await getConfigData(supabase, pairId);
+
+  // カテゴリ別支出集計
+  const catSums = {};
+  (initData.transactions || []).filter(t => t.isShared).forEach(t => {
+    const c = t.category || '未分類';
+    catSums[c] = (catSums[c] || 0) + Number(t.amount || 0);
+  });
+
+  const sortedCats = Object.entries(catSums).sort((a, b) => b[1] - a[1]);
+  const catLabels = sortedCats.map(x => x[0]);
+  const catValues = sortedCats.map(x => x[1]);
+
+  const catColors = ['#10B981', '#3B82F6', '#F59E0B', '#EF4444', '#8B5CF6', '#EC4899', '#6366F1', '#14B8A6'];
+
+  // QuickChart ドーナツグラフURL生成
+  let chartUrl = '';
+  if (catValues.length > 0) {
+    const chartConfig = {
+      type: 'doughnut',
+      data: {
+        labels: catLabels,
+        datasets: [{
+          data: catValues,
+          backgroundColor: catColors.slice(0, catValues.length)
+        }]
+      },
+      options: {
+        plugins: {
+          legend: { position: 'right' },
+          title: { display: true, text: `${m} 家計支出内訳 (計 ¥${s.totalExpense.toLocaleString()})` }
+        }
+      }
+    };
+    chartUrl = `https://quickchart.io/chart?w=600&h=360&bkg=white&c=${encodeURIComponent(JSON.stringify(chartConfig))}`;
+  }
+
+  // 共同積立貯金の最新残高
+  const initialSavings = Number(config.savingsConfig?.initialSavings || 0);
+  const monthlyInterests = config.savingsConfig?.monthlyInterests || {};
+  const monthlyBalances = config.savingsConfig?.monthlyBalances || {};
+  let totalSavings = initialSavings;
+  (initData.monthlyTotals || []).forEach(t => {
+    const hasManual = monthlyBalances[t.month] !== undefined && monthlyBalances[t.month] !== '' && !isNaN(Number(monthlyBalances[t.month]));
+    const hasInt = Number(monthlyInterests[t.month] || 0) > 0;
+    const isPast = t.month < currentMonthStr() && Number(t.shared || 0) > 0;
+    if (hasManual || hasInt || isPast) {
+      const bal = hasManual ? Number(monthlyBalances[t.month]) : (Number(t.budget || 240000) - Number(t.shared || 0));
+      totalSavings += (bal + Number(monthlyInterests[t.month] || 0));
+    }
+  });
+
+  // テキストメッセージ作成
+  const percent = s.budget > 0 ? Math.round((s.totalExpense / s.budget) * 100) : 0;
+  const diff = s.remaining;
+  const catLines = sortedCats.slice(0, 5).map(x => {
+    const ratio = s.totalExpense > 0 ? Math.round((x[1] / s.totalExpense) * 100) : 0;
+    return `・${x[0]}: ¥${x[1].toLocaleString()} (${ratio}%)`;
+  }).join('\n');
+
+  const [y, mm] = m.split('-');
+  const monthTitle = `${Number(y)}年${Number(mm)}月`;
+
+  const reportText = `📊【${monthTitle} 家計収支レポート】\n` +
+    `━━━━━━━━━━━━━━\n` +
+    `💰 生活費予算: ¥${s.budget.toLocaleString()}\n` +
+    `💸 支出合計: ¥${s.totalExpense.toLocaleString()} (予算比 ${percent}%)\n` +
+    `✨ 今月の収支: ${diff >= 0 ? `+¥${diff.toLocaleString()} (黒字)` : `-¥${Math.abs(diff).toLocaleString()} (赤字)`}\n\n` +
+    `【部門別支出 TOP】\n` +
+    (catLines || '・支出データなし') + `\n\n` +
+    `【メンバー別支出】\n` +
+    `・${config.husbandName}: ¥${s.husbandSpent.toLocaleString()}\n` +
+    `・${config.wifeName}: ¥${s.wifeSpent.toLocaleString()}\n` +
+    `━━━━━━━━━━━━━━\n` +
+    `🏦 共同積立貯蓄残高: ¥${totalSavings.toLocaleString()}\n` +
+    `💡 アプリ画面で過去月レポートやグラフも確認できます✨`;
+
+  return {
+    success: true,
+    month: m,
+    summary: s,
+    chartUrl,
+    categories: sortedCats.map(([name, amount]) => ({ name, amount })),
+    reportText,
+    totalSavings
+  };
+}
+
+async function generateMonthlyReportMessage(supabase, actor, pairId, config) {
+  const report = await getMonthlyReportData(supabase, actor, pairId, currentMonthStr());
+  if (report.chartUrl) {
+    return [
+      {
+        type: 'image',
+        originalContentUrl: report.chartUrl,
+        previewImageUrl: report.chartUrl
+      },
+      {
+        type: 'text',
+        text: report.reportText
+      }
+    ];
+  }
+  return report.reportText;
 }
 
 async function processNaturalLanguageMessage(supabase, text, userId) {
@@ -2221,17 +2410,40 @@ async function processNaturalLanguageMessage(supabase, text, userId) {
   }
   const actor = { allowed: true, verified: true, name: user.display_name, userId, slot: user.slot, pairId: user.pair_id };
 
-  // ヘルプ
+  // 2. 保留中の重複確認への返答（登録 / キャンセル）
+  const pending = await getAppSetting(supabase, pairId, 'pendingLineConfirmation', null);
+  if (pending && pending.createdAt && (Date.now() - pending.createdAt < 15 * 60 * 1000)) {
+    if (/^(?:登録|登録する|はい|ok|OK|お願いします)$/i.test(text)) {
+      await setAppSetting(supabase, pairId, 'pendingLineConfirmation', null);
+      if (pending.type === 'receipt') {
+        const saveRes = await handleSaveReceipt(supabase, pending.payload, actor);
+        if (!saveRes.success) return `保存に失敗しました: ${saveRes.error}`;
+        let autoCheckMsg = '';
+        if (saveRes.autoCheckedShoppingItems && saveRes.autoCheckedShoppingItems.length > 0) {
+          autoCheckMsg = `\n✨ 買い物リストの「${saveRes.autoCheckedShoppingItems.join('」「')}」も自動で購入済みにしました！`;
+        }
+        return `✅ 確認ありがとうございます！レシートを家計簿に登録しました✨\n合計: ¥${saveRes.total.toLocaleString()}${autoCheckMsg}`;
+      } else if (pending.type === 'expense') {
+        await handleAddTransaction(supabase, pending.payload, actor);
+        return `✅ 確認ありがとうございます！支出「${pending.payload.title}（¥${Number(pending.payload.amount).toLocaleString()}）」を登録しました✨`;
+      }
+    } else if (/^(?:キャンセル|やめる|いいえ|キャンセルする|no|NO)$/i.test(text)) {
+      await setAppSetting(supabase, pairId, 'pendingLineConfirmation', null);
+      return `🗑️ 登録をキャンセルしました。`;
+    }
+  }
+
+  // 3. ヘルプ
   if (/^(ヘルプ|使い方|help)$/i.test(text)) {
     return '💡【家計簿Botの使い方】\n\n' +
       '■ かんたん支出登録\n・スーパー 3200\n・立替 2500 ドラッグストア\n・共同カード 私物 4800 服\n\n' +
-      '■ 買い物リスト\n・買う 牛乳\n\n' +
-      '■ 状況確認\n・残金\n・振込額\n\n' +
-      '■ 価格を調べる\n・ネギ いくら\n・価格 豆腐\n\n' +
-      '✈️ 旅行・イベント精算やレシート読み取りはアプリ画面から行えます';
+      '■ 買い物リスト（まとめて追加もOK！）\n・買う 牛乳\n・買い物リスト見せて\n・牛乳と卵買ったよ〜\n・複数行で品名だけ送っても一括追加！\n\n' +
+      '■ 状況・レポート\n・残金\n・振込額\n・収支報告（グラフ付き！）\n\n' +
+      '■ 価格を調べる（AI不使用・DB相場）\n・卵の値段\n・牛乳いくら？\n\n' +
+      '📷 レシート写真を送るだけでAI自動記帳もできます✨';
   }
 
-  // 残金確認
+  // 4. 残金確認
   if (/^(残金|予算|いくら|今月)$/.test(text)) {
     const initData = await handleGetInitialData(supabase, currentMonthStr(), actor, pairId);
     const s = initData.summary;
@@ -2243,7 +2455,7 @@ async function processNaturalLanguageMessage(supabase, text, userId) {
       `※詳細はアプリで確認できます✨`;
   }
 
-  // 振込額確認
+  // 5. 振込額確認
   if (/^(振込|振込額|精算|いくら振込)$/.test(text)) {
     const initData = await handleGetInitialData(supabase, currentMonthStr(), actor, pairId);
     const t = initData.transfers;
@@ -2256,7 +2468,96 @@ async function processNaturalLanguageMessage(supabase, text, userId) {
       `━━━━━━━━━━━━━━`;
   }
 
-  // 買い物リスト追加
+  // 6. 月次収支報告（QuickChartグラフ付き）
+  if (/^(?:収支報告|月次レポート|今月のまとめ|レポート|月次報告)$/.test(text)) {
+    return await generateMonthlyReportMessage(supabase, actor, pairId, config);
+  }
+
+  // 7. 買い物リスト確認（「買い物リスト見せて」）
+  if (/^(?:買い物リスト|買うもの|買うリスト|何買う|リスト)(?:見せて|教えて|確認|一覧)?$/i.test(text)) {
+    const { data: openItems } = await supabase
+      .from('shopping_items')
+      .select('*')
+      .eq('pair_id', pairId)
+      .eq('is_completed', false)
+      .order('created_at', { ascending: true });
+
+    if (!openItems || openItems.length === 0) {
+      return `🛒 いま買うものリストは空っぽです✨\n「買う 牛乳」や複数行メモでいつでも追加できます！`;
+    }
+    const lines = openItems.map((it, idx) => `${idx + 1}. ${it.title || it.name}`);
+    return `🛒 現在の買うものリスト (${openItems.length}件):\n` +
+      lines.join('\n') +
+      `\n\n💡 買ったら「〇〇買ったよ」と送ると自動消込できます✨`;
+  }
+
+  // 8. 自然言語での買い物消込（「卵買ったよ〜」など）
+  const boughtMatch = text.match(/^(.+?)(?:を|は|も)?\s*(?:買っ(?:た|たよ|たー|た〜|てきた|たよー|た！|た!)|購入(?:した|済|済み)?)[！!〜ー♪✨\s]*$/);
+  if (boughtMatch && !/\d{3,}/.test(text.replace(/[¥,円]/g, ''))) {
+    const rawItemsStr = boughtMatch[1].trim();
+    const candidates = rawItemsStr.split(/[\s　と、,・]+/).map(s => s.trim()).filter(Boolean);
+
+    const { data: openItems } = await supabase
+      .from('shopping_items')
+      .select('*')
+      .eq('pair_id', pairId)
+      .eq('is_completed', false);
+
+    if (openItems && openItems.length > 0) {
+      const matchedIds = [];
+      const matchedNames = [];
+      for (const candidate of candidates) {
+        const normCand = normalizeName(candidate);
+        if (!normCand) continue;
+        for (const it of openItems) {
+          const normIt = normalizeName(it.title || it.name || '');
+          if (normIt && (normIt === normCand || normIt.includes(normCand) || (normCand.length >= 2 && normCand.includes(normIt)))) {
+            if (!matchedIds.includes(it.id)) {
+              matchedIds.push(it.id);
+              matchedNames.push(it.title || it.name);
+            }
+          }
+        }
+      }
+
+      if (matchedIds.length > 0) {
+        await supabase
+          .from('shopping_items')
+          .update({ is_completed: true, completed_at: new Date().toISOString() })
+          .in('id', matchedIds);
+
+        return `✨ お買い物お疲れ様でした！\n買い物リストの「${matchedNames.join('」「')}」を購入済みにしました🛒`;
+      }
+    }
+    return `買い物リストに「${rawItemsStr}」は見つかりませんでした💦\n「買い物リスト見せて」で現在のリストを確認できます✨`;
+  }
+
+  // 9. 改行区切りの複数行買い物リスト一括追加
+  if (text.includes('\n')) {
+    const rawLines = text.split(/\r?\n/).map(l => l.trim()).filter(Boolean);
+    let lines = rawLines;
+    if (/^(?:買う|買い物|買い物リスト|買うもの|買出|リスト|メモ)$/i.test(rawLines[0])) {
+      lines = rawLines.slice(1);
+    }
+    const isPureShoppingList = lines.length >= 1 && lines.every(line => !/\d{3,}/.test(line.replace(/[¥,円]/g, '')));
+    if (isPureShoppingList && lines.length > 0) {
+      const addedItems = [];
+      for (const line of lines) {
+        const cleanName = line.replace(/^[・\-\*\s]+/, '').trim().slice(0, 50);
+        if (cleanName) {
+          await handleAddShoppingItem(supabase, { title: cleanName, category: '日用品' }, actor);
+          addedItems.push(cleanName);
+        }
+      }
+      if (addedItems.length > 0) {
+        return `🛒 買うものリストに${addedItems.length}件まとめて追加しました！\n` +
+          addedItems.map(it => `・${it}`).join('\n') +
+          `\n\n💡「買い物リスト見せて」と送ると一覧が確認できます✨`;
+      }
+    }
+  }
+
+  // 10. 単一の買い物リスト追加（「買う 牛乳」）
   const buyMatch = text.match(/^(?:買う|買い物|買出)\s+(.+)$/);
   if (buyMatch) {
     const itemName = buyMatch[1].trim().slice(0, 50);
@@ -2264,19 +2565,27 @@ async function processNaturalLanguageMessage(supabase, text, userId) {
     return `🛒 買い物リストに「${itemName}」を追加しました！`;
   }
 
-  // 価格検索
-  const priceMatch = text.match(/^(?:価格|値段|相場)\s+(.+)$/) || text.match(/^(.+?)\s*(?:の値段|の価格|の相場|いくら)$/);
+  // 11. 価格検索（「卵の値段」「牛乳いくら？」）
+  const priceMatch = text.match(/^(?:価格|値段|相場|いくら|最安|最安値)\s+(.+)$/) ||
+                     text.match(/^(.+?)(?:の)?\s*(?:値段|価格|いくら|最安|最安値|相場)(?:は|教えて|？|\?)?$/);
   if (priceMatch && priceMatch[1] !== '今月') {
-    const r = await handleSearchPrices(supabase, priceMatch[1].trim(), actor);
+    const queryItem = priceMatch[1].trim();
+    const r = await handleSearchPrices(supabase, queryItem, actor);
     if (!r.success) return r.error;
-    if (r.count === 0) return `「${priceMatch[1].trim()}」の購入履歴はまだありません。レシートを読み取ると記録されます📷`;
-    const lines = r.history.slice(0, 5).map(h => `・${h.date} ${h.store} ¥${h.unitPrice.toLocaleString()}`);
-    return `🔎「${r.query}」の価格履歴（${r.count}件）\n` +
-      lines.join('\n') + `\n━━━━━━━━━━━━━━\n` +
-      `直近 ¥${r.stats.latest.toLocaleString()} / 最安 ¥${r.stats.min.toLocaleString()} / 平均 ¥${r.stats.avg.toLocaleString()} / 最高 ¥${r.stats.max.toLocaleString()}`;
+    if (r.count === 0) return `🔎「${queryItem}」の購入履歴はまだありません。レシートを読み取ると自動で相場が蓄積されます📷`;
+
+    const topStores = (r.byStore || []).slice(0, 3).map((s, idx) => `  ${idx + 1}. ${s.store}: 平均¥${s.avgUnitPrice.toLocaleString()} (最安¥${s.minUnitPrice.toLocaleString()})`).join('\n');
+
+    return `🔎【${r.query}】の価格実績（過去${r.count}件）\n` +
+      `━━━━━━━━━━━━━━\n` +
+      `🏆 最安値: ¥${r.stats.min.toLocaleString()} (${r.stats.minStore} / ${r.stats.minDate})\n` +
+      `🕒 直近価格: ¥${r.stats.latest.toLocaleString()} (${r.stats.latestStore} / ${r.stats.latestDate})\n` +
+      `📊 平均相場: ¥${r.stats.avg.toLocaleString()}\n` +
+      (topStores ? `\n🏪 店舗別ランキング:\n${topStores}\n` : '') +
+      `━━━━━━━━━━━━━━`;
   }
 
-  // 支出入力パーサー
+  // 12. 支出入力パーサー
   const parts = text.split(/[\s　]+/);
   if (parts.length < 2) {
     return '入力方法がわかりませんでした💦\n例:「スーパー 3200」「立替 1500 日用品」\n「ヘルプ」で使い方を表示します。';
@@ -2315,8 +2624,37 @@ async function processNaturalLanguageMessage(supabase, text, userId) {
     }
   }
 
+  // 重複登録チェック: 同日かつ同額の支出がすでに存在するかチェック
+  const today = todayStr();
+  const { data: existingTx } = await supabase
+    .from('transactions')
+    .select('id, title, amount')
+    .eq('pair_id', pairId)
+    .eq('date', today)
+    .eq('amount', amount);
+
+  if (existingTx && existingTx.length > 0) {
+    const existingTitle = existingTx[0].title || '支出';
+    await setAppSetting(supabase, pairId, 'pendingLineConfirmation', {
+      type: 'expense',
+      payload: {
+        date: today,
+        title: title,
+        amount: amount,
+        category: category,
+        isShared: isShared,
+        paymentType: paymentType,
+        payer: payer,
+        memo: 'LINE Bot登録'
+      },
+      createdAt: Date.now()
+    });
+
+    return `⚠️【二重入力の確認】\n本日すでに同額「¥${amount.toLocaleString()}（${existingTitle}）」の支出が登録されています！\n\nそのまま登録しますか？\n👉 登録する場合は「登録する」（または「はい」）\n👉 やめる場合は「キャンセル」と返信してください`;
+  }
+
   await handleAddTransaction(supabase, {
-    date: todayStr(),
+    date: today,
     title: title,
     amount: amount,
     category: category,
@@ -2339,19 +2677,7 @@ async function processNaturalLanguageMessage(supabase, text, userId) {
 async function processLineImageMessage(supabase, messageId, userId, lineToken) {
   if (!lineToken) return 'LINE連携トークンが未設定です';
 
-  // 1. LINEサーバーから画像バイナリを取得
-  const contentUrl = `https://api-data.line.me/v2/bot/message/${encodeURIComponent(messageId)}/content`;
-  const imgRes = await fetch(contentUrl, {
-    headers: { Authorization: `Bearer ${lineToken}` }
-  });
-  if (!imgRes.ok) {
-    throw new Error(`LINE画像取得失敗: ${imgRes.status}`);
-  }
-  const contentType = imgRes.headers.get('content-type') || 'image/jpeg';
-  const arrayBuffer = await imgRes.arrayBuffer();
-  const base64Image = Buffer.from(arrayBuffer).toString('base64');
-
-  // 2. ユーザー特定
+  // 1. ユーザー特定
   const { data: user } = await supabase.from('users').select('*, pairs(*)').eq('line_user_id', userId).maybeSingle();
   const pairId = user?.pair_id || DEFAULT_PAIR_ID;
   const actor = {
@@ -2363,7 +2689,52 @@ async function processLineImageMessage(supabase, messageId, userId, lineToken) {
     pairId
   };
 
-  // 3. Gemini OCR 解析
+  // 2. レート制限チェック（1日20枚上限 & 連続5枚超の待機・クールダウン）
+  const today = todayStr();
+  const rateLimit = await getAppSetting(supabase, pairId, 'lineReceiptRateLimit', { date: today, countToday: 0, recentTimestamps: [] });
+  if (rateLimit.date !== today) {
+    rateLimit.date = today;
+    rateLimit.countToday = 0;
+    rateLimit.recentTimestamps = [];
+  }
+
+  if (rateLimit.countToday >= 20) {
+    return `🌙 本日のLINEレシート読み取り上限（1日20枚）に達しました（20/20枚）！\n無料AI枠をふたりで大切に使うための制限です。明日また送るか、Webアプリから手動で登録してね🌱`;
+  }
+
+  const now = Date.now();
+  rateLimit.recentTimestamps = (rateLimit.recentTimestamps || []).filter(ts => now - ts < 60000);
+
+  let waitNotice = '';
+  if (rateLimit.recentTimestamps.length >= 5) {
+    const oldestRecent = rateLimit.recentTimestamps[rateLimit.recentTimestamps.length - 5];
+    const waitMs = 60000 - (now - oldestRecent);
+    if (waitMs > 0 && waitMs <= 45000) {
+      await new Promise(r => setTimeout(r, waitMs));
+      waitNotice = `⏳ 5枚連続送信のため、無料枠保護で少し待機してから読み取りました（本日 ${rateLimit.countToday + 1}/20枚）\n\n`;
+    } else if (waitMs > 45000) {
+      return `⏳ 短時間に5枚以上のレシートが送られたため、無料枠保護のクールダウン中です！あと約1分待ってから6枚目を送ってね🙏（本日 ${rateLimit.countToday}/20枚）`;
+    }
+  }
+
+  // 3. LINEサーバーから画像バイナリを取得
+  const contentUrl = `https://api-data.line.me/v2/bot/message/${encodeURIComponent(messageId)}/content`;
+  const imgRes = await fetch(contentUrl, {
+    headers: { Authorization: `Bearer ${lineToken}` }
+  });
+  if (!imgRes.ok) {
+    throw new Error(`LINE画像取得失敗: ${imgRes.status}`);
+  }
+  const contentType = imgRes.headers.get('content-type') || 'image/jpeg';
+  const arrayBuffer = await imgRes.arrayBuffer();
+  const base64Image = Buffer.from(arrayBuffer).toString('base64');
+
+  // レート制限カウント加算
+  rateLimit.countToday++;
+  rateLimit.recentTimestamps.push(Date.now());
+  await setAppSetting(supabase, pairId, 'lineReceiptRateLimit', rateLimit);
+
+  // 4. Gemini OCR 解析
   const scanResult = await handleScanReceipt({
     imageBase64: base64Image,
     mimeType: contentType
@@ -2378,7 +2749,37 @@ async function processLineImageMessage(supabase, messageId, userId, lineToken) {
     return `店名「${receipt.store || '不明'}」は検出されましたが、購入明細が読み取れませんでした💦`;
   }
 
-  // 4. 家計簿への自動保存（receipts + receipt_items + transactions）
+  // 5. 重複レシートチェック（同日・同額・店名/品名被り）
+  const { data: dupTx } = await supabase
+    .from('transactions')
+    .select('id, title, amount, date')
+    .eq('pair_id', pairId)
+    .eq('date', receipt.date)
+    .eq('amount', receipt.total);
+
+  if (dupTx && dupTx.length > 0) {
+    const isStoreDup = dupTx.some(t => t.title && (t.title.includes(receipt.store) || receipt.store.includes(t.title)));
+    if (isStoreDup) {
+      await setAppSetting(supabase, pairId, 'pendingLineConfirmation', {
+        type: 'receipt',
+        payload: {
+          store: receipt.store || 'レシート店舗',
+          date: receipt.date || todayStr(),
+          items: receipt.items,
+          isShared: true,
+          paymentType: 'shared_card',
+          payer: actor.name,
+          category: '食費'
+        },
+        createdAt: Date.now()
+      });
+
+      const firstItem = receipt.items[0]?.name || receipt.store;
+      return `⚠️【重複レシートの確認】\n同じ日付（${receipt.date}）・同額（¥${receipt.total.toLocaleString()}）・同じ店名/品目（${firstItem}）のレシートが既に登録されています！\n\n二重登録ではありませんか？\n👉 登録する場合は「登録する」（または「はい」）\n👉 やめる場合は「キャンセル」と返信してください`;
+    }
+  }
+
+  // 6. 家計簿への自動保存（receipts + receipt_items + transactions + 買い物リスト消込）
   const saveRes = await handleSaveReceipt(supabase, {
     store: receipt.store || 'レシート店舗',
     date: receipt.date || todayStr(),
@@ -2396,14 +2797,20 @@ async function processLineImageMessage(supabase, messageId, userId, lineToken) {
   const itemsPreview = receipt.items.slice(0, 4).map(it => `・${it.name}: ¥${it.price.toLocaleString()}`).join('\n');
   const moreCount = receipt.items.length > 4 ? `\n...他 ${receipt.items.length - 4}件` : '';
 
-  return `🧾 レシートを自動記録しました！\n` +
+  let autoCheckMsg = '';
+  if (saveRes.autoCheckedShoppingItems && saveRes.autoCheckedShoppingItems.length > 0) {
+    autoCheckMsg = `\n\n✨ 買い物リストの「${saveRes.autoCheckedShoppingItems.join('」「')}」も自動で購入済みにしました！`;
+  }
+
+  return waitNotice + `🧾 レシートを自動記録しました！\n` +
     `━━━━━━━━━━━━━━\n` +
     `🏪 店名: ${receipt.store || '未設定'}\n` +
     `📅 日付: ${receipt.date}\n` +
     `💰 合計: ¥${receipt.total.toLocaleString()}（明細 ${receipt.items.length}件）\n` +
     `💳 支払: 共同カード / ${actor.name}\n` +
     `━━━━━━━━━━━━━━\n` +
-    itemsPreview + moreCount + `\n\n` +
+    itemsPreview + moreCount +
+    autoCheckMsg + `\n\n` +
     `アプリの「履歴」タブに反映されました✨`;
 }
 
@@ -2484,7 +2891,7 @@ async function handleHealthCheck(req) {
 
   return {
     success: true,
-    version: 'v2.4.5',
+    version: 'v2.5.0',
     resolvedUrl: resolvedUrl ? resolvedUrl.replace(/\/\/[^@]+@/, '//***@') : '未設定',
     keyType: keyType,
     env: envCheck,
@@ -2583,6 +2990,10 @@ export default async function handler(req, res) {
         const result = await handleGetEventSettlement(supabase, actor, req.query.eventId);
         return res.status(200).json(result);
       }
+      if (action === 'getMonthlyReport') {
+        const result = await getMonthlyReportData(supabase, actor, requestedPairId || actor.pairId, req.query.month);
+        return res.status(200).json(result);
+      }
 
       return res.status(400).json({ success: false, error: `不明なアクションです: ${action}` });
     } catch (err) {
@@ -2665,7 +3076,7 @@ export default async function handler(req, res) {
       if (!actor.allowed) {
         return res.status(200).json({
           success: false,
-          version: 'v2.4.5',
+          version: 'v2.5.0',
           code: actor.code,
           error: actor.error,
           userId: actor.userId || '',
@@ -2756,6 +3167,14 @@ export default async function handler(req, res) {
           break;
         case 'searchPrices':
           result = await handleSearchPrices(supabase, data.query, actor);
+          break;
+        case 'updateAutoCheckShopping':
+          const autoCheckVal = data.enabled !== false;
+          await setAppSetting(supabase, requestedPairId || actor.pairId, 'autoCheckShoppingOnReceipt', autoCheckVal);
+          result = { success: true, enabled: autoCheckVal };
+          break;
+        case 'getMonthlyReport':
+          result = await getMonthlyReportData(supabase, actor, requestedPairId || actor.pairId, data.month);
           break;
         case 'getAuditLog':
           result = await handleGetAuditLog(supabase, data, actor);

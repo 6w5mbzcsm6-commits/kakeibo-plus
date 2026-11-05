@@ -16,7 +16,7 @@
   <!-- LINE LIFF SDK -->
   <script charset="utf-8" src="https://static.line-scdn.net/liff/edge/2/sdk.js"></script>
   <!-- Custom CSS -->
-  <link rel="stylesheet" href="style.css?v=2.4.5">
+  <link rel="stylesheet" href="style.css?v=2.5.0">
   <script>
     tailwind.config = {
       theme: {
@@ -38,7 +38,7 @@
     }
   </script>
 </head>
-<body class="bg-slate-50 text-slate-800 antialiased min-h-screen pb-24 select-none font-sans">
+<body class="bg-slate-50 text-slate-800 antialiased min-h-screen pb-40 md:pb-24 select-none font-sans">
 
   <!-- デモモード / 接続状態バナー -->
   <div id="mockBanner" class="hidden bg-amber-500 text-white text-xs py-1.5 px-4 text-center font-medium shadow-sm flex items-center justify-center gap-2 sticky top-0 z-50">
@@ -83,7 +83,7 @@
         <div>
           <div class="flex items-center gap-1.5">
             <h1 class="text-base font-bold text-slate-900 leading-tight">ふたり家計簿</h1>
-            <span id="headerVersionBadge" onclick="forceHardReload()" title="タップして最新版に更新" class="bg-brand-50 text-brand-700 hover:bg-brand-100 text-[10px] font-bold px-1.5 py-0.5 rounded-full border border-brand-200 cursor-pointer transition-colors active:scale-95 select-none">v2.4.5</span>
+            <span id="headerVersionBadge" onclick="forceHardReload()" title="タップして最新版に更新" class="bg-brand-50 text-brand-700 hover:bg-brand-100 text-[10px] font-bold px-1.5 py-0.5 rounded-full border border-brand-200 cursor-pointer transition-colors active:scale-95 select-none">v2.5.0</span>
           </div>
           <!-- 月ナビゲーション（過去36ヶ月まで遡れる） -->
           <div class="flex items-center gap-1 -ml-1">
@@ -407,6 +407,10 @@
             <div class="h-48 relative flex items-center justify-center">
               <canvas id="categoryChart"></canvas>
             </div>
+            <!-- 📊 今月のグラフ収支レポート表示ボタン -->
+            <button type="button" id="openMonthlyReportBtn" onclick="openMonthlyReportModal()" class="w-full mt-3 py-2 px-3 bg-gradient-to-r from-brand-50 to-indigo-50 hover:from-brand-100 hover:to-indigo-100 border border-brand-200/80 rounded-xl text-xs font-bold text-brand-700 flex items-center justify-center gap-1.5 transition-all shadow-xs cursor-pointer active:scale-98">
+              <i data-lucide="bar-chart" class="w-4 h-4 text-brand-600"></i> 📊 今月のグラフ収支レポートを表示
+            </button>
           </section>
 
           <!-- 📊 部門（カテゴリ）別 予算のこり状況カード -->
@@ -734,6 +738,25 @@
               ※ 未購入の「買うものリスト」は消えません。購入済みに移動したアイテムのみ、指定期間後にデータベースから完全削除して容量を節約します。
             </p>
           </section>
+
+          <!-- 🧾 レシート読取時の買い物リスト自動消込設定 -->
+          <section class="bg-white rounded-2xl p-4 shadow-sm border border-slate-100 space-y-3">
+            <div class="flex items-center justify-between">
+              <div>
+                <h4 class="text-sm font-bold text-slate-800 flex items-center gap-1.5">
+                  <i data-lucide="check-check" class="w-4 h-4 text-brand-500"></i> レシート読取時の自動消込
+                </h4>
+                <p class="text-xs text-slate-400">レシート明細に含まれる品目を買い物リストから自動チェック</p>
+              </div>
+              <label class="relative inline-flex items-center cursor-pointer">
+                <input type="checkbox" id="settingAutoCheckShoppingToggle" class="sr-only peer" checked>
+                <div class="w-11 h-6 bg-slate-200 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-slate-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-brand-500"></div>
+              </label>
+            </div>
+            <p class="text-[11px] text-slate-400 leading-relaxed">
+              ※ Webカメラ撮影またはLINEでレシートを送信した際、明細の品名が買い物リストの未購入品と一致していれば自動的に購入済みに更新します。
+            </p>
+          </section>
         </div>
 
         <!-- 右列: LINE連携・銀行API構想・診断・バージョン情報 -->
@@ -840,7 +863,7 @@
           <footer class="pt-2 pb-6 text-center text-[10px] text-slate-400 font-mono flex items-center justify-center gap-2 select-none flex-wrap">
             <span class="inline-flex items-center gap-1 bg-slate-100 text-slate-600 px-2 py-0.5 rounded-full">
               <span>Web</span>
-              <b id="frontVersionLabel" class="text-slate-800">v2.4.5</b>
+              <b id="frontVersionLabel" class="text-slate-800">v2.5.0</b>
             </span>
             <span>/</span>
             <span class="inline-flex items-center gap-1 bg-slate-100 text-slate-600 px-2 py-0.5 rounded-full">
@@ -888,13 +911,17 @@
   <!-- クイック操作 フローティングボタン群 (レシートAI-OCR & 支出追加) -->
   <!-- ※ input[type=file] は display:none のモーダル外（body直下）に配置することで全ブラウザで確実に起動させる -->
   <input type="file" id="receiptFileInput" accept="image/*" class="sr-only">
-  <div class="fixed right-5 md:right-8 bottom-20 md:bottom-8 z-40 flex flex-col items-end gap-2.5">
-    <div id="quickScanReceiptBtn" class="relative overflow-hidden bg-white hover:bg-brand-50 active:scale-95 text-brand-700 border-2 border-brand-500 px-3.5 py-2 rounded-full shadow-lg flex items-center gap-1.5 text-xs font-extrabold cursor-pointer transition-transform select-none" aria-label="レシートを読み取る">
+  <div id="fabContainer" class="fixed right-4 md:right-8 bottom-20 md:bottom-8 z-40 flex flex-col items-end gap-2.5 transition-all duration-300">
+    <!-- FAB最小化/展開トグルボタン (スマホ下部の被りを手動でも解消可能) -->
+    <button id="fabToggleBtn" type="button" onclick="toggleFabCompact()" class="bg-slate-700/60 hover:bg-slate-800 text-white w-6 h-6 rounded-full flex items-center justify-center text-[10px] shadow-sm backdrop-blur-xs transition-transform active:scale-90 cursor-pointer" aria-label="操作ボタンの表示切替" title="操作ボタンの最小化/展開">
+      <i id="fabToggleIcon" data-lucide="chevron-down" class="w-3.5 h-3.5"></i>
+    </button>
+    <div id="quickScanReceiptBtn" class="fab-item relative overflow-hidden bg-white hover:bg-brand-50 active:scale-95 text-brand-700 border-2 border-brand-500 px-3.5 py-2 rounded-full shadow-lg flex items-center gap-1.5 text-xs font-extrabold cursor-pointer transition-all select-none" aria-label="レシートを読み取る">
       <input type="file" accept="image/*" class="receipt-file-input absolute inset-0 w-full h-full opacity-0 cursor-pointer z-10" aria-label="レシート画像を選択" onchange="handleReceiptInputChange(this)">
       <i data-lucide="camera" class="w-4 h-4 text-brand-600 pointer-events-none"></i>
       <span class="pointer-events-none">レシート読取</span>
     </div>
-    <button id="openExpenseModalBtn" class="bg-brand-500 hover:bg-brand-600 active:scale-95 text-white w-14 h-14 rounded-full shadow-xl flex items-center justify-center transition-transform" aria-label="支出を記録">
+    <button id="openExpenseModalBtn" class="fab-item bg-brand-500 hover:bg-brand-600 active:scale-95 text-white w-14 h-14 rounded-full shadow-xl flex items-center justify-center transition-all cursor-pointer" aria-label="支出を記録">
       <i data-lucide="plus" class="w-7 h-7 pointer-events-none"></i>
     </button>
   </div>
@@ -943,6 +970,14 @@
 
       <form id="expenseForm" class="space-y-3.5 mt-3.5">
         <input type="hidden" id="expenseId">
+
+        <!-- ⚠️ 重複支出の疑いアラートバナー -->
+        <div id="expenseDuplicateAlert" class="hidden p-3 rounded-xl bg-amber-50 border border-amber-200 text-xs text-amber-800 space-y-1">
+          <div class="font-bold flex items-center gap-1.5 text-amber-900">
+            <i data-lucide="alert-triangle" class="w-4 h-4 text-amber-600"></i> すでに同じ日付・金額の支出があります
+          </div>
+          <p id="expenseDuplicateDetails" class="text-[11px] text-amber-700 leading-relaxed"></p>
+        </div>
 
         <!-- 日付 -->
         <div>
@@ -1166,6 +1201,14 @@
       <!-- 確認・修正フォーム -->
       <form id="receiptForm" class="hidden space-y-3 mt-3">
         <p class="text-[11px] text-amber-600 bg-amber-50 rounded-lg px-2.5 py-1.5">AIの読み取りは間違うことがあります。内容を確認・修正して保存してください。</p>
+
+        <!-- ⚠️ 重複レシートの疑いアラートバナー -->
+        <div id="receiptDuplicateAlert" class="hidden p-3 rounded-xl bg-amber-50 border border-amber-200 text-xs text-amber-800 space-y-1">
+          <div class="font-bold flex items-center gap-1.5 text-amber-900">
+            <i data-lucide="alert-triangle" class="w-4 h-4 text-amber-600"></i> すでに同じ日付・合計金額のレシートが存在します
+          </div>
+          <p id="receiptDuplicateDetails" class="text-[11px] text-amber-700 leading-relaxed"></p>
+        </div>
         <div class="grid grid-cols-2 gap-2">
           <div class="col-span-2">
             <label class="text-xs font-bold text-slate-600 block mb-1">店名</label>
@@ -1697,6 +1740,83 @@
     </div>
   </div>
 
+  <!-- 11. 月次収支グラフ＆レポートモーダル (QuickChart & LINE共有) -->
+  <div id="monthlyReportModal" class="hidden fixed inset-0 z-50 bg-black/50 backdrop-blur-sm flex items-end md:items-center justify-center p-0 md:p-4">
+    <div class="bg-white w-full max-w-lg md:max-w-xl rounded-t-3xl md:rounded-3xl p-5 shadow-2xl max-h-[90vh] overflow-y-auto transform transition-all duration-300">
+      <div class="flex items-center justify-between pb-3 border-b border-slate-100">
+        <h3 class="text-base font-bold text-slate-900 flex items-center gap-1.5">
+          <i data-lucide="pie-chart" class="w-5 h-5 text-brand-500"></i> 月次収支レポート
+        </h3>
+        <button type="button" onclick="closeMonthlyReportModal()" class="text-slate-400 hover:text-slate-600 p-1" aria-label="閉じる">
+          <i data-lucide="x" class="w-5 h-5"></i>
+        </button>
+      </div>
+
+      <div class="mt-4 space-y-4">
+        <!-- 対象月セレクタ -->
+        <div class="flex items-center justify-between bg-slate-50 p-2.5 rounded-xl border border-slate-200">
+          <span class="text-xs font-bold text-slate-600 flex items-center gap-1">
+            <i data-lucide="calendar" class="w-3.5 h-3.5 text-slate-400"></i> レポート対象月
+          </span>
+          <input type="month" id="monthlyReportMonthPicker" onchange="onMonthlyReportMonthChange(this.value)" class="bg-white border border-slate-200 rounded-lg px-2.5 py-1 text-xs font-bold text-slate-800 focus:outline-none focus:ring-2 focus:ring-brand-400 cursor-pointer">
+        </div>
+
+        <!-- 読み込み中スピナー -->
+        <div id="monthlyReportLoading" class="py-12 text-center text-slate-400 hidden">
+          <div class="inline-block animate-spin w-7 h-7 border-3 border-brand-500 border-t-transparent rounded-full mb-2"></div>
+          <p class="text-xs font-medium">グラフとレポートを集計中…</p>
+        </div>
+
+        <!-- レポート本体コンテンツ -->
+        <div id="monthlyReportContent" class="space-y-4">
+          <!-- QuickChart ドーナツグラフ画像プレビュー -->
+          <div class="bg-slate-950/5 rounded-2xl p-2.5 border border-slate-100 overflow-hidden text-center">
+            <img id="monthlyReportChartImg" src="" alt="カテゴリ別収支ドーナツグラフ" class="w-full max-h-64 object-contain mx-auto rounded-xl shadow-xs">
+          </div>
+
+          <!-- サマリーカード -->
+          <div class="bg-gradient-to-br from-slate-900 to-slate-800 text-white rounded-2xl p-4 shadow-sm space-y-2">
+            <div class="flex justify-between items-center text-xs opacity-80 border-b border-slate-700 pb-1.5">
+              <span id="monthlyReportPeriod">収支サマリー</span>
+              <span id="monthlyReportStatusBadge" class="bg-brand-500/30 text-brand-300 px-2 py-0.5 rounded-full font-bold text-[10px]"></span>
+            </div>
+            <div class="grid grid-cols-2 gap-2 pt-1 text-center">
+              <div>
+                <span class="text-[10px] text-slate-400 block">共同生活費 支出</span>
+                <span id="monthlyReportTotalShared" class="text-lg font-black text-white">¥0</span>
+              </div>
+              <div class="border-l border-slate-700">
+                <span id="monthlyReportBalanceLabel" class="text-[10px] text-slate-400 block">予算 残金</span>
+                <span id="monthlyReportBalance" class="text-lg font-black text-emerald-400">¥0</span>
+              </div>
+            </div>
+          </div>
+
+          <!-- カテゴリ別内訳リスト -->
+          <div class="bg-slate-50 rounded-2xl p-3.5 border border-slate-200/70 space-y-2">
+            <h4 class="text-xs font-bold text-slate-700 flex items-center gap-1">
+              <i data-lucide="layers" class="w-3.5 h-3.5 text-slate-400"></i> カテゴリ別 内訳TOP5
+            </h4>
+            <div id="monthlyReportCategoryList" class="space-y-1.5 text-xs"></div>
+          </div>
+
+          <!-- LINE共有用 テキストコピー -->
+          <div class="space-y-1.5">
+            <div class="flex items-center justify-between">
+              <label class="text-xs font-bold text-slate-700 flex items-center gap-1">
+                <i data-lucide="message-square" class="w-3.5 h-3.5 text-emerald-600"></i> LINE共有用テキスト
+              </label>
+              <button type="button" id="monthlyReportCopyBtn" onclick="copyMonthlyReportText()" class="text-xs text-brand-600 hover:text-brand-700 font-bold flex items-center gap-1 cursor-pointer">
+                <i data-lucide="copy" class="w-3.5 h-3.5"></i> コピーする
+              </button>
+            </div>
+            <textarea id="monthlyReportText" readonly rows="5" class="w-full bg-slate-50 border border-slate-200 rounded-xl p-2.5 text-xs font-mono text-slate-700 focus:outline-none focus:ring-1 focus:ring-brand-400 select-all"></textarea>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
   <!-- トースト通知（通常完了 ＆ 処理中スピナー ＆ 流れるプログレスバー対応） -->
   <div id="toast" class="hidden fixed top-5 left-1/2 -translate-x-1/2 z-[60] bg-slate-900/95 text-white text-xs font-bold px-4 py-2.5 rounded-full shadow-xl flex items-center gap-2 backdrop-blur-sm transition-opacity duration-300 max-w-[90vw] overflow-hidden relative">
     <div id="toastSpinner" class="hidden w-4 h-4 border-2 border-white/30 border-t-brand-400 rounded-full animate-spin shrink-0"></div>
@@ -1709,7 +1829,7 @@
   </div>
 
   <!-- アプリ本体スクリプト -->
-  <script src="config.js?v=2.4.5"></script>
-  <script src="app.js?v=2.4.5"></script>
+  <script src="config.js?v=2.5.0"></script>
+  <script src="app.js?v=2.5.0"></script>
 </body>
 </html>

@@ -351,6 +351,47 @@
             </div>
             <span class="text-[11px] text-emerald-600 font-bold px-2">写真を送信</span>
           </div>
+
+          <!-- v2.5.0 新機能コマンド -->
+          <div class="flex items-center justify-between p-2.5 rounded-xl bg-slate-50 border border-slate-200">
+            <div>
+              <span class="font-bold text-slate-800">買い物リスト見せて</span>
+              <p class="text-[10px] text-slate-400">未購入品の一覧を番号付きで即答</p>
+            </div>
+            <button type="button" onclick="copyText('買い物リスト見せて')" class="text-xs bg-white hover:bg-slate-100 border border-slate-200 px-2 py-1 rounded-lg font-bold">コピー</button>
+          </div>
+
+          <div class="flex items-center justify-between p-2.5 rounded-xl bg-slate-50 border border-slate-200">
+            <div>
+              <span class="font-bold text-slate-800">たまご買ったよ</span>
+              <p class="text-[10px] text-slate-400">AI不使用で買い物リストから自動消込</p>
+            </div>
+            <button type="button" onclick="copyText('たまご買ったよ')" class="text-xs bg-white hover:bg-slate-100 border border-slate-200 px-2 py-1 rounded-lg font-bold">コピー</button>
+          </div>
+
+          <div class="flex items-center justify-between p-2.5 rounded-xl bg-slate-50 border border-slate-200">
+            <div>
+              <span class="font-bold text-slate-800">たまごの値段</span>
+              <p class="text-[10px] text-slate-400">最安値・直近価格・店舗別相場を回答</p>
+            </div>
+            <button type="button" onclick="copyText('たまごの値段')" class="text-xs bg-white hover:bg-slate-100 border border-slate-200 px-2 py-1 rounded-lg font-bold">コピー</button>
+          </div>
+
+          <div class="flex items-center justify-between p-2.5 rounded-xl bg-slate-50 border border-slate-200">
+            <div>
+              <span class="font-bold text-slate-800">収支報告</span>
+              <p class="text-[10px] text-slate-400">QuickChartグラフ画像＋テキスト2通返信</p>
+            </div>
+            <button type="button" onclick="copyText('収支報告')" class="text-xs bg-white hover:bg-slate-100 border border-slate-200 px-2 py-1 rounded-lg font-bold">コピー</button>
+          </div>
+
+          <div class="flex items-center justify-between p-2.5 rounded-xl bg-slate-50 border border-slate-200 col-span-1 sm:col-span-2">
+            <div>
+              <span class="font-bold text-slate-800">買うものメモ（複数行まとめ追加）</span>
+              <p class="text-[10px] text-slate-400">改行区切りで送ると一括で全品リスト追加されます</p>
+            </div>
+            <button type="button" onclick="copyText('買うものリスト\n・牛乳\n・食パン\n・ヨーグルト')" class="text-xs bg-white hover:bg-slate-100 border border-slate-200 px-2 py-1 rounded-lg font-bold">例をコピー</button>
+          </div>
         </div>
 
         <!-- グループトーク招待設定 -->
