@@ -16,7 +16,7 @@
   <!-- LINE LIFF SDK -->
   <script charset="utf-8" src="https://static.line-scdn.net/liff/edge/2/sdk.js"></script>
   <!-- Custom CSS -->
-  <link rel="stylesheet" href="css/style.css?v=2.4.4">
+  <link rel="stylesheet" href="css/style.css?v=2.4.5">
   <script>
     tailwind.config = {
       theme: {
@@ -83,7 +83,7 @@
         <div>
           <div class="flex items-center gap-1.5">
             <h1 class="text-base font-bold text-slate-900 leading-tight">ふたり家計簿</h1>
-            <span id="headerVersionBadge" onclick="forceHardReload()" title="タップして最新版に更新" class="bg-brand-50 text-brand-700 hover:bg-brand-100 text-[10px] font-bold px-1.5 py-0.5 rounded-full border border-brand-200 cursor-pointer transition-colors active:scale-95 select-none">v2.4.4</span>
+            <span id="headerVersionBadge" onclick="forceHardReload()" title="タップして最新版に更新" class="bg-brand-50 text-brand-700 hover:bg-brand-100 text-[10px] font-bold px-1.5 py-0.5 rounded-full border border-brand-200 cursor-pointer transition-colors active:scale-95 select-none">v2.4.5</span>
           </div>
           <!-- 月ナビゲーション（過去36ヶ月まで遡れる） -->
           <div class="flex items-center gap-1 -ml-1">
@@ -778,6 +778,12 @@
                 </li>
               </ul>
             </div>
+
+            <!-- 📖 HTML手順書へのリンクボタン -->
+            <a href="line-setup-guide.html" target="_blank" rel="noopener noreferrer" class="mt-2 w-full bg-emerald-600 hover:bg-emerald-700 text-white font-bold py-2.5 px-3 rounded-xl text-xs flex items-center justify-center gap-1.5 shadow-sm transition-all active:scale-98 text-center no-underline cursor-pointer">
+              <span>📖 LINE公式アカウント設定手順書（HTML版）を開く</span>
+              <i data-lucide="external-link" class="w-3.5 h-3.5"></i>
+            </a>
           </section>
 
           <!-- 🏦 銀行口座API連携構想 (最終ステップ) -->
@@ -834,7 +840,7 @@
           <footer class="pt-2 pb-6 text-center text-[10px] text-slate-400 font-mono flex items-center justify-center gap-2 select-none flex-wrap">
             <span class="inline-flex items-center gap-1 bg-slate-100 text-slate-600 px-2 py-0.5 rounded-full">
               <span>Web</span>
-              <b id="frontVersionLabel" class="text-slate-800">v2.4.4</b>
+              <b id="frontVersionLabel" class="text-slate-800">v2.4.5</b>
             </span>
             <span>/</span>
             <span class="inline-flex items-center gap-1 bg-slate-100 text-slate-600 px-2 py-0.5 rounded-full">
@@ -1412,7 +1418,7 @@
       <div class="flex items-center justify-between pb-3 border-b border-slate-100">
         <h3 class="text-base font-bold text-slate-900 flex items-center gap-1.5">
           <i data-lucide="piggy-bank" class="w-5 h-5 text-emerald-600"></i>
-          <span>共同積立・利息（税引き後）設定</span>
+          <span>共同積立・月次収支・利息設定</span>
         </h3>
         <button type="button" onclick="closeSavingsModal()" class="text-slate-400 hover:text-slate-600 p-1 cursor-pointer">
           <i data-lucide="x" class="w-5 h-5"></i>
@@ -1425,21 +1431,32 @@
           <label for="savingsInitialInput" class="font-bold text-slate-700 block">
             ふたりの初期貯金額・繰越残高 (円)
           </label>
-          <input type="number" id="savingsInitialInput" placeholder="例: 100000" class="w-full bg-white border border-slate-200 rounded-xl px-3 py-2 text-sm font-mono focus:outline-none focus:ring-2 focus:ring-emerald-400">
+          <input type="number" id="savingsInitialInput" placeholder="0" class="w-full bg-white border border-slate-200 rounded-xl px-3 py-2 text-sm font-mono focus:outline-none focus:ring-2 focus:ring-emerald-400">
           <p class="text-[10px] text-slate-400">
-            アプリ開始前にすでに口座にあった貯蓄額や、結婚祝い金などの初期残高を入力します。
+            アプリ開始前にすでに口座にあった貯蓄額や、結婚祝い金などの初期残高を入力します（未設定なら0円）。
           </p>
         </div>
 
-        <!-- 月別 利息入力リスト (過去数ヶ月分) -->
+        <!-- 月別 収支・利息入力リスト (過去実績の上書き入力) -->
         <div class="bg-slate-50 border border-slate-200/80 rounded-2xl p-3.5 space-y-2">
           <div class="flex items-center justify-between">
-            <span class="font-bold text-slate-700">各月の税引き後利息 (円)</span>
-            <span class="text-[10px] text-slate-400">銀行通帳の利息をそのまま入力</span>
+            <span class="font-bold text-slate-700">各月の収支・利息 (直近12ヶ月)</span>
+            <span class="text-[10px] text-slate-400">手動上書き・通帳転記が可能</span>
           </div>
-          <div id="savingsInterestsList" class="space-y-2 max-h-48 overflow-y-auto pr-1">
+          <p class="text-[10px] text-slate-400">
+            ※「月次収支」を空欄にするとアプリの支出から自動計算されます。スプレッドシートの過去実績（例: -2245 や 7796）を直接入力して上書きできます。
+          </p>
+          <div id="savingsInterestsList" class="space-y-1.5 max-h-56 overflow-y-auto pr-1">
             <!-- JSで動的レンダリング -->
           </div>
+        </div>
+
+        <!-- 0リセットボタン -->
+        <div class="pt-1 flex justify-end">
+          <button type="button" onclick="resetSavingsData()" class="text-[11px] text-rose-600 hover:text-rose-700 hover:underline flex items-center gap-1 cursor-pointer">
+            <i data-lucide="trash-2" class="w-3 h-3"></i>
+            <span>積立・利息データをすべて0にリセット</span>
+          </button>
         </div>
       </div>
 
@@ -1692,7 +1709,7 @@
   </div>
 
   <!-- アプリ本体スクリプト -->
-  <script src="config.js?v=2.4.4"></script>
-  <script src="js/app.js?v=2.4.4"></script>
+  <script src="config.js?v=2.4.5"></script>
+  <script src="js/app.js?v=2.4.5"></script>
 </body>
 </html>

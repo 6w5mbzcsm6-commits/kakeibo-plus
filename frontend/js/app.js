@@ -9,7 +9,7 @@
  */
 
 const APP_CONFIG = window.PAIRBUDGET_CONFIG || {};
-const FRONTEND_VERSION = 'v2.4.4';
+const FRONTEND_VERSION = 'v2.4.5';
 const MAX_HISTORY_MONTHS = 36;
 const FIELD_LABELS = {
   date: '日付', title: '品名', amount: '金額', category: 'カテゴリ', isShared: '共同',
@@ -1271,25 +1271,42 @@ async function writeAndRefresh(action, data, successMsg, loadingMsg) {
   }
 }
 
+function getActiveTab() {
+  try {
+    return localStorage.getItem('pairbudget_active_tab') || 'home';
+  } catch (_) {
+    return 'home';
+  }
+}
+
 /**
- * メインスケルトンローダーの表示制御
+ * メインスケルトンローダーの表示制御 (アクティブタブとの整合性を保持)
  */
 function showMainSkeleton() {
+  const activeTab = getActiveTab();
   const sk = $('mainSkeletonLoader');
   const home = $('tabContentHome');
-  if (sk) sk.classList.remove('hidden');
+  if (sk && activeTab === 'home') sk.classList.remove('hidden');
   if (home) home.classList.add('hidden');
 }
 
 function hideMainSkeleton() {
+  const activeTab = getActiveTab();
   const sk = $('mainSkeletonLoader');
   const home = $('tabContentHome');
   if (sk) sk.classList.add('hidden');
   if (home) {
-    home.classList.remove('hidden');
-    home.classList.remove('animate-fade-in');
-    void home.offsetWidth;
-    home.classList.add('animate-fade-in');
+    if (activeTab === 'home') {
+      home.classList.remove('hidden');
+      home.classList.remove('animate-fade-in');
+      void home.offsetWidth;
+      home.classList.add('animate-fade-in');
+    } else {
+      home.classList.add('hidden');
+      if (typeof window.switchTab === 'function') {
+        window.switchTab(activeTab);
+      }
+    }
   }
 }
 
@@ -1680,6 +1697,76 @@ function renderBudgetSummary() {
 }
 
 /**
+ * 共同積立（貯金）の月次収支および残高を正しく算出する共通関数
+ * - 未利用の過去月（支出0）を勝手に黒字合算するバグを防止
+ * - ユーザーの手動上書き収支（monthlyBalances）を最優先で反映
+ */
+function computeJointSavingsSummary() {
+  const initialSavings = Number(state.savingsConfig?.initialSavings || 0);
+  const monthlyInterests = state.savingsConfig?.monthlyInterests || {};
+  const monthlyBalances = state.savingsConfig?.monthlyBalances || {};
+  const currentMonth = localMonthStr();
+
+  // monthlyTotals を時系列順（古い月→新しい月）にソート
+  const totals = (state.monthlyTotals || []).slice().sort((a, b) => (a.month > b.month ? 1 : -1));
+
+  let totalBalance = initialSavings;
+  let totalInterests = 0;
+  let countedMonths = 0;
+  const monthRows = [];
+
+  totals.forEach(t => {
+    const m = t.month;
+    const hasManualBalance = monthlyBalances[m] !== undefined && monthlyBalances[m] !== '' && !isNaN(Number(monthlyBalances[m]));
+    const hasInterest = Number(monthlyInterests[m] || 0) > 0;
+    const isPastWithExpense = (m < currentMonth) && Number(t.shared || 0) > 0;
+
+    // 合算対象月かどうかの判定:
+    // 1. 手動で収支が入力されている月
+    // 2. 利息が入力されている月
+    // 3. 過去の月であり、実際に共有支出が存在する月
+    const isCounted = hasManualBalance || hasInterest || isPastWithExpense;
+
+    let balance = 0;
+    let isManual = false;
+    if (hasManualBalance) {
+      balance = Number(monthlyBalances[m]);
+      isManual = true;
+    } else if (isPastWithExpense) {
+      const budget = Number(t.budget || 240000);
+      const sharedSpent = Number(t.shared || 0);
+      balance = budget - sharedSpent;
+    }
+
+    const interest = Number(monthlyInterests[m] || 0);
+
+    if (isCounted) {
+      totalBalance += (balance + interest);
+      totalInterests += interest;
+      countedMonths++;
+    }
+
+    monthRows.push({
+      month: m,
+      balance,
+      interest,
+      isCounted,
+      isManual,
+      hasManualBalance,
+      manualBalanceValue: hasManualBalance ? monthlyBalances[m] : ''
+    });
+  });
+
+  return {
+    totalBalance,
+    initialSavings,
+    totalInterests,
+    countedMonths,
+    monthRows
+  };
+}
+
+/**
  * 共同積立・貯金カード描画 (ユーザー画像デザイン完全再現)
  */
 function renderSavingsCard() {
@@ -1692,42 +1779,36 @@ function renderSavingsCard() {
   }
   card.classList.remove('hidden');
 
-  const initialSavings = Number(state.savingsConfig.initialSavings || 0);
-  const monthlyInterests = state.savingsConfig.monthlyInterests || {};
+  const summary = computeJointSavingsSummary();
 
-  // 過去〜当月の月別推移（monthlyTotals）
-  const totals = (state.monthlyTotals || []).slice().sort((a, b) => (a.month > b.month ? 1 : -1));
-
-  let totalBalance = initialSavings;
-  let totalInterests = 0;
   const rows = [];
+  summary.monthRows.forEach(item => {
+    if (!item.isCounted) return; // 未利用月・未計上月はカードに表示しない
 
-  totals.forEach(t => {
-    const budget = Number(t.budget || 240000);
-    const sharedSpent = Number(t.shared || 0);
-    const balance = budget - sharedSpent; // 収支
-    const interest = Number(monthlyInterests[t.month] || 0);
-
-    totalBalance += balance + interest;
-    totalInterests += interest;
-
-    const [, m] = t.month.split('-');
+    const [, m] = item.month.split('-');
     const monthLabel = `${Number(m)}月`;
 
-    const balanceFormatted = balance >= 0
-      ? `<span class="text-emerald-600 font-bold font-mono">+${balance.toLocaleString()}</span>`
-      : `<span class="text-rose-600 font-bold font-mono">-${Math.abs(balance).toLocaleString()}</span>`;
+    const balanceFormatted = item.balance >= 0
+      ? `<span class="text-emerald-600 font-bold font-mono">+${item.balance.toLocaleString()}</span>`
+      : `<span class="text-rose-600 font-bold font-mono">-${Math.abs(item.balance).toLocaleString()}</span>`;
 
-    const interestFormatted = interest > 0
-      ? `<span class="font-bold text-slate-800 font-mono">${interest.toLocaleString()}</span>`
+    const interestFormatted = item.interest > 0
+      ? `<span class="font-bold text-slate-800 font-mono">${item.interest.toLocaleString()}</span>`
       : `<span class="text-slate-400 font-mono">0</span>`;
 
     rows.push(`
       <tr class="hover:bg-slate-50/80 transition-colors">
-        <td class="py-2 px-3 font-bold text-slate-700">${monthLabel}</td>
-        <td class="py-2 px-3 text-right">${balanceFormatted}</td>
+        <td class="py-2 px-3 font-bold text-slate-700">
+          ${monthLabel}
+          ${item.isManual ? '<span class="text-[9px] text-brand-600 bg-brand-50 rounded px-1 ml-0.5 font-normal">手動</span>' : ''}
+        </td>
         <td class="py-2 px-3 text-right">
-          <button type="button" onclick="openSavingsInterestModal('${t.month}')" class="hover:underline inline-flex items-center gap-1 text-slate-700 cursor-pointer" title="利息を編集">
+          <button type="button" onclick="openSavingsModal('${item.month}')" class="hover:underline cursor-pointer" title="収支・利息を編集">
+            ${balanceFormatted}
+          </button>
+        </td>
+        <td class="py-2 px-3 text-right">
+          <button type="button" onclick="openSavingsModal('${item.month}')" class="hover:underline inline-flex items-center gap-1 text-slate-700 cursor-pointer" title="利息を編集">
             ${interestFormatted}
             <i data-lucide="edit-2" class="w-2.5 h-2.5 text-slate-300"></i>
           </button>
@@ -1736,14 +1817,14 @@ function renderSavingsCard() {
     `);
   });
 
-  if ($('totalSavingsBalance')) $('totalSavingsBalance').textContent = yen(totalBalance);
-  if ($('initialSavingsLabel')) $('initialSavingsLabel').textContent = yen(initialSavings);
-  if ($('totalInterestsLabel')) $('totalInterestsLabel').textContent = yen(totalInterests);
-  if ($('savingsCountMonths')) $('savingsCountMonths').textContent = `${totals.length}ヶ月分蓄積`;
+  if ($('totalSavingsBalance')) $('totalSavingsBalance').textContent = yen(summary.totalBalance);
+  if ($('initialSavingsLabel')) $('initialSavingsLabel').textContent = yen(summary.initialSavings);
+  if ($('totalInterestsLabel')) $('totalInterestsLabel').textContent = yen(summary.totalInterests);
+  if ($('savingsCountMonths')) $('savingsCountMonths').textContent = `${summary.countedMonths}ヶ月分蓄積`;
 
   const tbody = $('savingsMonthlyTableBody');
   if (tbody) {
-    tbody.innerHTML = rows.length ? rows.slice(-6).reverse().join('') : '<tr><td colspan="3" class="py-3 text-center text-slate-400">データがありません</td></tr>';
+    tbody.innerHTML = rows.length ? rows.slice(-6).reverse().join('') : '<tr><td colspan="3" class="py-3 text-center text-slate-400">実績データがありません（初期残高 ¥0）</td></tr>';
   }
 
   // 月初に共同口座へ残すお金ガイド
@@ -2173,13 +2254,9 @@ function updateBudgetOverWarningBox() {
   } else {
     const overAmt = budget - totalContribution;
     if (state.surplusPolicy === 'savings') {
-      // 積立モード時: 現在の共同貯蓄残高を加味
-      const initialSavings = Number(state.savingsConfig.initialSavings || 0);
-      const monthlyInterests = state.savingsConfig.monthlyInterests || {};
-      let totalSavings = initialSavings;
-      (state.monthlyTotals || []).forEach(t => {
-        totalSavings += (Number(t.budget || 240000) - Number(t.shared || 0)) + Number(monthlyInterests[t.month] || 0);
-      });
+      // 積立モード時: 現在の共同貯蓄残高を加味 (未利用月を除外した正確な残高)
+      const summary = computeJointSavingsSummary();
+      const totalSavings = summary.totalBalance;
 
       if (budget <= totalContribution + totalSavings) {
         const afterSavings = (totalContribution + totalSavings) - budget;
@@ -3029,61 +3106,104 @@ function hideToast() {
 /**
  * 共同積立・利息モーダル操作
  */
-window.openSavingsModal = function () {
+window.openSavingsModal = function (targetMonth) {
   const modal = $('savingsModal');
   if (!modal) return;
-  if ($('savingsInitialInput')) $('savingsInitialInput').value = state.savingsConfig.initialSavings || '';
+  if ($('savingsInitialInput')) $('savingsInitialInput').value = state.savingsConfig?.initialSavings || '';
 
   const list = $('savingsInterestsList');
   if (list) {
-    const totals = (state.monthlyTotals || []).slice().sort((a, b) => (a.month > b.month ? 1 : -1));
-    const interests = state.savingsConfig.monthlyInterests || {};
-    list.innerHTML = totals.map(t => {
-      const [y, m] = t.month.split('-');
-      const val = interests[t.month] !== undefined ? interests[t.month] : '';
-      return `
-        <div class="flex items-center justify-between p-2 rounded-xl bg-white border border-slate-200">
-          <span class="font-bold text-slate-700">${y}年${Number(m)}月</span>
-          <div class="flex items-center gap-1">
-            <span class="text-xs text-slate-400 font-mono">利息: ¥</span>
-            <input type="number" data-savings-month="${t.month}" value="${val}" placeholder="0" class="w-20 bg-slate-50 border border-slate-200 rounded-lg px-2 py-1 text-xs font-mono text-right focus:outline-none focus:ring-1 focus:ring-emerald-400">
+    // 直近12ヶ月分（新しい月が上）
+    const totals = (state.monthlyTotals || []).slice().sort((a, b) => (a.month > b.month ? -1 : 1)).slice(0, 12);
+    const interests = state.savingsConfig?.monthlyInterests || {};
+    const balances = state.savingsConfig?.monthlyBalances || {};
+
+    list.innerHTML = `
+      <div class="grid grid-cols-12 gap-1 text-[10px] text-slate-500 font-bold px-2 py-1 bg-slate-100 rounded-lg">
+        <span class="col-span-4">年月</span>
+        <span class="col-span-4 text-center">月次収支 (円)</span>
+        <span class="col-span-4 text-right">税引後利息 (円)</span>
+      </div>
+      ${totals.map(t => {
+        const [y, m] = t.month.split('-');
+        const intVal = interests[t.month] !== undefined ? interests[t.month] : '';
+        const balVal = balances[t.month] !== undefined ? balances[t.month] : '';
+        const isTarget = targetMonth === t.month;
+        return `
+          <div class="grid grid-cols-12 gap-1 items-center p-2 rounded-xl bg-white border ${isTarget ? 'border-brand-500 ring-1 ring-brand-300' : 'border-slate-200'}">
+            <span class="col-span-4 font-bold text-slate-700 text-xs">${Number(y)}年${Number(m)}月</span>
+            <div class="col-span-4 flex items-center">
+              <input type="number" data-savings-balance-month="${t.month}" value="${balVal}" placeholder="自動" title="空欄なら自動計算/未計上。数値を入力すると手動上書き（例: -2245 や 7796）" class="w-full bg-slate-50 border border-slate-200 rounded-lg px-1.5 py-1 text-xs font-mono text-right focus:outline-none focus:ring-1 focus:ring-emerald-400">
+            </div>
+            <div class="col-span-4 flex items-center justify-end">
+              <input type="number" data-savings-interest-month="${t.month}" value="${intVal}" placeholder="0" title="利息額（例: 10 や 20）" class="w-16 bg-slate-50 border border-slate-200 rounded-lg px-1.5 py-1 text-xs font-mono text-right focus:outline-none focus:ring-1 focus:ring-emerald-400">
+            </div>
           </div>
-        </div>
-      `;
-    }).join('');
+        `;
+      }).join('')}
+    `;
   }
 
   modal.classList.remove('hidden');
   lucide.createIcons();
+
+  if (targetMonth) {
+    setTimeout(() => {
+      const input = document.querySelector(`input[data-savings-balance-month="${targetMonth}"]`);
+      if (input) {
+        input.focus();
+        input.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      }
+    }, 150);
+  }
+};
+
+window.openSavingsInterestModal = function (targetMonth) {
+  openSavingsModal(targetMonth);
 };
 
 window.closeSavingsModal = function () {
   $('savingsModal')?.classList.add('hidden');
 };
 
-window.openSavingsInterestModal = function (targetMonth) {
-  openSavingsModal();
-  setTimeout(() => {
-    const input = document.querySelector(`input[data-savings-month="${targetMonth}"]`);
-    if (input) {
-      input.focus();
-      input.scrollIntoView({ behavior: 'smooth', block: 'center' });
-    }
-  }, 150);
+window.resetSavingsData = async function () {
+  if (!confirm('共同積立の初期残高・月次収支・利息データをすべて0にリセットしますか？')) return;
+  state.savingsConfig = {
+    initialSavings: 0,
+    monthlyInterests: {},
+    monthlyBalances: {}
+  };
+  try { localStorage.setItem('pairbudget_savings_config', JSON.stringify(state.savingsConfig)); } catch (_) {}
+  closeSavingsModal();
+  renderSavingsCard();
+  updateBudgetOverWarningBox();
+  await writeAndRefresh('updateSavingsConfig', { savingsConfig: state.savingsConfig }, '🗑️ 積立データを0にリセットしました');
 };
 
 async function handleSaveSavingsModal() {
   const initial = parseInt($('savingsInitialInput')?.value, 10) || 0;
   const interests = {};
-  document.querySelectorAll('input[data-savings-month]').forEach(inp => {
-    const m = inp.dataset.savingsMonth;
+  const balances = {};
+
+  document.querySelectorAll('input[data-savings-interest-month]').forEach(inp => {
+    const m = inp.dataset.savingsInterestMonth;
     const v = parseInt(inp.value, 10);
     if (!isNaN(v) && v >= 0) interests[m] = v;
   });
 
+  document.querySelectorAll('input[data-savings-balance-month]').forEach(inp => {
+    const m = inp.dataset.savingsBalanceMonth;
+    const valStr = inp.value.trim();
+    if (valStr !== '') {
+      const v = parseInt(valStr, 10);
+      if (!isNaN(v)) balances[m] = v;
+    }
+  });
+
   state.savingsConfig = {
     initialSavings: initial,
-    monthlyInterests: interests
+    monthlyInterests: interests,
+    monthlyBalances: balances
   };
   try { localStorage.setItem('pairbudget_savings_config', JSON.stringify(state.savingsConfig)); } catch (_) {}
   closeSavingsModal();
