@@ -781,7 +781,7 @@ async function handleGetInitialData(supabase, targetMonth, actor, requestedPairI
 
   return {
     success: true,
-    version: 'v2.4.0',
+    version: 'v2.4.1',
     pair: {
       id: pairId,
       name: config.pairName,
@@ -1451,7 +1451,7 @@ async function handleUpdateBaseContribution(supabase, data, actor) {
  * レシートOCR (Gemini API)
  */
 async function handleScanReceipt(data, actor) {
-  if ((!actor || !actor.verified) && !isDemoAllowed()) {
+  if (!actor || (!actor.allowed && !actor.verified && !isDemoAllowed())) {
     return { success: false, code: 'AUTH', error: 'レシート読み取りにはLINEログインとメンバー登録が必要です' };
   }
   const apiKey = normalizeEnvSecret(process.env.GEMINI_API_KEY);
@@ -1501,8 +1501,8 @@ async function handleScanReceipt(data, actor) {
 
   const modelsToTry = [
     normalizeEnvSecret(process.env.GEMINI_MODEL),
-    'gemini-2.5-flash',
     'gemini-2.0-flash',
+    'gemini-2.5-flash',
     'gemini-1.5-flash'
   ].filter(Boolean);
 
@@ -1535,7 +1535,9 @@ async function handleScanReceipt(data, actor) {
 
   try {
     const json = await res.json();
-    const rawText = json.candidates[0].content.parts[0].text;
+    const parts = json?.candidates?.[0]?.content?.parts || [];
+    const textPart = [...parts].reverse().find(p => !p.thought && typeof p.text === 'string') || parts[0];
+    const rawText = (textPart?.text || '').replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/i, '').trim();
     const parsed = JSON.parse(rawText);
 
     const items = (parsed.items || []).slice(0, 60).map(it => ({
@@ -2346,7 +2348,7 @@ async function handleHealthCheck(req) {
 
   return {
     success: true,
-    version: 'v2.4.0',
+    version: 'v2.4.1',
     resolvedUrl: resolvedUrl ? resolvedUrl.replace(/\/\/[^@]+@/, '//***@') : '未設定',
     keyType: keyType,
     env: envCheck,
@@ -2526,7 +2528,7 @@ export default async function handler(req, res) {
       if (!actor.allowed) {
         return res.status(200).json({
           success: false,
-          version: 'v2.4.0',
+          version: 'v2.4.1',
           code: actor.code,
           error: actor.error,
           userId: actor.userId || '',

@@ -9,7 +9,7 @@
  */
 
 const APP_CONFIG = window.PAIRBUDGET_CONFIG || {};
-const FRONTEND_VERSION = 'v2.4.0';
+const FRONTEND_VERSION = 'v2.4.1';
 const MAX_HISTORY_MONTHS = 36;
 const FIELD_LABELS = {
   date: '日付', title: '品名', amount: '金額', category: 'カテゴリ', isShared: '共同',
@@ -818,9 +818,9 @@ function mockSearchPrices(query) {
 }
 
 // ==========================================
-// 通信 & キャッシュ
+// 通信 & キャッシュ (バージョン紐付けキャッシュバスティング)
 // ==========================================
-const CACHE_PREFIX = 'pairbudget_init_v2_';
+const CACHE_PREFIX = `pairbudget_init_${FRONTEND_VERSION}_`;
 const CACHE_MAX_AGE_MS = 7 * 24 * 60 * 60 * 1000; // 7日間アクセスがなければ自動破棄
 
 function cacheKeyForMonth(month) {
@@ -857,18 +857,49 @@ function loadInitCache(month) {
   }
 }
 
-function clearAllLocalCache() {
+/**
+ * 過去バージョン由来のローカルキャッシュを自動破棄
+ */
+function cleanupOldVersionCaches() {
   try {
     const keysToRemove = [];
     for (let i = 0; i < localStorage.length; i++) {
       const k = localStorage.key(i);
-      if (k && (k.startsWith(CACHE_PREFIX) || k.startsWith('pairbudget_init_'))) {
+      if (k && k.startsWith('pairbudget_init_') && !k.startsWith(CACHE_PREFIX)) {
         keysToRemove.push(k);
       }
     }
     keysToRemove.forEach(k => localStorage.removeItem(k));
   } catch (_) {}
 }
+
+function clearAllLocalCache() {
+  try {
+    const keysToRemove = [];
+    for (let i = 0; i < localStorage.length; i++) {
+      const k = localStorage.key(i);
+      if (k && k.startsWith('pairbudget_init_')) {
+        keysToRemove.push(k);
+      }
+    }
+    keysToRemove.forEach(k => localStorage.removeItem(k));
+  } catch (_) {}
+}
+
+/**
+ * 強制キャッシュ破棄＆最新版リロード（ユーザー操作 or 自動自己修復）
+ */
+window.forceHardReload = function () {
+  try {
+    clearAllLocalCache();
+    sessionStorage.clear();
+  } catch (_) {}
+  showToast('🔄 キャッシュをクリアして最新版を読み込みます…', { loading: true });
+  setTimeout(() => {
+    const cleanUrl = window.location.origin + window.location.pathname;
+    window.location.replace(`${cleanUrl}?_v=${encodeURIComponent(FRONTEND_VERSION)}&_t=${Date.now()}`);
+  }, 250);
+};
 
 async function callGas(action, data, extra = {}) {
   const idToken = state.liffReady ? liff.getIDToken() : null;
@@ -1345,6 +1376,20 @@ function applyData(data) {
   state.summary = data.summary || state.summary;
   state.transfers = data.transfers || state.transfers;
   state.backendVersion = data.version || (state.isMockMode ? 'demo' : 'v2.1以下 (未更新)');
+
+  // フロントエンドとバックエンドのバージョン不一致時の自動修復リロード（ディスクキャッシュ対策）
+  if (data.version && /^v2\./i.test(data.version) && data.version !== FRONTEND_VERSION) {
+    try {
+      const alreadyReloaded = sessionStorage.getItem('pairbudget_auto_reloaded_to');
+      if (alreadyReloaded !== data.version) {
+        sessionStorage.setItem('pairbudget_auto_reloaded_to', data.version);
+        clearAllLocalCache();
+        const cleanUrl = window.location.origin + window.location.pathname;
+        window.location.replace(`${cleanUrl}?_v=${encodeURIComponent(data.version)}&_t=${Date.now()}`);
+        return;
+      }
+    } catch (_) {}
+  }
   if (data.members && Array.isArray(data.members) && data.members.length > 0) {
     state.members = data.members;
     syncStateConfigFromMembers();
@@ -1405,6 +1450,8 @@ function applyData(data) {
 // 描画
 // ==========================================
 function renderAll() {
+  if ($('headerVersionBadge')) $('headerVersionBadge').textContent = FRONTEND_VERSION;
+  if ($('frontVersionLabel')) $('frontVersionLabel').textContent = FRONTEND_VERSION;
   renderMonthNav();
   renderMemberLabels();
   renderCategoryDropdown();
@@ -2357,6 +2404,16 @@ function guessCategoryByStore(store) {
   const hit = state.rules.find(r => store.includes(r.keyword));
   return hit && state.categories.some(c => c.name === hit.category) ? hit.category : (state.categories.some(c => c.name === '食費') ? '食費' : (state.categories[0] || {}).name);
 }
+
+// レシート画像選択イベントハンドラ（直接タップ対応）
+window.handleReceiptInputChange = function(inputEl) {
+  if (!inputEl) return;
+  const file = inputEl.files && inputEl.files[0];
+  if (file) {
+    handleReceiptFile(file);
+  }
+  inputEl.value = '';
+};
 
 async function handleReceiptFile(file) {
   if (!file) return;
@@ -3900,6 +3957,9 @@ function checkUrlInviteParam() {
 }
 
 document.addEventListener('DOMContentLoaded', async () => {
+  cleanupOldVersionCaches();
+  if ($('headerVersionBadge')) $('headerVersionBadge').textContent = FRONTEND_VERSION;
+  if ($('frontVersionLabel')) $('frontVersionLabel').textContent = FRONTEND_VERSION;
   initMembers();
   setupMobileZoomReset();
   lucide.createIcons();

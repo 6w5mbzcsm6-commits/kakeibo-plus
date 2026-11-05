@@ -3,6 +3,9 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+  <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
+  <meta http-equiv="Pragma" content="no-cache">
+  <meta http-equiv="Expires" content="0">
   <title>ふたり家計簿 - PairBudget</title>
   <!-- Tailwind CSS CDN -->
   <script src="https://cdn.tailwindcss.com"></script>
@@ -13,7 +16,7 @@
   <!-- LINE LIFF SDK -->
   <script charset="utf-8" src="https://static.line-scdn.net/liff/edge/2/sdk.js"></script>
   <!-- Custom CSS -->
-  <link rel="stylesheet" href="style.css">
+  <link rel="stylesheet" href="style.css?v=2.4.1">
   <script>
     tailwind.config = {
       theme: {
@@ -80,7 +83,7 @@
         <div>
           <div class="flex items-center gap-1.5">
             <h1 class="text-base font-bold text-slate-900 leading-tight">ふたり家計簿</h1>
-            <span class="bg-brand-50 text-brand-700 text-[10px] font-bold px-1.5 py-0.5 rounded-full border border-brand-200">v2.4.0</span>
+            <span id="headerVersionBadge" onclick="forceHardReload()" title="タップして最新版に更新" class="bg-brand-50 text-brand-700 hover:bg-brand-100 text-[10px] font-bold px-1.5 py-0.5 rounded-full border border-brand-200 cursor-pointer transition-colors active:scale-95 select-none">v2.4.1</span>
           </div>
           <!-- 月ナビゲーション（過去36ヶ月まで遡れる） -->
           <div class="flex items-center gap-1 -ml-1">
@@ -828,16 +831,19 @@
           </section>
 
           <!-- バージョン情報 (小さく表示) -->
-          <footer class="pt-2 pb-6 text-center text-[10px] text-slate-400 font-mono flex items-center justify-center gap-2 select-none">
+          <footer class="pt-2 pb-6 text-center text-[10px] text-slate-400 font-mono flex items-center justify-center gap-2 select-none flex-wrap">
             <span class="inline-flex items-center gap-1 bg-slate-100 text-slate-600 px-2 py-0.5 rounded-full">
               <span>Web</span>
-              <b id="frontVersionLabel" class="text-slate-800">v2.4.0</b>
+              <b id="frontVersionLabel" class="text-slate-800">v2.4.1</b>
             </span>
             <span>/</span>
             <span class="inline-flex items-center gap-1 bg-slate-100 text-slate-600 px-2 py-0.5 rounded-full">
               <span>API</span>
               <b id="backVersionLabel" class="text-slate-800">取得中…</b>
             </span>
+            <button type="button" onclick="forceHardReload()" class="inline-flex items-center gap-1 bg-brand-50 hover:bg-brand-100 text-brand-700 px-2 py-0.5 rounded-full border border-brand-200 font-bold transition-all active:scale-95 cursor-pointer ml-1">
+              <span>🔄</span> 最新版に更新
+            </button>
           </footer>
         </div>
       </div>
@@ -877,10 +883,11 @@
   <!-- ※ input[type=file] は display:none のモーダル外（body直下）に配置することで全ブラウザで確実に起動させる -->
   <input type="file" id="receiptFileInput" accept="image/*" class="sr-only">
   <div class="fixed right-5 md:right-8 bottom-20 md:bottom-8 z-40 flex flex-col items-end gap-2.5">
-    <label for="receiptFileInput" id="quickScanReceiptBtn" class="bg-white hover:bg-brand-50 active:scale-95 text-brand-700 border-2 border-brand-500 px-3.5 py-2 rounded-full shadow-lg flex items-center gap-1.5 text-xs font-extrabold cursor-pointer transition-transform select-none" aria-label="レシートを読み取る">
+    <div id="quickScanReceiptBtn" class="relative overflow-hidden bg-white hover:bg-brand-50 active:scale-95 text-brand-700 border-2 border-brand-500 px-3.5 py-2 rounded-full shadow-lg flex items-center gap-1.5 text-xs font-extrabold cursor-pointer transition-transform select-none" aria-label="レシートを読み取る">
+      <input type="file" accept="image/*" class="receipt-file-input absolute inset-0 w-full h-full opacity-0 cursor-pointer z-10" aria-label="レシート画像を選択" onchange="handleReceiptInputChange(this)">
       <i data-lucide="camera" class="w-4 h-4 text-brand-600 pointer-events-none"></i>
       <span class="pointer-events-none">レシート読取</span>
-    </label>
+    </div>
     <button id="openExpenseModalBtn" class="bg-brand-500 hover:bg-brand-600 active:scale-95 text-white w-14 h-14 rounded-full shadow-xl flex items-center justify-center transition-transform" aria-label="支出を記録">
       <i data-lucide="plus" class="w-7 h-7 pointer-events-none"></i>
     </button>
@@ -921,10 +928,11 @@
       </div>
 
       <!-- レシート読み取り（AI-OCR） -->
-      <label for="receiptFileInput" id="scanReceiptLabel" class="mt-3.5 flex items-center justify-center gap-2 bg-brand-50 border-2 border-dashed border-brand-500 text-brand-700 rounded-xl py-3 text-sm font-bold cursor-pointer hover:bg-brand-100 active:scale-98 select-none">
+      <div id="scanReceiptLabel" class="relative overflow-hidden mt-3.5 flex items-center justify-center gap-2 bg-brand-50 border-2 border-dashed border-brand-500 text-brand-700 rounded-xl py-3 text-sm font-bold cursor-pointer hover:bg-brand-100 active:scale-98 select-none">
+        <input type="file" accept="image/*" class="receipt-file-input absolute inset-0 w-full h-full opacity-0 cursor-pointer z-10" aria-label="レシート画像を選択" onchange="handleReceiptInputChange(this)">
         <i data-lucide="camera" class="w-5 h-5 pointer-events-none"></i>
         <span class="pointer-events-none">レシートを撮影・選択して自動入力</span>
-      </label>
+      </div>
       <p class="text-[10px] text-slate-400 mt-1">※ 画像はGoogleのAI(Gemini)に送信されます。カード番号・氏名が写らないよう撮影してください。</p>
 
       <form id="expenseForm" class="space-y-3.5 mt-3.5">
@@ -1634,7 +1642,7 @@
   </div>
 
   <!-- アプリ本体スクリプト -->
-  <script src="config.js"></script>
-  <script src="app.js"></script>
+  <script src="config.js?v=2.4.1"></script>
+  <script src="app.js?v=2.4.1"></script>
 </body>
 </html>
