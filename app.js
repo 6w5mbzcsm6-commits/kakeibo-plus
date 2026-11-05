@@ -9,7 +9,7 @@
  */
 
 const APP_CONFIG = window.PAIRBUDGET_CONFIG || {};
-const FRONTEND_VERSION = 'v2.4.1';
+const FRONTEND_VERSION = 'v2.4.2';
 const MAX_HISTORY_MONTHS = 36;
 const FIELD_LABELS = {
   date: '日付', title: '品名', amount: '金額', category: 'カテゴリ', isShared: '共同',
@@ -3820,6 +3820,33 @@ window.runSystemDiagnostics = async function () {
       ? `LINEユーザー名: ${state.liffDisplayName || '取得済'} (ID: ${APP_CONFIG.LIFF_ID})`
       : `LIFF ID: ${APP_CONFIG.LIFF_ID || '未設定'} (通常のWebブラウザとして動作中)`
   });
+
+  // 6. AI レシート読み取り (Gemini API)
+  const gemini = backendData.gemini || {};
+  if (gemini.apiKeyConfigured) {
+    if (gemini.primaryModel) {
+      items.push({
+        title: '6. AI レシート読み取り (Gemini)',
+        status: 'ok',
+        badge: `接続成功 (${gemini.primaryModel})`,
+        desc: `Google AI Studioと正常に通信。優先モデル [${gemini.primaryModel}] を含む ${gemini.availableModels?.length || 0} 個の利用可能モデルを自動検出しました。`
+      });
+    } else {
+      items.push({
+        title: '6. AI レシート読み取り (Gemini)',
+        status: 'warn',
+        badge: 'モデル一覧取得失敗',
+        desc: `APIキーは設定されていますがモデル一覧の取得に失敗しました: ${gemini.error || '不明なエラー'}（フォールバックモデルで動作します）`
+      });
+    }
+  } else {
+    items.push({
+      title: '6. AI レシート読み取り (Gemini)',
+      status: 'info',
+      badge: '未設定 (任意)',
+      desc: 'GEMINI_API_KEY が未設定です。設定するとレシート写真からの支出自動入力機能が利用可能になります。'
+    });
+  }
 
   // レンダリング
   let summaryHtml = '';

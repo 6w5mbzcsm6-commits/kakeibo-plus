@@ -781,7 +781,7 @@ async function handleGetInitialData(supabase, targetMonth, actor, requestedPairI
 
   return {
     success: true,
-    version: 'v2.4.1',
+    version: 'v2.4.2',
     pair: {
       id: pairId,
       name: config.pairName,
@@ -1447,6 +1447,108 @@ async function handleUpdateBaseContribution(supabase, data, actor) {
   return { success: true };
 }
 
+// Geminiモデルキャッシュ (10分間有効)
+let geminiModelsCache = {
+  timestamp: 0,
+  models: []
+};
+
+/**
+ * 利用可能なGeminiモデルをGoogle AI Studioから動的に取得しスコアリングして返す
+ */
+async function getAvailableGeminiModels(apiKey) {
+  const now = Date.now();
+  if (geminiModelsCache.models.length > 0 && (now - geminiModelsCache.timestamp < 10 * 60 * 1000)) {
+    return geminiModelsCache.models;
+  }
+
+  const fallbackModels = [
+    'gemini-3.8-flash',
+    'gemini-3.6-flash',
+    'gemini-3.5-flash',
+    'gemini-3.5-flash-lite',
+    'gemini-3-flash-preview',
+    'gemini-2.5-flash-lite',
+    'gemini-2.5-flash',
+    'gemini-2.0-flash'
+  ];
+
+  if (!apiKey) return fallbackModels;
+
+  try {
+    const url = 'https://generativelanguage.googleapis.com/v1beta/models';
+    const res = await fetch(url, {
+      method: 'GET',
+      headers: { 'x-goog-api-key': apiKey }
+    });
+
+    if (!res.ok) {
+      console.warn(`Gemini models.list failed: ${res.status}`);
+      return fallbackModels;
+    }
+
+    const data = await res.json();
+    const rawList = Array.isArray(data.models) ? data.models : [];
+
+    // generateContent をサポートし、gemini 系かつ除外対象でないモデルを抽出
+    const candidates = rawList
+      .filter(m => {
+        const canGenerate = Array.isArray(m.supportedGenerationMethods) && m.supportedGenerationMethods.includes('generateContent');
+        const isGemini = /^models\/gemini/i.test(m.name || '');
+        const isExcluded = /embedding|imagen|veo|aqa|tts|audio|robotics|computer-use|learnlm|gemma/i.test(m.name || '');
+        return canGenerate && isGemini && !isExcluded;
+      })
+      .map(m => (m.name || '').replace(/^models\//i, '').trim())
+      .filter(Boolean);
+
+    if (candidates.length === 0) {
+      return fallbackModels;
+    }
+
+    // スコアリングソート関数
+    function scoreModel(name) {
+      let score = 0;
+      const lower = name.toLowerCase();
+
+      // flash優先（標準 flash > flash-lite）
+      if (lower.includes('flash')) {
+        score += 1000;
+        if (!lower.includes('flash-lite')) {
+          score += 200;
+        }
+      } else if (lower.includes('pro')) {
+        score += 500;
+      }
+
+      // バージョン番号
+      const vMatch = lower.match(/gemini-(\d+(?:\.\d+)?)/);
+      if (vMatch) {
+        const vNum = parseFloat(vMatch[1]) || 0;
+        score += vNum * 50;
+      }
+
+      // 安定版優先
+      if (!lower.includes('exp') && !lower.includes('preview') && !lower.includes('thinking')) {
+        score += 100;
+      }
+
+      return score;
+    }
+
+    candidates.sort((a, b) => scoreModel(b) - scoreModel(a));
+
+    geminiModelsCache = {
+      timestamp: now,
+      models: candidates
+    };
+
+    return candidates;
+  } catch (err) {
+    console.warn('Gemini models.list fetch error:', err.message);
+    return fallbackModels;
+  }
+}
+
 /**
  * レシートOCR (Gemini API)
  */
@@ -1472,9 +1574,10 @@ async function handleScanReceipt(data, actor) {
     '- quantity は数量（不明なら1）。\n' +
     '- 品名はレシート表記のまま。ポイント・小計・合計・お釣り・税額の行は明細に含めない。\n' +
     '- date は yyyy-MM-dd。読み取れなければ空文字。\n' +
-    '- total はレシートに印字された支払合計（税込）の整数円。読み取れなければ0。';
+    '- total はレシートに印字された支払合計（税込）の整数円。読み取れなければ0。\n' +
+    '必ず以下のJSON形式のみで出力してください: {"store":"店名","date":"yyyy-MM-dd","total":0,"items":[{"name":"品名","quantity":1,"price":0}]}';
 
-  const body = {
+  const bodyWithSchema = {
     contents: [{ parts: [{ text: prompt }, { inline_data: { mime_type: mime, data: b64 } }] }],
     generationConfig: {
       responseMimeType: 'application/json',
@@ -1499,15 +1602,33 @@ async function handleScanReceipt(data, actor) {
     }
   };
 
-  const modelsToTry = [
-    normalizeEnvSecret(process.env.GEMINI_MODEL),
-    'gemini-2.0-flash',
-    'gemini-2.5-flash',
-    'gemini-1.5-flash'
-  ].filter(Boolean);
+  const bodyWithoutSchema = {
+    contents: [{ parts: [{ text: prompt }, { inline_data: { mime_type: mime, data: b64 } }] }],
+    generationConfig: {
+      responseMimeType: 'application/json',
+      temperature: 0
+    }
+  };
+
+  const availableModels = await getAvailableGeminiModels(apiKey);
+  const customModel = normalizeEnvSecret(process.env.GEMINI_MODEL);
+
+  let modelsToTry = [];
+  if (customModel) {
+    if (availableModels.includes(customModel)) {
+      modelsToTry = [customModel, ...availableModels.filter(m => m !== customModel)];
+    } else {
+      modelsToTry = [...availableModels, customModel];
+    }
+  } else {
+    modelsToTry = [...availableModels];
+  }
+  modelsToTry = Array.from(new Set(modelsToTry)).slice(0, 5);
 
   let res = null;
   let lastErrorDetail = '';
+  const triedDetails = [];
+
   for (const model of modelsToTry) {
     try {
       const url = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:generateContent`;
@@ -1517,20 +1638,46 @@ async function handleScanReceipt(data, actor) {
           'Content-Type': 'application/json',
           'x-goog-api-key': apiKey
         },
-        body: JSON.stringify(body)
+        body: JSON.stringify(bodyWithSchema)
       });
+
+      // 400 でスキーマ起因エラーの疑いがある場合はスキーマなしで再試行
+      if (res.status === 400) {
+        const errText = await res.text();
+        if (/schema|generationConfig|invalid argument/i.test(errText)) {
+          console.warn(`Gemini schema retry without schema for ${model}: ${errText.slice(0, 100)}`);
+          res = await fetch(url, {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+              'x-goog-api-key': apiKey
+            },
+            body: JSON.stringify(bodyWithoutSchema)
+          });
+        } else {
+          lastErrorDetail = `${model}: 400 ${errText.slice(0, 100)}`;
+          triedDetails.push(lastErrorDetail);
+          if (/API_KEY_INVALID|key not valid/i.test(errText)) break;
+          continue;
+        }
+      }
+
       if (res.ok) break;
-      lastErrorDetail = await res.text();
-      console.warn(`Gemini try failed (${model}): ${res.status} ${lastErrorDetail}`);
-      // 400 (API Key invalid) 以外は次のフォールバックモデルを継続試行
-      if (res.status === 400 && /API_KEY_INVALID|key not valid/i.test(lastErrorDetail)) break;
+
+      lastErrorDetail = `${model}: ${res.status} ${(await res.text()).slice(0, 100)}`;
+      triedDetails.push(lastErrorDetail);
+      console.warn(`Gemini try failed: ${lastErrorDetail}`);
     } catch (err) {
-      lastErrorDetail = err.message;
+      lastErrorDetail = `${model}: ${err.message}`;
+      triedDetails.push(lastErrorDetail);
     }
   }
 
   if (!res || !res.ok) {
-    return { success: false, error: `AI読み取りに失敗しました: ${lastErrorDetail.slice(0, 100)}` };
+    return {
+      success: false,
+      error: `AI読み取りに失敗しました (試行モデル: ${triedDetails.join(' | ')}): ${lastErrorDetail.slice(0, 150)}`
+    };
   }
 
   try {
@@ -2346,9 +2493,28 @@ async function handleHealthCheck(req) {
     dbStatus = '環境変数が未設定のため未接続';
   }
 
+  // Gemini APIモデル接続チェック
+  const geminiApiKey = normalizeEnvSecret(process.env.GEMINI_API_KEY);
+  const geminiInfo = {
+    apiKeyConfigured: !!geminiApiKey,
+    availableModels: [],
+    primaryModel: null,
+    error: null
+  };
+
+  if (geminiApiKey) {
+    try {
+      const gModels = await getAvailableGeminiModels(geminiApiKey);
+      geminiInfo.availableModels = gModels.slice(0, 8);
+      geminiInfo.primaryModel = gModels[0] || null;
+    } catch (gErr) {
+      geminiInfo.error = gErr.message;
+    }
+  }
+
   return {
     success: true,
-    version: 'v2.4.1',
+    version: 'v2.4.2',
     resolvedUrl: resolvedUrl ? resolvedUrl.replace(/\/\/[^@]+@/, '//***@') : '未設定',
     keyType: keyType,
     env: envCheck,
@@ -2357,6 +2523,7 @@ async function handleHealthCheck(req) {
       error: dbError ? (typeof dbError === 'object' ? `${dbError.message}${dbError.hint ? ' [' + dbError.hint + ']' : ''}` : String(dbError)) : null,
       errorDetail: dbError
     },
+    gemini: geminiInfo,
     timestamp: new Date().toISOString()
   };
 }
@@ -2528,7 +2695,7 @@ export default async function handler(req, res) {
       if (!actor.allowed) {
         return res.status(200).json({
           success: false,
-          version: 'v2.4.1',
+          version: 'v2.4.2',
           code: actor.code,
           error: actor.error,
           userId: actor.userId || '',
