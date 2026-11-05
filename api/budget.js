@@ -685,7 +685,7 @@ async function handleGetInitialData(supabase, targetMonth, actor, requestedPairI
     // 過去支出（月別推移計算用・直近36ヶ月）
     supabase
       .from('transactions')
-      .select('date, amount, is_shared, payer_id')
+      .select('date, amount, is_shared, payment_type, payer_id')
       .eq('pair_id', pairId)
       .gte('date', `${new Date(Date.now() - 36 * 30 * 86400000).toISOString().slice(0, 7)}-01`)
   ]);
@@ -782,7 +782,15 @@ async function handleGetInitialData(supabase, targetMonth, actor, requestedPairI
       [config.husbandName]: 0,
       [config.wifeName]: 0
     };
-    totalsMap[m] = { month: m, shared: 0, personal: personalObj, budget: resolvedBudget };
+    totalsMap[m] = {
+      month: m,
+      shared: 0,
+      personal: personalObj,
+      budget: resolvedBudget,
+      sharedCard: 0,
+      sharedCardLiving: 0,
+      sharedCardPersonal: 0
+    };
     totalsOrder.push(m);
   }
 
@@ -791,6 +799,15 @@ async function handleGetInitialData(supabase, targetMonth, actor, requestedPairI
     const b = totalsMap[m];
     if (!b) return;
     const amt = Number(tx.amount) || 0;
+    const isSharedCard = tx.payment_type === 'shared_card';
+    if (isSharedCard) {
+      b.sharedCard += amt;
+      if (tx.is_shared) {
+        b.sharedCardLiving += amt;
+      } else {
+        b.sharedCardPersonal += amt;
+      }
+    }
     if (tx.is_shared) {
       b.shared += amt;
     } else {
@@ -809,7 +826,7 @@ async function handleGetInitialData(supabase, targetMonth, actor, requestedPairI
 
   return {
     success: true,
-    version: 'v2.5.0',
+    version: 'v2.6.0',
     pair: {
       id: pairId,
       name: config.pairName,
@@ -1047,8 +1064,8 @@ async function handleRegisterMember(supabase, idToken, data) {
 async function handleAddTransaction(supabase, data, actor) {
   const pairId = getTargetPairId(actor, data);
   const amount = Number(data.amount);
-  if (!Number.isInteger(amount) || amount <= 0 || amount > 10000000) {
-    return { success: false, error: '金額は1円以上の整数で入力してください' };
+  if (!Number.isInteger(amount) || amount === 0 || Math.abs(amount) > 10000000) {
+    return { success: false, error: '金額は0円以外の整数で入力してください' };
   }
   const title = String(data.title || '').trim().slice(0, 50);
   if (!title) return { success: false, error: '品名を入力してください' };
@@ -1090,7 +1107,7 @@ async function handleUpdateTransaction(supabase, data, actor) {
   const pairId = getTargetPairId(actor, data);
   if (!data.id) return { success: false, error: '支出IDが必要です' };
   const amount = Number(data.amount);
-  if (!Number.isInteger(amount) || amount <= 0) return { success: false, error: '金額が正しくありません' };
+  if (!Number.isInteger(amount) || amount === 0 || Math.abs(amount) > 10000000) return { success: false, error: '金額が正しくありません' };
   const title = String(data.title || '').trim().slice(0, 50);
   if (!title) return { success: false, error: '品名を入力してください' };
   const date = data.date || todayStr();
@@ -1604,14 +1621,23 @@ async function handleScanReceipt(data, actor) {
   }
 
   const prompt =
-    'これは日本のレシート画像です。店名、購入日、明細を読み取ってください。\n' +
-    '- price は「その行の税込合計金額（数量×単価）」の整数円。値引き・割引行は負の整数で別の明細にする。\n' +
+    'これは日本のレシート画像です。店名、購入日、明細を精確に読み取ってください。\n' +
+    '【重要ルール1: 単価・数量・金額の行ズレ防止（日本のスーパー、ベイシア・イオン等）】\n' +
+    '- 商品名のみの行（右端に金額印字がない行）の直下の行に「@単価 数量 小計金額」（例: "@52 2 ¥104"）が印字されている場合、その数量と金額は【必ず直上の商品名（例: まろやか絹豆腐）】のものである。絶対に直下の別商品（例: 白菜）と結びつけたり分断しないこと！\n' +
+    '【重要ルール2: クーポン値引き・末尾マイナス表記（コストコ・スーパー等）】\n' +
+    '- 金額の末尾に「-」「-T」「-E」「-A」が付いている表記（例: "700-T", "897-E", "897-"）や、先頭に「▲」「△」「-」が付く表記は、すべて【負の整数（例: -700, -897）】として出力すること！\n' +
+    '- "CPN"（クーポン）、"TPD"、"値引"、"割引"、"クーポン" の行、またはその直下の値引き金額行は必ず負の整数（例: -700）の price にすること。\n' +
+    '【重要ルール3: 返品・返金レシート（REFUND / 返金 / 返品）】\n' +
+    '- レシート内に「REFUND」「返金」「返品」「RFND」「買上げ点数 : -1」、または合計金額の末尾に「-」（例: "合計 897-"）がある場合、そのレシートは返金レシートである。total およびすべての商品の price は必ず【負の整数（例: total: -897, price: -897）】で出力すること。\n' +
+    '【重要ルール4: 整数円・検算】\n' +
+    '- price は「その行の税込合計金額（数量×単価）」の整数円（値引きや返金は負の整数）。\n' +
     '- quantity は数量（不明なら1）。\n' +
     '- 品名はレシート表記のまま。ポイント・小計・合計・お釣り・税額の行は明細に含めない。\n' +
     '- date は yyyy-MM-dd。読み取れなければ空文字。\n' +
-    '- total はレシートに印字された支払合計（税込）の整数円。読み取れなければ0。\n' +
+    '- total はレシートに印字された最終支払合計（税込）の整数円（返金なら負の整数）。読み取れなければ0。\n' +
+    '- 各明細の price の合計（プラス分とマイナス値引き分の和）が total と一致するか検算すること。\n' +
     '必ず以下のJSON形式のみで出力してください:\n' +
-    '{"store":"店名","date":"yyyy-MM-dd","total":702,"items":[{"name":"品名","quantity":1,"price":390},{"name":"割引名","quantity":1,"price":-78}]}';
+    '{"store":"店名","date":"yyyy-MM-dd","total":528,"isRefund":false,"items":[{"name":"品名","quantity":1,"price":390},{"name":"CPN値引","quantity":1,"price":-700}]}';
 
   // 最速・高互換のリクエストBody（余計なresponseSchemaを持たせずresponseMimeTypeのみで超高速推論）
   const requestBody = {
@@ -1682,18 +1708,53 @@ async function handleScanReceipt(data, actor) {
     const rawText = (textPart?.text || '').replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/i, '').trim();
     const parsed = JSON.parse(rawText);
 
-    const items = (parsed.items || []).slice(0, 60).map(it => ({
-      name: String(it.name || '').trim().slice(0, 50),
-      quantity: Math.min(99, Math.max(1, parseInt(it.quantity, 10) || 1)),
-      price: parseInt(it.price, 10) || 0
-    })).filter(it => it.name && it.price !== 0);
+    // 返金レシートの判定（REFUND / 返金 / 返品 / 末尾マイナス）
+    const isRefund = parsed.isRefund === true ||
+                     Number(parsed.total) < 0 ||
+                     /返金|返品|REFUND|RFND/i.test(parsed.store || '') ||
+                     /返金|返品|REFUND|RFND|買上げ点数\s*:\s*-1/i.test(rawText) ||
+                     /合計\s*[\d,]+-/i.test(rawText);
+
+    let total = parseInt(parsed.total, 10) || 0;
+    if (isRefund && total > 0) total = -total;
+
+    let items = (parsed.items || []).slice(0, 60).map(it => {
+      let p = parseInt(it.price, 10) || 0;
+      const name = String(it.name || '').trim().slice(0, 50);
+      // 返金レシートなら全商品明細の金額もマイナス化
+      if (isRefund && p > 0) p = -p;
+      // 品名が値引き・クーポンの場合でプラスならマイナス化
+      if (/CPN|TPD|値引|割引|クーポン|▲|△/i.test(name) && p > 0) p = -p;
+      return {
+        name,
+        quantity: Math.min(99, Math.max(1, parseInt(it.quantity, 10) || 1)),
+        price: p
+      };
+    }).filter(it => it.name && it.price !== 0);
+
+    // 差額自動検算・符号反転補正（クーポン値引き等がプラスとして誤読されたケースを自動是正）
+    const itemSum = items.reduce((s, it) => s + it.price, 0);
+    const diff = itemSum - total;
+    if (diff > 0 && diff % 2 === 0) {
+      const targetHalf = diff / 2;
+      const fixCandidate = items.find(it => it.price === targetHalf);
+      if (fixCandidate) {
+        fixCandidate.price = -fixCandidate.price;
+      }
+    }
+
+    let storeName = String(parsed.store || '').trim().slice(0, 50);
+    if (isRefund && !/返金|返品|REFUND/i.test(storeName)) {
+      storeName = `${storeName || '店舗'} (返金)`;
+    }
 
     return {
       success: true,
       receipt: {
-        store: String(parsed.store || '').trim().slice(0, 50),
+        store: storeName,
         date: isValidDateStr(parsed.date) ? parsed.date : todayStr(),
-        total: parseInt(parsed.total, 10) || 0,
+        total: total,
+        isRefund: isRefund,
         items: items
       }
     };
@@ -1721,16 +1782,19 @@ async function handleSaveReceipt(supabase, data, actor) {
     const name = String(it.name || '').trim().slice(0, 50);
     const qty = Number(it.quantity);
     const price = Number(it.price);
+    const isShared = it.isShared !== false && String(it.isShared) !== 'false';
     if (!name || !Number.isInteger(qty) || qty < 1 || !Number.isInteger(price) || price === 0) {
       return { success: false, error: '明細の入力内容が不正です: ' + name };
     }
-    items.push({ name, qty, price, unitPrice: Math.round(price / qty) });
+    items.push({ name, qty, price, unitPrice: Math.round(price / qty), isShared });
   }
 
   const total = items.reduce((s, it) => s + it.price, 0);
-  if (total <= 0) return { success: false, error: '合計金額が0円以下です' };
+  if (total === 0) return { success: false, error: '合計金額が0円です' };
 
   const payer = String(data.payer || actor.name).trim();
+  const paymentType = data.paymentType || 'shared_card';
+  const category = String(data.category || '食費').slice(0, 20);
 
   // 1. receipts 登録
   const { data: recRow, error: recErr } = await supabase.from('receipts').insert({
@@ -1756,7 +1820,7 @@ async function handleSaveReceipt(supabase, data, actor) {
     quantity: it.qty,
     price: it.price,
     unit_price: it.unitPrice,
-    category_id: String(data.category || '食費')
+    category_id: category
   }));
 
   const { error: itemErr } = await supabase.from('receipt_items').insert(itemRows);
@@ -1764,27 +1828,70 @@ async function handleSaveReceipt(supabase, data, actor) {
     console.error('receipt_items登録失敗:', itemErr);
   }
 
-  // 3. transactions 登録（支出親レコード）
-  const txRow = {
-    pair_id: pairId,
-    date: date,
-    title: store,
-    amount: total,
-    category_id: String(data.category || '食費').slice(0, 20),
-    is_shared: data.isShared !== false && String(data.isShared) !== 'false',
-    payment_type: data.paymentType || 'shared_card',
-    payer_id: payer,
-    memo: 'レシート読み取り',
-    created_by: actor.name,
-    receipt_id: receiptId
-  };
+  // 3. transactions 登録（明細ごとの「共同 / 私物」個別分割対応）
+  const itemsShared = items.filter(it => it.isShared);
+  const itemsPersonal = items.filter(it => !it.isShared);
+  const totalShared = itemsShared.reduce((s, it) => s + it.price, 0);
+  const totalPersonal = itemsPersonal.reduce((s, it) => s + it.price, 0);
 
-  const { data: txData, error: txErr } = await supabase.from('transactions').insert(txRow).select('id').single();
-  if (txErr) {
-    console.error('transactions登録失敗:', txErr);
+  let primaryTxId = null;
+
+  if (itemsPersonal.length > 0 && itemsShared.length > 0) {
+    // 共同生活費分と個人私物分の2件のトランザクションを登録
+    const { data: txSharedData } = await supabase.from('transactions').insert({
+      pair_id: pairId,
+      date: date,
+      title: store,
+      amount: totalShared,
+      category_id: category,
+      is_shared: true,
+      payment_type: paymentType,
+      payer_id: payer,
+      memo: 'レシート読み取り（共同生活費分）',
+      created_by: actor.name,
+      receipt_id: receiptId
+    }).select('id').single();
+
+    const { data: txPersonalData } = await supabase.from('transactions').insert({
+      pair_id: pairId,
+      date: date,
+      title: `${store} (私物分)`,
+      amount: totalPersonal,
+      category_id: category,
+      is_shared: false,
+      payment_type: paymentType,
+      payer_id: payer,
+      memo: 'レシート読み取り（個人私物分・要返還）',
+      created_by: actor.name,
+      receipt_id: receiptId
+    }).select('id').single();
+
+    primaryTxId = txSharedData?.id || txPersonalData?.id;
+  } else {
+    // 全明細が同一スコープの場合（単一トランザクション）
+    const isSharedScope = itemsPersonal.length === 0;
+    const txRow = {
+      pair_id: pairId,
+      date: date,
+      title: isSharedScope ? store : `${store} (私物分)`,
+      amount: total,
+      category_id: category,
+      is_shared: isSharedScope,
+      payment_type: paymentType,
+      payer_id: payer,
+      memo: 'レシート読み取り',
+      created_by: actor.name,
+      receipt_id: receiptId
+    };
+
+    const { data: txData, error: txErr } = await supabase.from('transactions').insert(txRow).select('id').single();
+    if (txErr) {
+      console.error('transactions登録失敗:', txErr);
+    }
+    primaryTxId = txData?.id;
   }
 
-  const txId = txData ? txData.id : null;
+  const txId = primaryTxId;
   await writeAudit(supabase, actor, pairId, '追加', 'レシート', txId, null, {
     receiptId, date, title: store, amount: total, items
   });
@@ -1832,6 +1939,144 @@ async function handleSaveReceipt(supabase, data, actor) {
   }
 
   return { success: true, receiptId, txId, total, autoCheckedShoppingItems };
+}
+
+/**
+ * レシート・明細・内訳の更新 (手修正解禁 ＆ 変更履歴 audit_logs 記録)
+ */
+async function handleUpdateReceipt(supabase, data, actor) {
+  const pairId = getTargetPairId(actor, data);
+  const receiptId = String(data.receiptId || data.id || '').trim();
+  if (!receiptId) return { success: false, error: 'レシートIDが指定されていません' };
+
+  const store = String(data.store || '').trim().slice(0, 50);
+  if (!store) return { success: false, error: '店名を入力してください' };
+  const date = data.date || todayStr();
+  if (!isValidDateStr(date)) return { success: false, error: '日付の形式が正しくありません' };
+
+  if (!Array.isArray(data.items) || data.items.length < 1 || data.items.length > 60) {
+    return { success: false, error: '明細は1〜60件で入力してください' };
+  }
+
+  // 既存レシートと明細を取得（Before の記録用）
+  const { data: oldRec } = await supabase.from('receipts').select('*').eq('id', receiptId).eq('pair_id', pairId).single();
+  if (!oldRec) return { success: false, error: '更新対象のレシートが見つかりません' };
+
+  const { data: oldItems } = await supabase.from('receipt_items').select('*').eq('receipt_id', receiptId);
+
+  const items = [];
+  for (const it of data.items) {
+    const name = String(it.name || '').trim().slice(0, 50);
+    const qty = Number(it.quantity);
+    const price = Number(it.price);
+    const isShared = it.isShared !== false && String(it.isShared) !== 'false';
+    if (!name || !Number.isInteger(qty) || qty < 1 || !Number.isInteger(price) || price === 0) {
+      return { success: false, error: '明細の入力内容が不正です: ' + name };
+    }
+    items.push({ name, qty, price, unitPrice: Math.round(price / qty), isShared });
+  }
+
+  const total = items.reduce((s, it) => s + it.price, 0);
+  if (total === 0) return { success: false, error: '合計金額が0円です' };
+
+  // 1. receipts テーブル更新
+  await supabase.from('receipts').update({
+    store_name: store,
+    date: date,
+    total_amount: total
+  }).eq('id', receiptId).eq('pair_id', pairId);
+
+  // 2. 既存の receipt_items を一旦削除して再挿入
+  await supabase.from('receipt_items').delete().eq('receipt_id', receiptId);
+
+  const payer = String(data.payer || actor.name).trim();
+  const paymentType = data.paymentType || 'shared_card';
+  const category = String(data.category || '食費').slice(0, 20);
+
+  const itemRows = items.map(it => ({
+    receipt_id: receiptId,
+    item_name: it.name,
+    normalized_name: normalizeName(it.name),
+    quantity: it.qty,
+    price: it.price,
+    unit_price: it.unitPrice,
+    category_id: category
+  }));
+  await supabase.from('receipt_items').insert(itemRows);
+
+  // 3. transactions の更新（共同/私物の個別分割対応）
+  const itemsShared = items.filter(it => it.isShared);
+  const itemsPersonal = items.filter(it => !it.isShared);
+  const totalShared = itemsShared.reduce((s, it) => s + it.price, 0);
+  const totalPersonal = itemsPersonal.reduce((s, it) => s + it.price, 0);
+
+  // 既存の関連 transactions を削除
+  await supabase.from('transactions').delete().eq('receipt_id', receiptId).eq('pair_id', pairId);
+
+  if (itemsPersonal.length > 0 && itemsShared.length > 0) {
+    // 共同生活費分と個人私物分の2件を登録
+    await supabase.from('transactions').insert([
+      {
+        pair_id: pairId,
+        date: date,
+        title: store,
+        amount: totalShared,
+        category_id: category,
+        is_shared: true,
+        payment_type: paymentType,
+        payer_id: payer,
+        memo: 'レシート修正（共同生活費分）',
+        created_by: actor.name,
+        receipt_id: receiptId
+      },
+      {
+        pair_id: pairId,
+        date: date,
+        title: `${store} (私物分)`,
+        amount: totalPersonal,
+        category_id: category,
+        is_shared: false,
+        payment_type: paymentType,
+        payer_id: payer,
+        memo: 'レシート修正（個人私物分・要返還）',
+        created_by: actor.name,
+        receipt_id: receiptId
+      }
+    ]);
+  } else {
+    // 単一トランザクション
+    const isSharedScope = itemsPersonal.length === 0;
+    await supabase.from('transactions').insert({
+      pair_id: pairId,
+      date: date,
+      title: isSharedScope ? store : `${store} (私物分)`,
+      amount: total,
+      category_id: category,
+      is_shared: isSharedScope,
+      payment_type: paymentType,
+      payer_id: payer,
+      memo: 'レシート修正',
+      created_by: actor.name,
+      receipt_id: receiptId
+    });
+  }
+
+  // 4. 変更履歴 (audit_logs) 記録
+  await writeAudit(supabase, actor, pairId, '更新', 'レシート', receiptId, {
+    store: oldRec.store_name,
+    date: oldRec.date,
+    total: oldRec.total_amount,
+    itemCount: oldItems?.length || 0
+  }, {
+    store,
+    date,
+    total,
+    items,
+    sharedAmount: totalShared,
+    personalAmount: totalPersonal
+  });
+
+  return { success: true, receiptId, total };
 }
 
 /**
@@ -2433,7 +2678,63 @@ async function processNaturalLanguageMessage(supabase, text, userId) {
     }
   }
 
-  // 3. ヘルプ
+  // メンバー名照合ヘルパー
+  const resolveMemberQuery = (query) => {
+    if (!query) return null;
+    const q = String(query).trim();
+    if (['夫', 'パパ', 'メンバー1', 'slot1'].includes(q)) return config.husbandName;
+    if (['妻', 'ママ', 'メンバー2', 'slot2'].includes(q)) return config.wifeName;
+    if (q === config.husbandName) return config.husbandName;
+    if (q === config.wifeName) return config.wifeName;
+    if (Array.isArray(config.members)) {
+      const m = config.members.find(x => x.name === q || x.role === q);
+      if (m) return m.name;
+    }
+    return null;
+  };
+
+  // 3. 代理入力解除コマンド
+  if (/^(?:代理解除|代理終了|代理モード解除)$/.test(text)) {
+    await setAppSetting(supabase, pairId, 'lineProxyState', null);
+    return '👥 代理入力モードを解除しました。通常モードに戻ります✨';
+  }
+
+  // 4. 代理入力コマンド（事後変更または事前宣言）
+  const proxyMatch = text.match(/^(?:代理|支払者|登録者)\s+([^\d\s　]+)(?:\s+(.+))?$/);
+  if (proxyMatch && !/\d+/.test(text)) {
+    const targetQuery = proxyMatch[1].trim();
+    const targetMember = resolveMemberQuery(targetQuery);
+    if (!targetMember) {
+      return `メンバー「${targetQuery}」が見つかりませんでした。「代理 ${config.husbandName}」または「代理 ${config.wifeName}」のように指定してください✨`;
+    }
+
+    // A. 事後変更: 直近5分以内に自分が登録した支出があれば支払者を変更
+    const fiveMinAgo = new Date(Date.now() - 5 * 60 * 1000).toISOString();
+    const { data: recentTxs } = await supabase
+      .from('transactions')
+      .select('*')
+      .eq('pair_id', pairId)
+      .eq('created_by', actor.name)
+      .gte('created_at', fiveMinAgo)
+      .order('created_at', { ascending: false })
+      .limit(1);
+
+    if (recentTxs && recentTxs.length > 0) {
+      const recentTx = recentTxs[0];
+      await supabase.from('transactions').update({ payer_id: targetMember }).eq('id', recentTx.id).eq('pair_id', pairId);
+      await writeAudit(supabase, actor, pairId, '更新', '支出', recentTx.id, { payer: recentTx.payer_id }, { payer: targetMember, note: 'LINE代理事後変更' });
+      return `✅ 直前の支出「${recentTx.title}（¥${Number(recentTx.amount).toLocaleString()}）」の支払者を【${targetMember}さん】に変更しました！`;
+    }
+
+    // B. 事前宣言モード: 今後10分間またはレシート送信まで代理入力モードを保持
+    await setAppSetting(supabase, pairId, 'lineProxyState', {
+      payer: targetMember,
+      expiresAt: Date.now() + 10 * 60 * 1000
+    });
+    return `👥【代理入力モード開始】\n支払者を「${targetMember}さん」として設定しました！\n今後10分間、またはレシート写真送信まで、${targetMember}さんの支出として自動登録されます✨\n（解除するには「代理解除」と返信してください）`;
+  }
+
+  // 5. ヘルプ
   if (/^(ヘルプ|使い方|help)$/i.test(text)) {
     return '💡【家計簿Botの使い方】\n\n' +
       '■ かんたん支出登録\n・スーパー 3200\n・立替 2500 ドラッグストア\n・共同カード 私物 4800 服\n\n' +
@@ -2594,7 +2895,16 @@ async function processNaturalLanguageMessage(supabase, text, userId) {
   let amount = null;
   let paymentType = 'shared_card';
   let isShared = true;
+
+  // 事前宣言された代理入力モードを確認
+  const proxyState = await getAppSetting(supabase, pairId, 'lineProxyState', null);
+  let isProxy = false;
   let payer = actor.name;
+  if (proxyState && proxyState.payer && proxyState.expiresAt > Date.now()) {
+    payer = proxyState.payer;
+    isProxy = true;
+  }
+
   const remainingParts = [];
 
   parts.forEach(part => {
@@ -2603,8 +2913,16 @@ async function processNaturalLanguageMessage(supabase, text, userId) {
     if (part === '立替') { paymentType = 'advanced_by_user'; return; }
     if (part === '私物' || part === '個人') { isShared = false; return; }
     if (part === '共同カード') { paymentType = 'shared_card'; return; }
-    if (part === config.husbandName || part === '夫' || part === 'パパ') { payer = config.husbandName; return; }
-    if (part === config.wifeName || part === '妻' || part === 'ママ') { payer = config.wifeName; return; }
+    if (part === '代理') return;
+
+    // メンバー名の判定（代理指定）
+    const matched = resolveMemberQuery(part);
+    if (matched) {
+      payer = matched;
+      if (payer !== actor.name) isProxy = true;
+      return;
+    }
+
     remainingParts.push(part);
   });
 
@@ -2664,11 +2982,16 @@ async function processNaturalLanguageMessage(supabase, text, userId) {
     memo: 'LINE Bot登録'
   }, actor);
 
+  if (isProxy && proxyState) {
+    await setAppSetting(supabase, pairId, 'lineProxyState', null);
+  }
+
   let typeDesc = '共同費';
   if (!isShared && paymentType === 'shared_card') typeDesc = `⚠️共同カード私物（${payer}の振込額に加算）`;
   else if (isShared && paymentType === 'advanced_by_user') typeDesc = `✨個人立替（${payer}の振込額から控除）`;
 
-  return `✅ 記録しました！\n━━━━━━━━━━━━━━\n品名: ${title}\n金額: ¥${amount.toLocaleString()}\nカテゴリ: ${category}\n種別: ${typeDesc}\n支払者: ${payer}\n━━━━━━━━━━━━━━`;
+  const proxyBanner = isProxy ? `👥 代理入力（支払者: ${payer}さん）\n━━━━━━━━━━━━━━\n` : '';
+  return `${proxyBanner}✅ 記録しました！\n━━━━━━━━━━━━━━\n品名: ${title}\n金額: ¥${amount.toLocaleString()}\nカテゴリ: ${category}\n種別: ${typeDesc}\n支払者: ${payer}\n━━━━━━━━━━━━━━`;
 }
 
 /**
@@ -2779,6 +3102,16 @@ async function processLineImageMessage(supabase, messageId, userId, lineToken) {
     }
   }
 
+  // 代理入力モードの確認
+  const proxyState = await getAppSetting(supabase, pairId, 'lineProxyState', null);
+  let payer = actor.name;
+  let isProxy = false;
+  if (proxyState && proxyState.payer && proxyState.expiresAt > Date.now()) {
+    payer = proxyState.payer;
+    isProxy = true;
+    await setAppSetting(supabase, pairId, 'lineProxyState', null);
+  }
+
   // 6. 家計簿への自動保存（receipts + receipt_items + transactions + 買い物リスト消込）
   const saveRes = await handleSaveReceipt(supabase, {
     store: receipt.store || 'レシート店舗',
@@ -2786,7 +3119,7 @@ async function processLineImageMessage(supabase, messageId, userId, lineToken) {
     items: receipt.items,
     isShared: true,
     paymentType: 'shared_card',
-    payer: actor.name,
+    payer: payer,
     category: '食費'
   }, actor);
 
@@ -2802,16 +3135,19 @@ async function processLineImageMessage(supabase, messageId, userId, lineToken) {
     autoCheckMsg = `\n\n✨ 買い物リストの「${saveRes.autoCheckedShoppingItems.join('」「')}」も自動で購入済みにしました！`;
   }
 
-  return waitNotice + `🧾 レシートを自動記録しました！\n` +
+  const proxyBanner = isProxy ? `👥 代理入力（支払者: ${payer}さん）\n━━━━━━━━━━━━━━\n` : '';
+
+  return waitNotice + proxyBanner + `🧾 レシートを自動記録しました！\n` +
     `━━━━━━━━━━━━━━\n` +
     `🏪 店名: ${receipt.store || '未設定'}\n` +
     `📅 日付: ${receipt.date}\n` +
     `💰 合計: ¥${receipt.total.toLocaleString()}（明細 ${receipt.items.length}件）\n` +
-    `💳 支払: 共同カード / ${actor.name}\n` +
+    `💳 支払: 共同カード / ${payer}\n` +
     `━━━━━━━━━━━━━━\n` +
     itemsPreview + moreCount +
     autoCheckMsg + `\n\n` +
-    `アプリの「履歴」タブに反映されました✨`;
+    `アプリの「履歴」タブに反映されました✨\n\n` +
+    `💡 パートナーの代理登録にする場合は「代理 〇〇」と返信してください`;
 }
 
 // ==========================================
@@ -2891,7 +3227,7 @@ async function handleHealthCheck(req) {
 
   return {
     success: true,
-    version: 'v2.5.0',
+    version: 'v2.6.0',
     resolvedUrl: resolvedUrl ? resolvedUrl.replace(/\/\/[^@]+@/, '//***@') : '未設定',
     keyType: keyType,
     env: envCheck,
@@ -3076,7 +3412,7 @@ export default async function handler(req, res) {
       if (!actor.allowed) {
         return res.status(200).json({
           success: false,
-          version: 'v2.5.0',
+          version: 'v2.6.0',
           code: actor.code,
           error: actor.error,
           userId: actor.userId || '',
@@ -3164,6 +3500,9 @@ export default async function handler(req, res) {
           break;
         case 'saveReceipt':
           result = await handleSaveReceipt(supabase, data, actor);
+          break;
+        case 'updateReceipt':
+          result = await handleUpdateReceipt(supabase, data, actor);
           break;
         case 'searchPrices':
           result = await handleSearchPrices(supabase, data.query, actor);

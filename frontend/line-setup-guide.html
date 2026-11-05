@@ -352,7 +352,30 @@
             <span class="text-[11px] text-emerald-600 font-bold px-2">写真を送信</span>
           </div>
 
-          <!-- v2.5.0 新機能コマンド -->
+          <!-- v2.6.0 代理入力コマンド -->
+          <div class="flex items-center justify-between p-2.5 rounded-xl bg-purple-50 border border-purple-200 col-span-1 sm:col-span-2">
+            <div>
+              <div class="flex items-center gap-1.5">
+                <span class="font-bold text-purple-900">👥 代理入力モード（v2.6.0新機能）</span>
+                <span class="text-[9px] bg-purple-200 text-purple-800 px-1.5 py-0.5 rounded font-bold">10分間有効</span>
+              </div>
+              <p class="text-[10px] text-purple-700 mt-0.5">「代理 夫」または「代理 妻」と送ると、続くレシート送信や支出入力が自動的に相手名義で登録されます。「代理解除」で戻せます。</p>
+            </div>
+            <div class="flex gap-1.5 shrink-0">
+              <button type="button" onclick="copyText('代理 夫')" class="text-xs bg-white hover:bg-purple-100 border border-purple-200 px-2 py-1 rounded-lg font-bold text-purple-900">代理 夫</button>
+              <button type="button" onclick="copyText('代理解除')" class="text-xs bg-white hover:bg-purple-100 border border-purple-200 px-2 py-1 rounded-lg font-bold text-slate-700">解除</button>
+            </div>
+          </div>
+
+          <div class="flex items-center justify-between p-2.5 rounded-xl bg-purple-50 border border-purple-200">
+            <div>
+              <span class="font-bold text-purple-900">夫 ガソリン 4500</span>
+              <p class="text-[10px] text-purple-700">文頭に名前をつけると1回限定で代理記帳</p>
+            </div>
+            <button type="button" onclick="copyText('夫 ガソリン 4500')" class="text-xs bg-white hover:bg-purple-100 border border-purple-200 px-2 py-1 rounded-lg font-bold text-purple-900">コピー</button>
+          </div>
+
+          <!-- 便利機能コマンド一覧 -->
           <div class="flex items-center justify-between p-2.5 rounded-xl bg-slate-50 border border-slate-200">
             <div>
               <span class="font-bold text-slate-800">買い物リスト見せて</span>

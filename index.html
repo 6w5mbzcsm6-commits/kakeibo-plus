@@ -16,7 +16,7 @@
   <!-- LINE LIFF SDK -->
   <script charset="utf-8" src="https://static.line-scdn.net/liff/edge/2/sdk.js"></script>
   <!-- Custom CSS -->
-  <link rel="stylesheet" href="style.css?v=2.5.0">
+  <link rel="stylesheet" href="style.css?v=2.6.0">
   <script>
     tailwind.config = {
       theme: {
@@ -83,7 +83,7 @@
         <div>
           <div class="flex items-center gap-1.5">
             <h1 class="text-base font-bold text-slate-900 leading-tight">ふたり家計簿</h1>
-            <span id="headerVersionBadge" onclick="forceHardReload()" title="タップして最新版に更新" class="bg-brand-50 text-brand-700 hover:bg-brand-100 text-[10px] font-bold px-1.5 py-0.5 rounded-full border border-brand-200 cursor-pointer transition-colors active:scale-95 select-none">v2.5.0</span>
+            <span id="headerVersionBadge" onclick="forceHardReload()" title="タップして最新版に更新" class="bg-brand-50 text-brand-700 hover:bg-brand-100 text-[10px] font-bold px-1.5 py-0.5 rounded-full border border-brand-200 cursor-pointer transition-colors active:scale-95 select-none">v2.6.0</span>
           </div>
           <!-- 月ナビゲーション（過去36ヶ月まで遡れる） -->
           <div class="flex items-center gap-1 -ml-1">
@@ -360,8 +360,11 @@
                   <span>① 翌月の生活費予算目安:</span>
                   <b id="guideNextMonthBudget" class="font-mono text-slate-700">¥240,000</b>
                 </div>
-                <div class="flex justify-between">
-                  <span>② 前月生活費のクレカ引落分:</span>
+                <div class="flex justify-between items-baseline">
+                  <div>
+                    <span>② 前月生活費のクレカ引落分:</span>
+                    <span id="guideLastMonthSharedCardSub" class="text-[9px] text-slate-400 block font-normal"></span>
+                  </div>
                   <b id="guideLastMonthSharedCard" class="font-mono text-slate-700">¥0</b>
                 </div>
                 <div class="flex justify-between">
@@ -863,7 +866,7 @@
           <footer class="pt-2 pb-6 text-center text-[10px] text-slate-400 font-mono flex items-center justify-center gap-2 select-none flex-wrap">
             <span class="inline-flex items-center gap-1 bg-slate-100 text-slate-600 px-2 py-0.5 rounded-full">
               <span>Web</span>
-              <b id="frontVersionLabel" class="text-slate-800">v2.5.0</b>
+              <b id="frontVersionLabel" class="text-slate-800">v2.6.0</b>
             </span>
             <span>/</span>
             <span class="inline-flex items-center gap-1 bg-slate-100 text-slate-600 px-2 py-0.5 rounded-full">
@@ -985,7 +988,15 @@
           <input type="date" id="expenseDate" required
                  class="w-full bg-slate-50 border border-slate-200 rounded-xl px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-brand-500">
         </div>
-        <p id="expenseLockNote" class="hidden text-[11px] text-slate-500 bg-slate-50 rounded-lg px-2.5 py-1.5">🧾 レシート由来の支出は、金額・品名を変更できません（明細との整合性を保つため）。違う場合は削除して登録し直してください。</p>
+        <!-- レシート由来支出のアクションボックス（手修正 ＆ 明細内訳編集） -->
+        <div id="expenseReceiptActionBox" class="hidden">
+          <div class="p-2.5 rounded-xl bg-emerald-50 border border-emerald-200/80 flex items-center justify-between text-xs text-emerald-900">
+            <span class="flex items-center gap-1.5 font-bold"><i data-lucide="receipt" class="w-4 h-4 text-emerald-600"></i> レシート由来の支出</span>
+            <button type="button" id="openEditReceiptDetailsBtn" onclick="openReceiptEditFromExpense()" class="text-xs font-bold text-emerald-700 hover:text-emerald-900 bg-white border border-emerald-300 px-2.5 py-1 rounded-lg flex items-center gap-1 shadow-2xs hover:bg-emerald-50 transition-colors cursor-pointer">
+              <i data-lucide="edit-3" class="w-3.5 h-3.5"></i> 明細・内訳を編集
+            </button>
+          </div>
+        </div>
 
         <!-- 金額入力 -->
         <div>
@@ -1200,6 +1211,7 @@
 
       <!-- 確認・修正フォーム -->
       <form id="receiptForm" class="hidden space-y-3 mt-3">
+        <input type="hidden" id="receiptEditId">
         <p class="text-[11px] text-amber-600 bg-amber-50 rounded-lg px-2.5 py-1.5">AIの読み取りは間違うことがあります。内容を確認・修正して保存してください。</p>
 
         <!-- ⚠️ 重複レシートの疑いアラートバナー -->
@@ -1233,6 +1245,15 @@
           <div class="flex items-center justify-between mt-2 pt-2 border-t border-slate-100">
             <span id="receiptDiffNote" class="text-[11px] text-amber-600"></span>
             <span class="text-sm font-black text-slate-900">合計 <span id="receiptTotal">¥0</span></span>
+          </div>
+          <!-- 共同/私物内訳プレビュー (要件3) -->
+          <div id="receiptScopeBreakdown" class="flex items-center justify-between text-xs pt-1.5 mt-1 border-t border-dashed border-slate-200">
+            <span class="flex items-center gap-1 font-medium text-slate-600">
+              <span class="w-2 h-2 rounded-full bg-brand-500"></span> 共同分: <b id="receiptSharedTotal" class="font-bold text-slate-800">¥0</b>
+            </span>
+            <span class="flex items-center gap-1 font-medium text-amber-700">
+              <span class="w-2 h-2 rounded-full bg-amber-500"></span> 私物分(要返還): <b id="receiptPersonalTotal" class="font-bold text-amber-800">¥0</b>
+            </span>
           </div>
         </div>
 
@@ -1829,7 +1850,7 @@
   </div>
 
   <!-- アプリ本体スクリプト -->
-  <script src="config.js?v=2.5.0"></script>
-  <script src="app.js?v=2.5.0"></script>
+  <script src="config.js?v=2.6.0"></script>
+  <script src="app.js?v=2.6.0"></script>
 </body>
 </html>

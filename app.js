@@ -9,7 +9,7 @@
  */
 
 const APP_CONFIG = window.PAIRBUDGET_CONFIG || {};
-const FRONTEND_VERSION = 'v2.5.0';
+const FRONTEND_VERSION = 'v2.6.0';
 const MAX_HISTORY_MONTHS = 36;
 const FIELD_LABELS = {
   date: '日付', title: '品名', amount: '金額', category: 'カテゴリ', isShared: '共同',
@@ -518,14 +518,32 @@ function mockBuildInitial(month) {
   const totals = [];
   for (let i = MAX_HISTORY_MONTHS - 1; i >= 0; i--) {
     const mm = shiftMonth(localMonthStr(), -i);
-    const row = { month: mm, shared: 0, personal: { husband: 0, wife: 0, [hName]: 0, [wName]: 0 }, budget: mockDb.budgets[mm] || 240000 };
+    const row = {
+      month: mm,
+      shared: 0,
+      personal: { husband: 0, wife: 0, [hName]: 0, [wName]: 0 },
+      budget: mockDb.budgets[mm] || 240000,
+      sharedCard: 0,
+      sharedCardLiving: 0,
+      sharedCardPersonal: 0
+    };
     mockDb.transactions.filter(t => t.date.startsWith(mm)).forEach(t => {
-      if (t.isShared) row.shared += t.amount;
-      else {
+      const amt = Number(t.amount) || 0;
+      if (t.isShared) {
+        row.shared += amt;
+      } else {
         const slot = resolvePayerSlot(t.payer);
         if (slot === 'husband' || slot === 'wife') {
-          row.personal[slot] += t.amount;
+          row.personal[slot] += amt;
           row.personal[memberName(slot)] = row.personal[slot];
+        }
+      }
+      if (t.paymentType === 'shared_card') {
+        row.sharedCard += amt;
+        if (t.isShared) {
+          row.sharedCardLiving += amt;
+        } else {
+          row.sharedCardPersonal += amt;
         }
       }
     });
@@ -567,7 +585,7 @@ async function mockApi(action, data) {
   switch (action) {
     case 'getInitialData': return mockBuildInitial(data.month || state.viewMonth);
     case 'addTransaction': {
-      if (!Number.isInteger(data.amount) || data.amount <= 0) return { success: false, error: '金額は1円以上の整数で入力してください' };
+      if (!Number.isInteger(data.amount) || data.amount === 0) return { success: false, error: '金額は0以外の整数で入力してください' };
       const tx = { ...data, id: mockId(), memo: data.memo || '', createdBy: state.currentUser, createdAt: mockNow(), updatedBy: '', updatedAt: '', receiptId: '' };
       mockDb.transactions.push(tx);
       mockAudit('追加', '支出', tx.id, null, pickTxFields(tx));
@@ -576,9 +594,9 @@ async function mockApi(action, data) {
     case 'updateTransaction': {
       const tx = mockDb.transactions.find(t => t.id === data.id);
       if (!tx) return { success: false, error: '対象の支出が見つかりません' };
+      if (!Number.isInteger(data.amount) || data.amount === 0) return { success: false, error: '金額は0以外の整数で入力してください' };
       const before = pickTxFields(tx);
       const next = { ...data };
-      if (tx.receiptId) { next.amount = tx.amount; next.title = tx.title; }
       Object.assign(tx, pickTxFields(next), { updatedBy: state.currentUser, updatedAt: mockNow() });
       if (tx.receiptId && before.date !== tx.date) {
         mockDb.receiptItems.forEach(it => { if (it.receiptId === tx.receiptId) it.date = tx.date; });
@@ -605,17 +623,132 @@ async function mockApi(action, data) {
       return { success: true, receipt: { store: 'イオン', date: localDateStr(), total: 736,
         items: [{ name: 'ネギ', quantity: 1, price: 180 }, { name: '豆腐', quantity: 1, price: 90 }, { name: '牛乳', quantity: 1, price: 218 }, { name: '卵', quantity: 1, price: 248 }] } };
     case 'saveReceipt': {
-      const total = data.items.reduce((s, it) => s + it.price, 0);
-      if (total <= 0) return { success: false, error: '合計金額が0円以下です' };
+      const total = (data.items || []).reduce((s, it) => s + (Number(it.price) || 0), 0);
+      if (total === 0) return { success: false, error: '合計金額が0円です' };
       const rid = mockId();
-      data.items.forEach(it => mockDb.receiptItems.push({ receiptId: rid, date: data.date, store: data.store, name: it.name,
-        quantity: it.quantity, price: it.price, unitPrice: Math.round(it.price / it.quantity), isShared: data.isShared, payer: data.payer }));
-      const tx = { id: mockId(), date: data.date, title: data.store, amount: total, category: data.category, isShared: data.isShared,
-        paymentType: data.paymentType, payer: data.payer, memo: 'レシート読み取り', createdBy: state.currentUser, createdAt: mockNow(),
-        updatedBy: '', updatedAt: '', receiptId: rid };
-      mockDb.transactions.push(tx);
-      mockAudit('追加', 'レシート', tx.id, null, { receiptId: rid, store: data.store, date: data.date, total, itemCount: data.items.length, isShared: data.isShared, payer: data.payer });
-      return { success: true, receiptId: rid, txId: tx.id, total };
+      (data.items || []).forEach(it => {
+        const itemShared = (it.isShared !== undefined && it.isShared !== null) ? !!it.isShared : !!data.isShared;
+        mockDb.receiptItems.push({
+          receiptId: rid,
+          date: data.date,
+          store: data.store,
+          name: it.name,
+          quantity: it.quantity || 1,
+          price: it.price,
+          unitPrice: Math.round(it.price / (it.quantity || 1)),
+          isShared: itemShared,
+          payer: data.payer
+        });
+      });
+
+      // 共同と私物に分割して支出レコード作成
+      const sharedItems = (data.items || []).filter(it => it.isShared !== false);
+      const personalItems = (data.items || []).filter(it => it.isShared === false);
+      const sharedSum = sharedItems.reduce((s, it) => s + (Number(it.price) || 0), 0);
+      const personalSum = personalItems.reduce((s, it) => s + (Number(it.price) || 0), 0);
+
+      const createdTxIds = [];
+      if (sharedSum !== 0) {
+        const txShared = {
+          id: mockId(), date: data.date, title: data.store, amount: sharedSum,
+          category: data.category, isShared: true, paymentType: data.paymentType,
+          payer: data.payer, memo: 'レシート読み取り (共同)', createdBy: state.currentUser,
+          createdAt: mockNow(), updatedBy: '', updatedAt: '', receiptId: rid
+        };
+        mockDb.transactions.push(txShared);
+        createdTxIds.push(txShared.id);
+      }
+      if (personalSum !== 0) {
+        const txPriv = {
+          id: mockId(), date: data.date, title: `${data.store}（私物）`, amount: personalSum,
+          category: 'その他', isShared: false, paymentType: data.paymentType,
+          payer: data.payer, memo: 'レシート読み取り (私物)', createdBy: state.currentUser,
+          createdAt: mockNow(), updatedBy: '', updatedAt: '', receiptId: rid
+        };
+        mockDb.transactions.push(txPriv);
+        createdTxIds.push(txPriv.id);
+      }
+
+      mockAudit('追加', 'レシート', rid, null, {
+        receiptId: rid,
+        store: data.store,
+        date: data.date,
+        total,
+        sharedSum,
+        personalSum,
+        itemCount: data.items.length,
+        payer: data.payer
+      });
+      return { success: true, receiptId: rid, txId: createdTxIds[0] || '', total };
+    }
+    case 'updateReceipt': {
+      const rid = data.receiptId;
+      if (!rid) return { success: false, error: 'レシートIDが指定されていません' };
+      const total = (data.items || []).reduce((s, it) => s + (Number(it.price) || 0), 0);
+      if (total === 0) return { success: false, error: '合計金額が0円です' };
+
+      const oldItems = mockDb.receiptItems.filter(it => it.receiptId === rid);
+      const oldTxs = mockDb.transactions.filter(t => t.receiptId === rid);
+      const beforeData = {
+        store: oldTxs[0]?.title || '',
+        date: oldTxs[0]?.date || '',
+        items: oldItems.map(it => ({ name: it.name, quantity: it.quantity, price: it.price, isShared: it.isShared }))
+      };
+
+      // 古い明細を削除して新明細を挿入
+      mockDb.receiptItems = mockDb.receiptItems.filter(it => it.receiptId !== rid);
+      (data.items || []).forEach(it => {
+        const itemShared = (it.isShared !== undefined && it.isShared !== null) ? !!it.isShared : !!data.isShared;
+        mockDb.receiptItems.push({
+          receiptId: rid,
+          date: data.date,
+          store: data.store,
+          name: it.name,
+          quantity: it.quantity || 1,
+          price: it.price,
+          unitPrice: Math.round(it.price / (it.quantity || 1)),
+          isShared: itemShared,
+          payer: data.payer
+        });
+      });
+
+      // 既存の紐づくtransactionsを削除して再生成
+      mockDb.transactions = mockDb.transactions.filter(t => t.receiptId !== rid);
+      const sharedItems = (data.items || []).filter(it => it.isShared !== false);
+      const personalItems = (data.items || []).filter(it => it.isShared === false);
+      const sharedSum = sharedItems.reduce((s, it) => s + (Number(it.price) || 0), 0);
+      const personalSum = personalItems.reduce((s, it) => s + (Number(it.price) || 0), 0);
+
+      const createdTxIds = [];
+      if (sharedSum !== 0) {
+        const txShared = {
+          id: mockId(), date: data.date, title: data.store, amount: sharedSum,
+          category: data.category, isShared: true, paymentType: data.paymentType,
+          payer: data.payer, memo: 'レシート読み取り (共同)', createdBy: state.currentUser,
+          createdAt: mockNow(), updatedBy: state.currentUser, updatedAt: mockNow(), receiptId: rid
+        };
+        mockDb.transactions.push(txShared);
+        createdTxIds.push(txShared.id);
+      }
+      if (personalSum !== 0) {
+        const txPriv = {
+          id: mockId(), date: data.date, title: `${data.store}（私物）`, amount: personalSum,
+          category: 'その他', isShared: false, paymentType: data.paymentType,
+          payer: data.payer, memo: 'レシート読み取り (私物)', createdBy: state.currentUser,
+          createdAt: mockNow(), updatedBy: state.currentUser, updatedAt: mockNow(), receiptId: rid
+        };
+        mockDb.transactions.push(txPriv);
+        createdTxIds.push(txPriv.id);
+      }
+
+      mockAudit('更新', 'レシート', rid, beforeData, {
+        store: data.store,
+        date: data.date,
+        items: data.items,
+        total
+      });
+
+      return { success: true, receiptId: rid, txId: createdTxIds[0] || '', total };
     }
     case 'searchPrices': return mockSearchPrices(data.query);
     case 'getAuditLog': {
@@ -1875,13 +2008,32 @@ function renderSavingsCard() {
 
   // 月初に共同口座へ残すお金ガイド
   if ($('guideNextMonthBudget')) $('guideNextMonthBudget').textContent = yen(state.summary.budget);
-  // 前月共同カード引落分
+  // 前月共同カード引落分 (v2.6.0: monthlyTotalsから前月実績を取得 ＆ 当月利用中の親切表示)
   const lastMonthStr = shiftMonth(state.viewMonth, -1);
-  const lastMonthCardTotal = state.transactions
-    .filter(t => t.isShared && t.paymentType === 'shared_card' && t.date.startsWith(lastMonthStr))
-    .reduce((sum, t) => sum + Number(t.amount || 0), 0);
+  const lastTotalObj = (state.monthlyTotals || []).find(m => m.month === lastMonthStr);
+  const lastMonthCardTotal = lastTotalObj ? Number(lastTotalObj.sharedCard || 0) : 0;
   if ($('guideLastMonthSharedCard')) $('guideLastMonthSharedCard').textContent = yen(lastMonthCardTotal);
-  if ($('guideAdjustment')) $('guideAdjustment').textContent = yen(0);
+
+  // 当月共同カード利用額
+  const curSharedCard = state.transactions
+    .filter(t => t.paymentType === 'shared_card')
+    .reduce((sum, t) => sum + Number(t.amount || 0), 0);
+
+  if ($('guideLastMonthSharedCardSub')) {
+    if (lastMonthCardTotal > 0) {
+      $('guideLastMonthSharedCardSub').textContent = `前月(${lastMonthStr})の共同カード利用実績`;
+    } else if (curSharedCard > 0) {
+      $('guideLastMonthSharedCardSub').textContent = `当月利用中: ${yen(curSharedCard)} (翌月初引落予定)`;
+    } else {
+      $('guideLastMonthSharedCardSub').textContent = `利用実績なし (¥0)`;
+    }
+  }
+
+  // 個人カード立替/私物精算控除
+  const myAdjustment = (state.transfers && state.transfers[state.currentSlot])
+    ? (Number(state.transfers[state.currentSlot].advancedForShared || 0) - Number(state.transfers[state.currentSlot].privateOnSharedCard || 0))
+    : 0;
+  if ($('guideAdjustment')) $('guideAdjustment').textContent = yen(Math.abs(myAdjustment));
 
   lucide.createIcons();
 }
@@ -1897,9 +2049,9 @@ function renderCategoryBudgets() {
   const categories = state.categories || [];
   if (!categories.length) return;
 
-  // カテゴリ別支出を計算
+  // カテゴリ別支出を計算（共同生活費の予算消化のため、純粋な共同費のみで集計）
   const spentMap = {};
-  scopedTransactions().forEach(t => {
+  state.transactions.filter(t => t.isShared).forEach(t => {
     spentMap[t.category] = (spentMap[t.category] || 0) + Number(t.amount || 0);
   });
 
@@ -1956,10 +2108,10 @@ function renderCategoryBudgets() {
   lucide.createIcons();
 }
 
-/** スコープ（共同/自分）に応じた表示対象の支出 */
+/** スコープ（共同/自分）に応じた表示対象の支出 (v2.6.0: 共同カードの個人支出も共同一覧に表示) */
 function scopedTransactions() {
   return state.transactions.filter(t => state.activeScope === 'shared'
-    ? t.isShared
+    ? (t.isShared || t.paymentType === 'shared_card')
     : (!t.isShared && isSameMember(t.payer, state.currentUser)));
 }
 
@@ -2052,6 +2204,11 @@ function createTransactionRow(item, isEditable) {
     <button data-action="tx-history" data-id="${esc(item.id)}" class="text-slate-300 hover:text-slate-600 p-1.5 rounded-lg active:bg-slate-100" aria-label="変更履歴"><i data-lucide="history" class="w-3.5 h-3.5"></i></button>
     <button data-action="edit-tx" data-id="${esc(item.id)}" class="text-slate-300 hover:text-slate-600 p-1.5 rounded-lg active:bg-slate-100" aria-label="編集"><i data-lucide="edit-3" class="w-3.5 h-3.5"></i></button>` : '';
 
+  const isRefund = Number(item.amount) < 0;
+  const amountHtml = isRefund
+    ? `<span class="text-sm font-black text-emerald-600">-${yen(Math.abs(item.amount))}</span><span class="text-[9px] px-1.5 py-0.5 rounded bg-emerald-100 text-emerald-800 font-bold ml-1">返金</span>`
+    : `<span class="text-sm font-black text-slate-900">${yen(item.amount)}</span>`;
+
   const head = `
     <div class="flex items-center gap-2.5 min-w-0">
       <span class="w-7 h-7 shrink-0 rounded-full flex items-center justify-center text-[10px] font-bold" style="${badgeStyle}" title="${esc(payerName)}">${esc(badgeText)}</span>
@@ -2064,11 +2221,15 @@ function createTransactionRow(item, isEditable) {
       </div>
     </div>
     <div class="flex items-center gap-1 shrink-0">
-      <span class="text-sm font-black text-slate-900">${yen(item.amount)}</span>${actions}
+      ${amountHtml}${actions}
     </div>`;
 
   if (items.length) {
-    const lines = items.map(it => `<div class="flex justify-between text-[11px] text-slate-600"><span>ー ${esc(it.name)}${it.quantity > 1 ? ` ×${it.quantity}` : ''}</span><span>${yen(it.price)}</span></div>`).join('');
+    const lines = items.map(it => {
+      const priceText = Number(it.price) < 0 ? `-${yen(Math.abs(it.price))}` : yen(it.price);
+      const isDiscount = Number(it.price) < 0;
+      return `<div class="flex justify-between text-[11px] ${isDiscount ? 'text-emerald-700 font-bold' : 'text-slate-600'}"><span>ー ${esc(it.name)}${it.quantity > 1 ? ` ×${it.quantity}` : ''}</span><span>${priceText}</span></div>`;
+    }).join('');
     wrap.innerHTML = `<details class="group py-2.5 rounded-xl transition-colors hover:bg-slate-50/60">
       <summary class="flex items-center justify-between cursor-pointer list-none gap-2">${head}</summary>
       <div class="ml-8 mt-1.5 pl-2 border-l-2 border-brand-100 space-y-0.5">${lines}</div></details>`;
@@ -2515,7 +2676,12 @@ function resizeImageToBase64(file, maxSide = 1024, quality = 0.78) {
 }
 
 function receiptRowHtml(it) {
+  const isShared = it.isShared !== false && String(it.isShared) !== 'false';
   return `<div class="flex gap-1.5 items-center" data-row>
+    <select class="rc-scope bg-white border border-slate-200 rounded-lg px-1 py-1.5 text-[11px] font-bold text-slate-700" aria-label="共同・私物">
+      <option value="true" ${isShared ? 'selected' : ''}>👥共同</option>
+      <option value="false" ${!isShared ? 'selected' : ''}>🔒私物</option>
+    </select>
     <input type="text" class="rc-name flex-1 min-w-0 bg-slate-50 border border-slate-200 rounded-lg px-2 py-1.5 text-xs" value="${esc(it.name)}" maxlength="50" aria-label="品名">
     <input type="number" class="rc-qty w-12 bg-slate-50 border border-slate-200 rounded-lg px-1.5 py-1.5 text-xs text-center" value="${esc(it.quantity)}" min="1" max="99" inputmode="numeric" aria-label="数量">
     <input type="number" class="rc-price w-20 bg-slate-50 border border-slate-200 rounded-lg px-1.5 py-1.5 text-xs text-right" value="${esc(it.price)}" aria-label="金額（値引きはマイナス）">
@@ -2526,23 +2692,32 @@ function collectReceiptRows() {
   return Array.from(document.querySelectorAll('#receiptItemRows [data-row]')).map(row => ({
     name: row.querySelector('.rc-name').value.trim(),
     quantity: parseInt(row.querySelector('.rc-qty').value, 10),
-    price: parseInt(row.querySelector('.rc-price').value, 10)
+    price: parseInt(row.querySelector('.rc-price').value, 10),
+    isShared: row.querySelector('.rc-scope')?.value !== 'false'
   }));
 }
 
 let scannedTotal = 0;
 function updateReceiptTotal() {
-  const sum = collectReceiptRows().reduce((s, r) => s + (Number.isInteger(r.price) ? r.price : 0), 0);
-  $('receiptTotal').textContent = yen(sum);
+  const rows = collectReceiptRows();
+  const sum = rows.reduce((s, r) => s + (Number.isInteger(r.price) ? r.price : 0), 0);
+  const sharedSum = rows.filter(r => r.isShared).reduce((s, r) => s + (Number.isInteger(r.price) ? r.price : 0), 0);
+  const personalSum = rows.filter(r => !r.isShared).reduce((s, r) => s + (Number.isInteger(r.price) ? r.price : 0), 0);
+
+  $('receiptTotal').textContent = sum < 0 ? `-${yen(Math.abs(sum))}` : yen(sum);
+  if ($('receiptSharedTotal')) $('receiptSharedTotal').textContent = sharedSum < 0 ? `-${yen(Math.abs(sharedSum))}` : yen(sharedSum);
+  if ($('receiptPersonalTotal')) $('receiptPersonalTotal').textContent = personalSum < 0 ? `-${yen(Math.abs(personalSum))}` : yen(personalSum);
+
+  const isEdit = !!$('receiptEditId')?.value;
   const diff = scannedTotal ? sum - scannedTotal : 0;
   const diffNote = $('receiptDiffNote');
-  if (diff !== 0) {
+  if (diff !== 0 && !isEdit) {
     diffNote.textContent = `⚠ レシート印字の合計 ${yen(scannedTotal)} と ${yen(Math.abs(diff))} 違います`;
     diffNote.className = 'text-xs font-bold text-rose-600';
     $('receiptSaveBtn').textContent = '差額があります。このまま保存';
   } else {
     diffNote.textContent = '';
-    $('receiptSaveBtn').textContent = 'この内容で保存する';
+    $('receiptSaveBtn').textContent = isEdit ? 'レシート・明細を更新する' : (sum < 0 ? '💸 返金レシートとして保存' : 'この内容で保存する');
   }
 }
 
@@ -2697,7 +2872,7 @@ async function handleReceiptFile(file) {
 }
 
 // ==========================================
-// 重複支出・レシート検知ヘルパー (v2.5.0)
+// 重複支出・レシート検知ヘルパー
 // ==========================================
 function findDuplicateExpense(date, amount, excludeId) {
   if (!date || !amount) return null;
@@ -2767,16 +2942,17 @@ function fillReceiptForm(r) {
   stopReceiptScanAnimation();
   const receipt = r || {};
   scannedTotal = Number(receipt.total) || 0;
+  if ($('receiptEditId')) $('receiptEditId').value = receipt.id || receipt.receiptId || '';
   $('receiptStore').value = receipt.store || '';
   $('receiptDate').value = receipt.date || localDateStr();
   $('receiptCategory').innerHTML = categoryOptionsHtml(guessCategoryByStore(receipt.store || ''));
-  $('receiptIsShared').value = 'true';
-  $('receiptPaymentType').value = 'shared_card';
+  $('receiptIsShared').value = receipt.isShared === false ? 'false' : 'true';
+  $('receiptPaymentType').value = receipt.paymentType || 'shared_card';
   updatePayerDropdowns();
-  $('receiptPayer').value = memberName(state.currentSlot);
-  const items = Array.isArray(receipt.items) && receipt.items.length ? receipt.items : [{ name: '', quantity: 1, price: 0 }];
+  $('receiptPayer').value = receipt.payer || memberName(state.currentSlot);
+  const items = Array.isArray(receipt.items) && receipt.items.length ? receipt.items : [{ name: '', quantity: 1, price: 0, isShared: true }];
   $('receiptItemRows').innerHTML =
-    '<div class="flex gap-1.5 text-[10px] text-slate-400 px-0.5"><span class="flex-1">品名</span><span class="w-12 text-center">数量</span><span class="w-20 text-right">金額(行合計)</span><span class="w-6"></span></div>' +
+    '<div class="flex gap-1.5 text-[10px] text-slate-400 px-0.5"><span class="w-16">種別</span><span class="flex-1">品名</span><span class="w-12 text-center">数量</span><span class="w-20 text-right">金額(行合計)</span><span class="w-6"></span></div>' +
     items.map(receiptRowHtml).join('');
   $('receiptLoading').classList.add('hidden');
   $('receiptForm').classList.remove('hidden');
@@ -2789,6 +2965,7 @@ function closeReceiptModal() {
   stopReceiptScanAnimation();
   $('receiptModal').classList.add('hidden');
   $('receiptDuplicateAlert')?.classList.add('hidden');
+  if ($('receiptEditId')) $('receiptEditId').value = '';
   if ($('receiptFileInput')) $('receiptFileInput').value = '';
   resetViewportZoom();
 }
@@ -2800,23 +2977,33 @@ async function handleReceiptSubmit(e) {
   if (items.some(r => !Number.isInteger(r.quantity) || r.quantity < 1 || r.quantity > 99)) { showToast('数量は1〜99で入力してください'); return; }
   if (items.some(r => !Number.isInteger(r.price) || r.price === 0)) { showToast('金額が空または0の行があります'); return; }
   const total = items.reduce((s, r) => s + r.price, 0);
-  if (total <= 0) { showToast('合計金額が0円以下です'); return; }
+  if (total === 0) { showToast('合計金額が0円です'); return; }
 
+  const editId = $('receiptEditId')?.value || '';
   const payload = {
+    id: editId,
+    receiptId: editId,
     store: $('receiptStore').value.trim(), date: $('receiptDate').value, category: $('receiptCategory').value,
     isShared: $('receiptIsShared').value === 'true', paymentType: $('receiptPaymentType').value,
     payer: $('receiptPayer').value, items
   };
 
-  // 重複レシート・同日同額チェックと確認ダイアログ
-  const dup = checkDuplicateReceipt(payload.date, total);
-  if (dup) {
-    const ok = window.confirm(`⚠️ 重複の可能性：\n同じ日付（${payload.date}）に同じ合計金額（${yen(dup.amount)}）の支出「${dup.title}」がすでに存在します。\n\n本当にこのレシートを保存しますか？`);
-    if (!ok) return;
+  // 重複レシート・同日同額チェックと確認ダイアログ（新規保存時のみ）
+  if (!editId) {
+    const dup = checkDuplicateReceipt(payload.date, total);
+    if (dup) {
+      const ok = window.confirm(`⚠️ 重複の可能性：\n同じ日付（${payload.date}）に同じ合計金額（${yen(dup.amount)}）の支出「${dup.title}」がすでに存在します。\n\n本当にこのレシートを保存しますか？`);
+      if (!ok) return;
+    }
   }
 
   closeReceiptModal();
-  const res = await writeAndRefresh('saveReceipt', payload, 'レシートを保存しました（明細も記録）', '🧾 レシートと明細を保存しています…');
+  let res;
+  if (editId) {
+    res = await writeAndRefresh('updateReceipt', payload, 'レシートと明細を更新しました', '🧾 レシートを更新しています…');
+  } else {
+    res = await writeAndRefresh('saveReceipt', payload, 'レシートを保存しました（明細も記録）', '🧾 レシートと明細を保存しています…');
+  }
   
   // 買い物リストから自動消込されたアイテムがあればトースト案内
   if (res && Array.isArray(res.autoCheckedShoppingItems) && res.autoCheckedShoppingItems.length > 0) {
@@ -2828,6 +3015,38 @@ async function handleReceiptSubmit(e) {
   }
 }
 
+// 支出編集モーダルからレシート明細・内訳編集モーダルを開く
+let currentEditingExpense = null;
+function openReceiptEditFromExpense() {
+  if (!currentEditingExpense || !currentEditingExpense.receiptId) return;
+  const receiptId = currentEditingExpense.receiptId;
+  closeExpenseModal();
+
+  const items = state.receiptItems.filter(it => it.receiptId === receiptId);
+  const r = {
+    id: receiptId,
+    store: currentEditingExpense.title.replace(/\s*\(私物分\)$/, ''),
+    date: currentEditingExpense.date,
+    category: currentEditingExpense.category,
+    paymentType: currentEditingExpense.paymentType,
+    payer: currentEditingExpense.payer,
+    isShared: currentEditingExpense.isShared,
+    total: currentEditingExpense.amount,
+    items: items.length > 0 ? items.map(it => ({
+      name: it.name,
+      quantity: it.quantity,
+      price: it.price,
+      isShared: currentEditingExpense.isShared
+    })) : [{ name: currentEditingExpense.title, quantity: 1, price: currentEditingExpense.amount, isShared: currentEditingExpense.isShared }]
+  };
+
+  $('receiptModal').classList.remove('hidden');
+  $('receiptLoading').classList.add('hidden');
+  $('receiptForm').classList.remove('hidden');
+  fillReceiptForm(r);
+}
+window.openReceiptEditFromExpense = openReceiptEditFromExpense;
+
 // ==========================================
 // 支出の登録・編集・削除
 // ==========================================
@@ -2835,8 +3054,10 @@ function openExpenseModal(editItem) {
   $('expenseForm').reset();
   $('expenseDate').value = localDateStr();
   $('expenseDuplicateAlert')?.classList.add('hidden');
+  currentEditingExpense = editItem || null;
   const del = $('expenseDeleteBtn');
-  const lockNote = $('expenseLockNote');
+  const actionBox = $('expenseReceiptActionBox');
+
   if (editItem) {
     $('expenseModalTitle').textContent = '支出を編集';
     $('expenseId').value = editItem.id;
@@ -2851,10 +3072,13 @@ function openExpenseModal(editItem) {
     document.querySelector(`input[name="expenseIsShared"][value="${editItem.isShared}"]`).checked = true;
     const targetPayer = displayPayerName(editItem.payer);
     renderExpensePayerChips(targetPayer);
-    const locked = !!editItem.receiptId;
-    $('expenseAmount').disabled = locked;
-    $('expenseTitle').disabled = locked;
-    lockNote.classList.toggle('hidden', !locked);
+    
+    // v2.6.0: レシート由来の支出も金額・品名の手修正を解禁！
+    const hasReceipt = !!editItem.receiptId;
+    $('expenseAmount').disabled = false;
+    $('expenseTitle').disabled = false;
+    if (actionBox) actionBox.classList.toggle('hidden', !hasReceipt);
+
     del.classList.remove('hidden');
     $('scanReceiptLabel').classList.add('hidden');
   } else {
@@ -2862,7 +3086,7 @@ function openExpenseModal(editItem) {
     $('expenseId').value = '';
     $('expenseAmount').disabled = false;
     $('expenseTitle').disabled = false;
-    lockNote.classList.add('hidden');
+    if (actionBox) actionBox.classList.add('hidden');
     del.classList.add('hidden');
     $('scanReceiptLabel').classList.remove('hidden');
     const myName = state.currentUser || memberName(state.currentSlot);
@@ -3229,7 +3453,7 @@ window.switchTab = function (tabName) {
 };
 
 // ==========================================
-// FAB操作ボタン 折りたたみ・スクロール制御 (v2.5.0)
+// FAB操作ボタン 折りたたみ・スクロール制御
 // ==========================================
 let isFabCompact = false;
 function toggleFabCompact(forceState) {
@@ -3277,7 +3501,7 @@ window.addEventListener('scroll', () => {
 }, { passive: true });
 
 // ==========================================
-// 📊 月次収支レポート モーダル (v2.5.0)
+// 📊 月次収支レポート モーダル
 // ==========================================
 async function openMonthlyReportModal(targetMonth) {
   const m = targetMonth || state.viewMonth || localMonthStr();
