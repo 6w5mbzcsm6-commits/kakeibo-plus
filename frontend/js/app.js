@@ -9,7 +9,7 @@
  */
 
 const APP_CONFIG = window.PAIRBUDGET_CONFIG || {};
-const FRONTEND_VERSION = 'v2.10.0';
+const FRONTEND_VERSION = 'v2.11.0';
 const MAX_HISTORY_MONTHS = 36;
 const FIELD_LABELS = {
   date: '日付', title: '品名', amount: '金額', category: 'カテゴリ', isShared: '共同',
@@ -2342,11 +2342,12 @@ function renderCategoryBudgets() {
     }
 
     return `
-      <div class="p-2.5 rounded-xl bg-slate-50/80 border border-slate-100 hover:border-slate-200 transition-colors space-y-1.5">
+      <div onclick="filterHistoryByCategory('${esc(cat.name)}')" class="p-2.5 rounded-xl bg-slate-50/80 border border-slate-100 hover:border-brand-300 hover:bg-slate-100/90 hover:shadow-2xs transition-all cursor-pointer active:scale-98 space-y-1.5 group select-none" title="タップして「${esc(cat.name)}」の支出明細を表示">
         <div class="flex items-center justify-between text-xs">
-          <span class="font-bold text-slate-800 flex items-center gap-1.5">
-            <span class="w-2.5 h-2.5 rounded-full" style="background-color: ${cat.color || '#94a3b8'}"></span>
+          <span class="font-bold text-slate-800 flex items-center gap-1.5 group-hover:text-brand-700 transition-colors">
+            <span class="w-2.5 h-2.5 rounded-full shrink-0" style="background-color: ${cat.color || '#94a3b8'}"></span>
             ${esc(cat.name)}
+            <i data-lucide="chevron-right" class="w-3 h-3 text-slate-300 group-hover:text-brand-500 transition-colors"></i>
           </span>
           <div>${statusText}</div>
         </div>
@@ -2360,7 +2361,10 @@ function renderCategoryBudgets() {
             <span>予算 ${yen(budget)} (${rate}%)</span>
           </div>
         ` : `
-          <div class="text-[10px] text-slate-400">支出: ${yen(spent)}</div>
+          <div class="text-[10px] text-slate-400 flex justify-between items-center">
+            <span>支出: ${yen(spent)}</span>
+            <span class="text-[9px] text-brand-600 font-medium opacity-0 group-hover:opacity-100 transition-opacity">明細を見る →</span>
+          </div>
         `}
       </div>
     `;
@@ -2522,8 +2526,20 @@ function renderRecentTransactions() {
 function renderHistoryList() {
   const c = $('fullTransactionsList');
   c.innerHTML = '';
-  const cat = $('historyCategoryFilter').value;
-  const payer = $('historyPayerFilter').value;
+  const cat = $('historyCategoryFilter')?.value || 'all';
+  const payer = $('historyPayerFilter')?.value || 'all';
+
+  // 絞り込み中バッジの表示制御 (v2.11.0)
+  const badgeWrap = $('historyActiveFilterBadgeWrap');
+  if (badgeWrap) {
+    if (cat !== 'all') {
+      badgeWrap.classList.remove('hidden');
+      if ($('historyActiveCategoryName')) $('historyActiveCategoryName').textContent = cat;
+    } else {
+      badgeWrap.classList.add('hidden');
+    }
+  }
+
   const list = scopedTransactions().filter(t => {
     const catOk = cat === 'all' || t.category === cat;
     const payerOk = payer === 'all' || resolvePayerSlot(t.payer) === payer || t.payer === payer;
@@ -2531,7 +2547,51 @@ function renderHistoryList() {
   });
   if (!list.length) { c.innerHTML = '<div class="py-8 text-center text-xs text-slate-400">該当する支出はありません</div>'; return; }
   list.forEach(i => c.appendChild(createTransactionRow(i, true)));
+  lucide.createIcons();
 }
+
+/**
+ * ホームの部門別予算カードタップによるカテゴリ絞り込みジャンプ (v2.11.0新機能)
+ */
+function filterHistoryByCategory(categoryName) {
+  if (!categoryName) return;
+
+  // 1. 履歴タブへ切り替え
+  switchTab('history');
+
+  // 2. フィルタセレクトを対象カテゴリにセット
+  const filterSelect = $('historyCategoryFilter');
+  if (filterSelect) {
+    if (!Array.from(filterSelect.options).some(o => o.value === categoryName)) {
+      filterSelect.insertAdjacentHTML('beforeend', `<option value="${esc(categoryName)}">${esc(categoryName)}</option>`);
+    }
+    filterSelect.value = categoryName;
+  }
+
+  // 3. 履歴リストを再描画
+  renderHistoryList();
+
+  // 4. トースト通知
+  showToast(`📂「${categoryName}」の支出に絞り込みました✨`);
+
+  // 5. スムーズスクロール
+  const targetEl = $('historyActiveFilterBadgeWrap') || $('fullTransactionsList');
+  if (targetEl) {
+    targetEl.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+  }
+}
+window.filterHistoryByCategory = filterHistoryByCategory;
+
+/**
+ * カテゴリ絞り込みのワンタップ解除 (v2.11.0新機能)
+ */
+function clearHistoryCategoryFilter() {
+  const filterSelect = $('historyCategoryFilter');
+  if (filterSelect) filterSelect.value = 'all';
+  renderHistoryList();
+  showToast('全カテゴリの支出を表示しました');
+}
+window.clearHistoryCategoryFilter = clearHistoryCategoryFilter;
 
 function renderShoppingList() {
   const un = $('uncompletedShoppingList'), done = $('completedShoppingList');
