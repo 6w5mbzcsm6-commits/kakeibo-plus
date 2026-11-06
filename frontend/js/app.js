@@ -9,7 +9,7 @@
  */
 
 const APP_CONFIG = window.PAIRBUDGET_CONFIG || {};
-const FRONTEND_VERSION = 'v2.9.0';
+const FRONTEND_VERSION = 'v2.10.0';
 const MAX_HISTORY_MONTHS = 36;
 const FIELD_LABELS = {
   date: '日付', title: '品名', amount: '金額', category: 'カテゴリ', isShared: '共同',
@@ -1802,6 +1802,137 @@ function renderMonthNav() {
   $('currentMonthLabel').textContent = `${y}年${Number(m)}月`;
   $('nextMonthBtn').disabled = state.viewMonth >= localMonthStr();
   $('prevMonthBtn').disabled = state.viewMonth <= shiftMonth(localMonthStr(), -(MAX_HISTORY_MONTHS - 1));
+}
+
+// ==========================================
+// クイック月選択ボトムシート (v2.10.0新機能)
+// ==========================================
+let monthPickerSelectedYear = null;
+
+function openMonthPickerSheet() {
+  const sheet = $('monthPickerSheet');
+  if (!sheet) return;
+
+  const currentMonth = localMonthStr();
+  const [curY, curM] = currentMonth.split('-');
+  if ($('monthPickerCurrentLabel')) {
+    $('monthPickerCurrentLabel').textContent = `${curY}年${Number(curM)}月`;
+  }
+
+  // 直近6ヶ月の月グリッドを描画
+  const recentContainer = $('monthPickerRecentGrid');
+  if (recentContainer) {
+    const recentMonths = [];
+    for (let i = 0; i < 6; i++) {
+      recentMonths.push(shiftMonth(currentMonth, -i));
+    }
+    recentContainer.innerHTML = recentMonths.map((m, idx) => {
+      const [y, mon] = m.split('-');
+      const isSelected = m === state.viewMonth;
+      const isToday = m === currentMonth;
+      let badge = '';
+      if (isToday) badge = '<span class="text-[9px] bg-emerald-100 text-emerald-800 font-bold px-1.5 py-0.2 rounded">今月</span>';
+      else if (idx === 1) badge = '<span class="text-[9px] bg-slate-100 text-slate-500 font-medium px-1 py-0.2 rounded">前月</span>';
+
+      const activeClass = isSelected
+        ? 'bg-brand-500 text-white shadow-md ring-2 ring-brand-300 font-black'
+        : 'bg-slate-50 hover:bg-slate-100 text-slate-800 border border-slate-200/80 font-bold';
+
+      return `
+        <button type="button" onclick="selectMonthFromPicker('${m}')" class="p-2.5 rounded-2xl flex flex-col items-center justify-center gap-1 transition-all active:scale-95 cursor-pointer ${activeClass}">
+          <div class="flex items-center gap-1">
+            <span class="text-xs leading-none">${Number(mon)}月</span>
+            ${badge}
+          </div>
+          <span class="text-[10px] opacity-75 font-mono leading-none">${y}年</span>
+        </button>
+      `;
+    }).join('');
+  }
+
+  // 年選択タブ ＆ 1〜12月グリッド
+  const [viewY] = state.viewMonth.split('-');
+  monthPickerSelectedYear = monthPickerSelectedYear || viewY;
+  renderMonthPickerYearView(monthPickerSelectedYear);
+
+  sheet.classList.remove('hidden');
+  lucide.createIcons();
+}
+window.openMonthPickerSheet = openMonthPickerSheet;
+
+function closeMonthPickerSheet() {
+  const sheet = $('monthPickerSheet');
+  if (sheet) sheet.classList.add('hidden');
+}
+window.closeMonthPickerSheet = closeMonthPickerSheet;
+
+function selectMonthFromPicker(targetMonth) {
+  closeMonthPickerSheet();
+  if (targetMonth && targetMonth !== state.viewMonth) {
+    const [y, m] = targetMonth.split('-');
+    showToast(`📅 ${y}年${Number(m)}月に移動しました`);
+    loadInitialData(targetMonth);
+  }
+}
+window.selectMonthFromPicker = selectMonthFromPicker;
+
+function switchMonthPickerYear(year) {
+  monthPickerSelectedYear = String(year);
+  renderMonthPickerYearView(monthPickerSelectedYear);
+  lucide.createIcons();
+}
+window.switchMonthPickerYear = switchMonthPickerYear;
+
+function renderMonthPickerYearView(targetYear) {
+  const currentMonth = localMonthStr();
+  const [curY] = currentMonth.split('-');
+  const earliestMonth = shiftMonth(currentMonth, -(MAX_HISTORY_MONTHS - 1));
+  const [earliestY] = earliestMonth.split('-');
+
+  // 年タブボタン生成（過去3年分、例: 2024, 2025, 2026）
+  const yearTabs = $('monthPickerYearTabs');
+  if (yearTabs) {
+    const years = [];
+    for (let y = Number(curY); y >= Number(earliestY); y--) {
+      years.push(String(y));
+    }
+    yearTabs.innerHTML = years.map(y => {
+      const isSelected = y === String(targetYear);
+      const activeClass = isSelected
+        ? 'bg-white text-slate-900 shadow-xs'
+        : 'text-slate-500 hover:text-slate-800';
+      return `<button type="button" onclick="switchMonthPickerYear('${y}')" class="px-2.5 py-1 rounded-md transition-all cursor-pointer ${activeClass}">${y}年</button>`;
+    }).join('');
+  }
+
+  // 1〜12月の月グリッド生成
+  const monthsGrid = $('monthPickerAllMonthsGrid');
+  if (monthsGrid) {
+    const monthsHtml = [];
+    for (let m = 1; m <= 12; m++) {
+      const monthStr = `${targetYear}-${pad2(m)}`;
+      const isFuture = monthStr > currentMonth;
+      const isTooOld = monthStr < earliestMonth;
+      const isDisabled = isFuture || isTooOld;
+      const isSelected = monthStr === state.viewMonth;
+
+      let btnClass = '';
+      if (isSelected) {
+        btnClass = 'bg-brand-500 text-white font-black shadow-sm ring-2 ring-brand-300';
+      } else if (isDisabled) {
+        btnClass = 'bg-slate-50 text-slate-300 border border-slate-100 cursor-not-allowed opacity-40';
+      } else {
+        btnClass = 'bg-white hover:bg-slate-100 text-slate-700 border border-slate-200 font-bold active:scale-95 cursor-pointer';
+      }
+
+      monthsHtml.push(`
+        <button type="button" ${isDisabled ? 'disabled' : `onclick="selectMonthFromPicker('${monthStr}')"`} class="py-2 rounded-xl text-xs text-center transition-all ${btnClass}">
+          ${m}月
+        </button>
+      `);
+    }
+    monthsGrid.innerHTML = monthsHtml.join('');
+  }
 }
 
 function renderTransferCard() {
@@ -4546,6 +4677,71 @@ function setupEventListeners() {
       completeShoppingItem(el.dataset.id);
     }
   });
+
+  // クイック月選択ボトムシートの背景クリックで閉じる (v2.10.0)
+  $('monthPickerSheet')?.addEventListener('click', e => {
+    if (e.target === $('monthPickerSheet')) closeMonthPickerSheet();
+  });
+
+  // スマホ左右スワイプ月移動の初期化 (v2.10.0)
+  initSwipeNavigation();
+}
+
+// ==========================================
+// スマホ左右スワイプによる爆速月移動 (v2.10.0新機能)
+// ==========================================
+function initSwipeNavigation() {
+  const container = $('tabContentHome');
+  if (!container) return;
+
+  let touchStartX = 0;
+  let touchStartY = 0;
+  let touchStartTime = 0;
+
+  container.addEventListener('touchstart', e => {
+    // モーダル表示中、入力要素操作中、横スクロール要素内はスワイプを無効化
+    if (document.querySelector('.fixed:not(.hidden)')) return;
+    const target = e.target;
+    if (target.closest('input, textarea, select, button, [data-no-swipe], table, .overflow-x-auto, canvas')) return;
+
+    const t = e.changedTouches[0];
+    touchStartX = t.clientX;
+    touchStartY = t.clientY;
+    touchStartTime = Date.now();
+  }, { passive: true });
+
+  container.addEventListener('touchend', e => {
+    if (document.querySelector('.fixed:not(.hidden)')) return;
+    const target = e.target;
+    if (target.closest('input, textarea, select, button, [data-no-swipe], table, .overflow-x-auto, canvas')) return;
+
+    const t = e.changedTouches[0];
+    const diffX = t.clientX - touchStartX;
+    const diffY = t.clientY - touchStartY;
+    const elapsed = Date.now() - touchStartTime;
+
+    // 500ms以内、水平移動60px以上、水平移動が垂直移動の1.5倍以上のとき月切り替え
+    if (elapsed < 500 && Math.abs(diffX) > 60 && Math.abs(diffX) > Math.abs(diffY) * 1.5) {
+      if (diffX > 0) {
+        // 右スワイプ: 前の月（◀）
+        const prevM = shiftMonth(state.viewMonth, -1);
+        const earliest = shiftMonth(localMonthStr(), -(MAX_HISTORY_MONTHS - 1));
+        if (state.viewMonth > earliest) {
+          const [y, m] = prevM.split('-');
+          showToast(`◀ ${y}年${Number(m)}月に移動しました`);
+          loadInitialData(prevM);
+        }
+      } else {
+        // 左スワイプ: 次の月（▶）
+        const nextM = shiftMonth(state.viewMonth, 1);
+        if (state.viewMonth < localMonthStr()) {
+          const [y, m] = nextM.split('-');
+          showToast(`▶ ${y}年${Number(m)}月に移動しました`);
+          loadInitialData(nextM);
+        }
+      }
+    }
+  }, { passive: true });
 }
 
 async function initLiff() {
