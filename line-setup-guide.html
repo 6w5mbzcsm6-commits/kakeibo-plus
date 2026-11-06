@@ -366,27 +366,43 @@
             </div>
           </div>
 
-          <!-- v2.6.0 代理入力コマンド -->
-          <div class="flex items-center justify-between p-2.5 rounded-xl bg-purple-50 border border-purple-200 col-span-1 sm:col-span-2">
+          <!-- v2.9.0 支払いモード切替コマンド -->
+          <div class="flex items-center justify-between p-2.5 rounded-xl bg-blue-50 border border-blue-200 col-span-1 sm:col-span-2">
             <div>
               <div class="flex items-center gap-1.5">
-                <span class="font-bold text-purple-900">👥 代理入力モード（v2.6.0新機能）</span>
-                <span class="text-[9px] bg-purple-200 text-purple-800 px-1.5 py-0.5 rounded font-bold">10分間有効</span>
+                <span class="font-bold text-blue-900">💳 支払いモード切替（v2.9.0新機能: 次回変更まで永続維持）</span>
+                <span class="text-[9px] bg-blue-200 text-blue-800 px-1.5 py-0.5 rounded font-bold">ワンタップ切替</span>
               </div>
-              <p class="text-[10px] text-purple-700 mt-0.5">「代理 夫」または「代理 妻」と送ると、続くレシート送信や支出入力が自動的に相手名義で登録されます。「代理解除」で戻せます。</p>
+              <p class="text-[10px] text-blue-700 mt-0.5">「立替モード」と送ると、次に変更するまで送信したレシートや支出がすべて【個人立替（共同口座から後で精算）】として記録されます。「共同カードモード」でクレカ払いに戻せます。「モード確認」で現在の設定を表示。</p>
             </div>
-            <div class="flex gap-1.5 shrink-0">
-              <button type="button" onclick="copyText('代理 夫')" class="text-xs bg-white hover:bg-purple-100 border border-purple-200 px-2 py-1 rounded-lg font-bold text-purple-900">代理 夫</button>
-              <button type="button" onclick="copyText('代理解除')" class="text-xs bg-white hover:bg-purple-100 border border-purple-200 px-2 py-1 rounded-lg font-bold text-slate-700">解除</button>
+            <div class="flex gap-1.5 shrink-0 flex-wrap justify-end">
+              <button type="button" onclick="copyText('立替モード')" class="text-xs bg-white hover:bg-blue-100 border border-blue-200 px-2 py-1 rounded-lg font-bold text-blue-900">立替モード</button>
+              <button type="button" onclick="copyText('共同カードモード')" class="text-xs bg-white hover:bg-blue-100 border border-blue-200 px-2 py-1 rounded-lg font-bold text-blue-900">カードモード</button>
+              <button type="button" onclick="copyText('モード確認')" class="text-xs bg-white hover:bg-blue-100 border border-blue-200 px-2 py-1 rounded-lg font-bold text-slate-700">確認</button>
             </div>
           </div>
 
-          <div class="flex items-center justify-between p-2.5 rounded-xl bg-purple-50 border border-purple-200">
+          <!-- v2.9.0 永続代理入力コマンド -->
+          <div class="flex items-center justify-between p-2.5 rounded-xl bg-purple-50 border border-purple-200 col-span-1 sm:col-span-2">
             <div>
-              <span class="font-bold text-purple-900">夫 ガソリン 4500</span>
-              <p class="text-[10px] text-purple-700">文頭に名前をつけると1回限定で代理記帳</p>
+              <div class="flex items-center gap-1.5">
+                <span class="font-bold text-purple-900">👥 永続代理入力モード（v2.9.0: 解除するまでずっと継続）</span>
+                <span class="text-[9px] bg-purple-200 text-purple-800 px-1.5 py-0.5 rounded font-bold">連続登録対応</span>
+              </div>
+              <p class="text-[10px] text-purple-700 mt-0.5">「代理 夫」または「代理 妻」と送ると、解除するまで何枚でも連続でパートナー名義でレシート・支出が自動登録されます。「代理解除」または「自分に戻す」で通常モードに復帰します。</p>
             </div>
-            <button type="button" onclick="copyText('夫 ガソリン 4500')" class="text-xs bg-white hover:bg-purple-100 border border-purple-200 px-2 py-1 rounded-lg font-bold text-purple-900">コピー</button>
+            <div class="flex gap-1.5 shrink-0">
+              <button type="button" onclick="copyText('代理 夫')" class="text-xs bg-white hover:bg-purple-100 border border-purple-200 px-2 py-1 rounded-lg font-bold text-purple-900">代理 夫</button>
+              <button type="button" onclick="copyText('代理解除')" class="text-xs bg-white hover:bg-purple-100 border border-purple-200 px-2 py-1 rounded-lg font-bold text-slate-700">代理解除</button>
+            </div>
+          </div>
+
+          <div class="flex items-center justify-between p-2.5 rounded-xl bg-slate-50 border border-slate-200">
+            <div>
+              <span class="font-bold text-slate-800">口座引落 110000 家賃</span>
+              <p class="text-[10px] text-slate-400">共同口座振替（直接引落）として記録</p>
+            </div>
+            <button type="button" onclick="copyText('口座引落 110000 家賃')" class="text-xs bg-white hover:bg-slate-100 border border-slate-200 px-2 py-1 rounded-lg font-bold">コピー</button>
           </div>
 
           <!-- 便利機能コマンド一覧 -->

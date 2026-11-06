@@ -19,6 +19,7 @@ const MAX_HISTORY_MONTHS = 36;
 const DEFAULT_PAIR_ID = '00000000-0000-0000-0000-000000000001';
 const ALLOWED_PAYMENT_TYPES = [
   'shared_card',
+  'shared_account',
   'advanced_by_user',
   'personal_advance',
   'personal_cash',
@@ -547,7 +548,7 @@ function calculateTransfers(monthStr, txs, config, monthlyBudget) {
   txs.forEach(tx => {
     const slot = resolvePayerSlot(tx.payer, config);
     if (slot !== 'husband' && slot !== 'wife') return;
-    const isPriv = !tx.isShared && tx.paymentType === 'shared_card';
+    const isPriv = !tx.isShared && (tx.paymentType === 'shared_card' || tx.paymentType === 'shared_account');
     const isAdv = tx.isShared && (tx.paymentType === 'advanced_by_user' || tx.paymentType === 'personal_advance');
     if (isPriv) acc[slot].priv += tx.amount;
     if (isAdv) acc[slot].adv += tx.amount;
@@ -808,15 +809,26 @@ async function handleGetInitialData(supabase, targetMonth, actor, requestedPairI
     note: b.note || ''
   }));
 
-  const fixedExpenses = (fixedRes.data || []).map(f => ({
-    id: f.id,
-    title: f.title,
-    amount: Number(f.amount) || 0,
-    category: f.category_id,
-    billingDay: f.billing_day,
-    isActive: f.is_active,
-    payer: f.payer || '共同カード'
-  }));
+  const fixedExpenses = (fixedRes.data || []).map(f => {
+    let pType = f.payment_type;
+    if (!pType) {
+      if (f.payer === '共同カード' || (f.title && (f.title.includes('サブスク') || f.title.includes('カード')))) {
+        pType = 'shared_card';
+      } else {
+        pType = 'shared_account';
+      }
+    }
+    return {
+      id: f.id,
+      title: f.title,
+      amount: Number(f.amount) || 0,
+      category: f.category_id,
+      billingDay: f.billing_day,
+      isActive: f.is_active,
+      paymentType: pType,
+      payer: f.payer || (pType === 'shared_card' ? '共同カード' : '共同口座')
+    };
+  });
 
   const categories = (catRes.data || []).map(c => ({
     name: c.name,
@@ -895,7 +907,10 @@ async function handleGetInitialData(supabase, targetMonth, actor, requestedPairI
       budget: resolvedBudget,
       sharedCard: 0,
       sharedCardLiving: 0,
-      sharedCardPersonal: 0
+      sharedCardPersonal: 0,
+      sharedAccount: 0,
+      sharedAccountLiving: 0,
+      sharedAccountPersonal: 0
     };
     totalsOrder.push(m);
   }
@@ -906,12 +921,20 @@ async function handleGetInitialData(supabase, targetMonth, actor, requestedPairI
     if (!b) return;
     const amt = Number(tx.amount) || 0;
     const isSharedCard = tx.payment_type === 'shared_card';
+    const isSharedAccount = tx.payment_type === 'shared_account';
     if (isSharedCard) {
       b.sharedCard += amt;
       if (tx.is_shared) {
         b.sharedCardLiving += amt;
       } else {
         b.sharedCardPersonal += amt;
+      }
+    } else if (isSharedAccount) {
+      b.sharedAccount += amt;
+      if (tx.is_shared) {
+        b.sharedAccountLiving += amt;
+      } else {
+        b.sharedAccountPersonal += amt;
       }
     }
     if (tx.is_shared) {
@@ -932,7 +955,7 @@ async function handleGetInitialData(supabase, targetMonth, actor, requestedPairI
 
   return {
     success: true,
-    version: 'v2.8.1',
+    version: 'v2.9.0',
     pair: {
       id: pairId,
       name: config.pairName,
@@ -1002,7 +1025,7 @@ async function handleCreatePair(supabase, idToken, data) {
       { pair_id: pairId, keyword: 'ドラッグ', category_id: '日用品' }
     ]),
     supabase.from('fixed_expenses').insert([
-      { pair_id: pairId, title: '家賃', amount: 110000, category_id: '住居費', billing_day: 27, is_active: true, payment_type: 'shared_card', payer: '共同カード' }
+      { pair_id: pairId, title: '家賃', amount: 110000, category_id: '住居費', billing_day: 27, is_active: true, payment_type: 'shared_account', payer: '共同口座' }
     ])
   ]);
 
@@ -1470,6 +1493,15 @@ async function handleUpdateFixedExpense(supabase, item, actor) {
     return { success: false, error: '固定費の入力値が正しくありません' };
   }
 
+  let pType = item.paymentType || item.payment_type;
+  if (!pType) {
+    if (item.payer === '共同カード' || (title && (title.includes('サブスク') || title.includes('カード')))) {
+      pType = 'shared_card';
+    } else {
+      pType = 'shared_account';
+    }
+  }
+
   const payload = {
     pair_id: pairId,
     title: title,
@@ -1477,7 +1509,8 @@ async function handleUpdateFixedExpense(supabase, item, actor) {
     category_id: String(item.category || 'その他').slice(0, 20),
     billing_day: Math.min(31, Math.max(1, Number(item.billingDay) || 1)),
     is_active: item.isActive !== false,
-    payer: String(item.payer || '共同カード').slice(0, 20),
+    payment_type: pType,
+    payer: String(item.payer || (pType === 'shared_card' ? '共同カード' : '共同口座')).slice(0, 20),
     updated_at: new Date().toISOString()
   };
 
@@ -1782,21 +1815,25 @@ async function handleScanReceipt(data, actor) {
 
   const prompt =
     'これは日本のレシート画像です。店名、購入日、明細を精確に読み取ってください。\n' +
+    '【大原則: 99%以上のレシートは通常の購入（支出）である】\n' +
+    '- 通常の買い物レシートは、必ず isRefund: false、total は正の整数（例: 840）で出力すること。\n' +
+    '- 値引き行（CPNや割引）が一部含まれていても、レシート全体は通常の購入（isRefund: false）である。\n' +
+    '- レシート全体が「返金・返品レシート」になるのは、レシートのタイトルに「返金」「返品」「REFUND」と印字され、全商品が返品されている極めて稀なケースのみである。\n' +
     '【重要ルール1: 単価・数量・金額の行ズレ防止（日本のスーパー、ベイシア・イオン等）】\n' +
     '- 商品名のみの行（右端に金額印字がない行）の直下の行に「@単価 数量 小計金額」（例: "@52 2 ¥104"）が印字されている場合、その数量と金額は【必ず直上の商品名（例: まろやか絹豆腐）】のものである。絶対に直下の別商品（例: 白菜）と結びつけたり分断しないこと！\n' +
     '【重要ルール2: クーポン値引き・税区分表記（コストコ・スーパー等）】\n' +
     '- 「180 E」「480 E」「3498 T」「520 A」のように、金額の右に英字（E=軽減税率8%、T/A=標準税率10%等）が付いている表記で、マイナス記号「-」がないものは【通常の正の整数（例: 180, 480）】である！絶対に負の数にしてはならない！\n' +
     '- 負の整数（マイナス）になるのは、金額の直後に明確にハイフンが付いている場合（例: "700-T", "897-E", "897-"）や、先頭に「▲」「△」「-」が付く値引きのみ！\n' +
     '- "CPN"（クーポン）、"TPD"、"値引"、"割引" の行は必ず負の整数（例: -700）の price にすること。\n' +
-    '【重要ルール3: 売上レシートと返品・返金レシートの厳密判定】\n' +
-    '- レシート内に「売上」「買上げ」「お買上」「領収証」「領収金額」と印字されている場合は、通常の購入レシートであり、絶対に返金レシート（isRefund: false）にしてはならない！\n' +
-    '- 逆に、レシート内に「REFUND」「返金」「返品」「RFND」「買上げ点数 : -1」、または合計金額の末尾に「-」（例: "合計 897-"）がある場合のみ返金レシート（isRefund: true）とし、total および商品の price を負の整数で出力すること。\n' +
+    '【重要ルール3: 返金レシートの出力基準】\n' +
+    '- 通常の購入は必ず isRefund: false、total は正の整数。\n' +
+    '- タイトルや全明細に明示的に「返金」「返品」「REFUND」とある場合のみ isRefund: true。\n' +
     '【重要ルール4: 整数円・検算】\n' +
-    '- price は「その行の税込合計金額（数量×単価）」の整数円（値引きや返金は負の整数）。\n' +
+    '- price は「その行の税込合計金額（数量×単価）」の整数円（値引きのみ負の整数）。\n' +
     '- quantity は数量（不明なら1）。\n' +
     '- 品名はレシート表記のまま。ポイント・小計・合計・お釣り・税額の行は明細に含めない。\n' +
     '- date は yyyy-MM-dd。読み取れなければ空文字。\n' +
-    '- total はレシートに印字された最終支払合計（税込）の整数円（返金なら負の整数）。読み取れなければ0。\n' +
+    '- total はレシートに印字された最終支払合計（税込）の整数円（通常購入は必ず正の整数）。読み取れなければ0。\n' +
     '- 各明細の price の合計（プラス分とマイナス値引き分の和）が total と一致するか検算すること。\n' +
     '【重要ルール5: 品目別カテゴリ自動推測 (v2.8.0)】\n' +
     '- 各品目の品名から最も適したカテゴリを自動判定し category に指定してください:\n' +
@@ -1878,25 +1915,30 @@ async function handleScanReceipt(data, actor) {
     const rawText = (textPart?.text || '').replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/i, '').trim();
     const parsed = JSON.parse(rawText);
 
-    // 売上表記および返金表記の検出 (v2.8.1: コストコ通常レシート誤認防止)
-    const hasSaleText = /売上|買上げ|お買上|領収証|領収金額/i.test(rawText);
-    const hasExplicitRefundText = /返金|返品|REFUND|RFND|買上げ点数\s*:\s*-1/i.test(rawText) || /合計\s*[\d,]+-/i.test(rawText);
+    // 返金レシートの厳密判定 (v2.9.0: 通常の購入デフォルトの徹底・誤判定の完全撲滅)
+    // 店名、または明細の品名に明示的な「返金」「返品」「REFUND」「RFND」キーワードが存在するかチェック
+    const rawItems = parsed.items || [];
+    const storeHasRefund = /返金|返品|REFUND|RFND/i.test(parsed.store || '');
+    const refundItemsCount = rawItems.filter(it => /返金|返品|REFUND|RFND/i.test(it.name || '')).length;
+    const isMajorityRefundItems = rawItems.length > 0 && (refundItemsCount / rawItems.length >= 0.5);
 
+    // 明確な証拠（店名に返金/返品、または明細の過半数が返品/返金）がある場合「のみ」返金レシートとして認める
     let isRefund = false;
-    if (hasExplicitRefundText) {
+    if (storeHasRefund || isMajorityRefundItems) {
       isRefund = true;
-    } else if (!hasSaleText && (parsed.isRefund === true || Number(parsed.total) < 0 || /返金|返品|REFUND|RFND/i.test(parsed.store || ''))) {
-      isRefund = true;
+    } else {
+      // それ以外はAIが isRefund: true や負の total を返してきても、AIの誤判定・誤読として通常の購入（isRefund: false）に強制修復！
+      isRefund = false;
     }
 
     let total = parseInt(parsed.total, 10) || 0;
     if (isRefund) {
       if (total > 0) total = -total;
     } else {
-      if (total < 0) total = Math.abs(total);
+      total = Math.abs(total);
     }
 
-    let items = (parsed.items || []).slice(0, 60).map(it => {
+    let items = rawItems.slice(0, 60).map(it => {
       let p = parseInt(it.price, 10) || 0;
       const name = String(it.name || '').trim().slice(0, 50);
       const isDiscountItem = /CPN|TPD|値引|割引|クーポン|▲|△/i.test(name);
@@ -1904,11 +1946,11 @@ async function handleScanReceipt(data, actor) {
       if (isRefund) {
         if (p > 0) p = -p;
       } else {
-        // 通常購入レシート: 値引き行以外は必ず正の金額（税区分E/Tの誤読を自動修復）
+        // 通常購入レシート: 値引き行以外は必ず正の金額（税区分E/Tの誤読やAIのマイナス誤判定を完全自動修復）
         if (isDiscountItem) {
           if (p > 0) p = -p;
         } else {
-          if (p < 0) p = Math.abs(p);
+          p = Math.abs(p);
         }
       }
 
@@ -2047,7 +2089,7 @@ async function handleSaveReceipt(supabase, data, actor) {
       category_id: cat,
       is_shared: true,
       payment_type: paymentType,
-      payer_id: (paymentType === 'shared_card' ? '共同' : payer),
+      payer_id: ((paymentType === 'shared_card' || paymentType === 'shared_account') ? '共同' : payer),
       memo: `レシート読み取り（共同生活費・${cat}分）`,
       created_by: actor.name,
       receipt_id: receiptId
@@ -2226,7 +2268,7 @@ async function handleUpdateReceipt(supabase, data, actor) {
       category_id: cat,
       is_shared: true,
       payment_type: paymentType,
-      payer_id: (paymentType === 'shared_card' ? '共同' : payer),
+      payer_id: ((paymentType === 'shared_card' || paymentType === 'shared_account') ? '共同' : payer),
       memo: `レシート修正（共同生活費・${cat}分）`,
       created_by: actor.name,
       receipt_id: receiptId
@@ -3170,13 +3212,43 @@ async function processNaturalLanguageMessage(supabase, text, userId) {
     return msg;
   }
 
-  // 3. 代理入力解除コマンド
-  if (/^(?:代理解除|代理終了|代理モード解除)$/.test(text)) {
+  // 3. 代理入力解除コマンド (v2.9.0: 永続代理モードの解除)
+  if (/^(?:代理解除|代理終了|代理モード解除|自分に戻す|通常モード)$/i.test(text)) {
+    await setAppSetting(supabase, pairId, `lineProxyState_${userId}`, null);
     await setAppSetting(supabase, pairId, 'lineProxyState', null);
-    return '👥 代理入力モードを解除しました。通常モードに戻ります✨';
+    return '👥 代理モードを解除しました！\nこれ以降は通常通り【ご自身の支出】として記録されます✨';
   }
 
-  // 4. 代理入力コマンド（事後変更または事前宣言）
+  // 3-B. 支払いモード切替・確認コマンド (v2.9.0)
+  if (/^(?:立替モード|立て替えモード|立替で登録|立替モードに変更|立替に変更)$/i.test(text)) {
+    await setAppSetting(supabase, pairId, `linePaymentMode_${userId}`, 'advanced_by_user');
+    return `👤【立替モードに切り替えました】\nこれ以降に送信するレシート画像や支出は、次に変更するまで自動的に【個人立替（共同口座から後で精算）】として記録されます✨\n\n💡 共同カードに戻すには「共同カードモード」と送信してください。`;
+  }
+  if (/^(?:共同カードモード|カードモード|共同カードで登録|共同カードに変更|カードに変更)$/i.test(text)) {
+    await setAppSetting(supabase, pairId, `linePaymentMode_${userId}`, 'shared_card');
+    return `💳【共同カードモードに切り替えました】\nこれ以降に送信するレシート画像や支出は、次に変更するまで自動的に【共同カード（クレカ払）】として記録されます✨\n\n💡 立替にするには「立替モード」と送信してください。`;
+  }
+  if (/^(?:共同口座モード|口座振替モード|口座引落モード|共同口座に変更)$/i.test(text)) {
+    await setAppSetting(supabase, pairId, `linePaymentMode_${userId}`, 'shared_account');
+    return `🏦【共同口座振替モードに切り替えました】\nこれ以降に送信するレシート画像や支出は、次に変更するまで自動的に【共同口座振替（口座直引落）】として記録されます✨\n\n💡 戻すには「共同カードモード」または「立替モード」と送信してください。`;
+  }
+  if (/^(?:支払いモード|支払モード|モード確認|現在のモード|モード)$/i.test(text)) {
+    const currentMode = await getAppSetting(supabase, pairId, `linePaymentMode_${userId}`, 'shared_card');
+    const proxyState = await getAppSetting(supabase, pairId, `lineProxyState_${userId}`, null)
+      || await getAppSetting(supabase, pairId, 'lineProxyState', null);
+    let modeText = '💳 共同カード（クレカ払）';
+    if (currentMode === 'advanced_by_user') modeText = '👤 個人立替（共同口座から後で精算）';
+    else if (currentMode === 'shared_account') modeText = '🏦 共同口座振替（直接引落）';
+
+    let proxyText = '通常（自分名義）';
+    if (proxyState && proxyState.payer) {
+      proxyText = `👥 代理中: ${proxyState.payer}さん名義`;
+    }
+
+    return `⚙️【現在のLINE登録設定】\n━━━━━━━━━━━━━━\n支払方法: 【${modeText}】\n支払名義: 【${proxyText}】\n━━━━━━━━━━━━━━\n💡 切り替えコマンド:\n・「立替モード」/「共同カードモード」/「共同口座モード」\n・「代理 〇〇」/「代理解除」`;
+  }
+
+  // 4. 代理入力コマンド（事後変更または永続事前設定） (v2.9.0)
   const proxyMatch = text.match(/^(?:代理|支払者|登録者)\s+([^\d\s　]+)(?:\s+(.+))?$/);
   if (proxyMatch && !/\d+/.test(text)) {
     const targetQuery = proxyMatch[1].trim();
@@ -3203,19 +3275,22 @@ async function processNaturalLanguageMessage(supabase, text, userId) {
       return `✅ 直前の支出「${recentTx.title}（¥${Number(recentTx.amount).toLocaleString()}）」の支払者を【${targetMember}さん】に変更しました！`;
     }
 
-    // B. 事前宣言モード: 今後10分間またはレシート送信まで代理入力モードを保持
-    await setAppSetting(supabase, pairId, 'lineProxyState', {
+    // B. 永続代理モード: 次回「代理解除」が送られるまで永続的に代理モードを維持 (v2.9.0)
+    await setAppSetting(supabase, pairId, `lineProxyState_${userId}`, {
       payer: targetMember,
-      expiresAt: Date.now() + 10 * 60 * 1000
+      active: true
     });
-    return `👥【代理入力モード開始】\n支払者を「${targetMember}さん」として設定しました！\n今後10分間、またはレシート写真送信まで、${targetMember}さんの支出として自動登録されます✨\n（解除するには「代理解除」と返信してください）`;
+    return `👥【代理モード開始】\n支払者を「${targetMember}さん」として設定しました！\nこれ以降に送信するレシート画像や支出は、解除するまでずっと【${targetMember}さんの支出】として自動登録されます✨\n\n💡 自分に戻すには「代理解除」または「通常モード」と送信してください。`;
   }
 
   // 5. ヘルプ
   if (/^(ヘルプ|使い方|help)$/i.test(text)) {
     return '💡【家計簿Botの使い方】\n\n' +
-      '■ かんたん支出登録\n・スーパー 3200\n・立替 2500 ドラッグストア\n・共同カード 私物 4800 服\n\n' +
+      '■ かんたん支出登録\n・スーパー 3200\n・立替 2500 ドラッグストア\n・共同カード 私物 4800 服\n・口座引落 110000 家賃\n\n' +
+      '■ 支払いモード切替（次回変更まで継続）\n・立替モード（レシートや支出を立替で自動登録）\n・共同カードモード（共同カード払いに戻す）\n・共同口座モード（口座引落で登録）\n・モード確認（現在の設定を確認）\n\n' +
+      '■ 代理入力モード（解除するまで継続）\n・代理 夫（夫名義で連続登録）\n・代理解除（自分名義に戻す）\n\n' +
       '■ 買い物リスト（まとめて追加もOK！）\n・買う 牛乳\n・買い物リスト見せて\n・牛乳と卵買ったよ〜\n・複数行で品名だけ送っても一括追加！\n\n' +
+      '■ レシート対話編集\n・レシート変更（直近レシートの私物・共同を対話修正）\n\n' +
       '■ 状況・レポート\n・残金\n・振込額\n・収支報告（グラフ付き！）\n\n' +
       '■ 価格を調べる（AI不使用・DB相場）\n・卵の値段\n・牛乳いくら？\n\n' +
       '📷 レシート写真を送るだけでAI自動記帳もできます✨';
@@ -3380,14 +3455,17 @@ async function processNaturalLanguageMessage(supabase, text, userId) {
   }
 
   let amount = null;
-  let paymentType = 'shared_card';
+  // ユーザーのデフォルト支払いモードを取得 (v2.9.0)
+  const savedPaymentMode = await getAppSetting(supabase, pairId, `linePaymentMode_${userId}`, 'shared_card');
+  let paymentType = savedPaymentMode;
   let isShared = true;
 
-  // 事前宣言された代理入力モードを確認
-  const proxyState = await getAppSetting(supabase, pairId, 'lineProxyState', null);
+  // 永続代理入力モードを確認 (v2.9.0)
+  const proxyState = await getAppSetting(supabase, pairId, `lineProxyState_${userId}`, null)
+    || await getAppSetting(supabase, pairId, 'lineProxyState', null);
   let isProxy = false;
   let payer = actor.name;
-  if (proxyState && proxyState.payer && proxyState.expiresAt > Date.now()) {
+  if (proxyState && proxyState.payer) {
     payer = proxyState.payer;
     isProxy = true;
   }
@@ -3399,7 +3477,8 @@ async function processNaturalLanguageMessage(supabase, text, userId) {
     if (/^\d+$/.test(cleanNum) && amount === null) { amount = parseInt(cleanNum, 10); return; }
     if (part === '立替') { paymentType = 'advanced_by_user'; return; }
     if (part === '私物' || part === '個人') { isShared = false; return; }
-    if (part === '共同カード') { paymentType = 'shared_card'; return; }
+    if (part === '共同カード' || part === 'クレカ' || part === 'カード') { paymentType = 'shared_card'; return; }
+    if (part === '共同口座' || part === '口座振替' || part === '口座引落' || part === '引落' || part === '口座') { paymentType = 'shared_account'; return; }
     if (part === '代理') return;
 
     // メンバー名の判定（代理指定）
@@ -3469,16 +3548,21 @@ async function processNaturalLanguageMessage(supabase, text, userId) {
     memo: 'LINE Bot登録'
   }, actor);
 
-  if (isProxy && proxyState) {
-    await setAppSetting(supabase, pairId, 'lineProxyState', null);
+  // 永続代理モードのため lineProxyState は自動解除しない (v2.9.0)
+
+  let typeDesc = '共同費（共同カード）';
+  if (paymentType === 'shared_account') {
+    typeDesc = isShared ? '🏦 共同口座振替' : `⚠️共同口座私物（${payer}の振込額に加算）`;
+  } else if (!isShared && paymentType === 'shared_card') {
+    typeDesc = `⚠️共同カード私物（${payer}の振込額に加算）`;
+  } else if (isShared && paymentType === 'advanced_by_user') {
+    typeDesc = `✨個人立替（${payer}の振込額から控除）`;
+  } else if (!isShared && paymentType === 'advanced_by_user') {
+    typeDesc = `🔒 個人私物自腹`;
   }
 
-  let typeDesc = '共同費';
-  if (!isShared && paymentType === 'shared_card') typeDesc = `⚠️共同カード私物（${payer}の振込額に加算）`;
-  else if (isShared && paymentType === 'advanced_by_user') typeDesc = `✨個人立替（${payer}の振込額から控除）`;
-
-  const proxyBanner = isProxy ? `👥 代理入力（支払者: ${payer}さん）\n━━━━━━━━━━━━━━\n` : '';
-  return `${proxyBanner}✅ 記録しました！\n━━━━━━━━━━━━━━\n品名: ${title}\n金額: ¥${amount.toLocaleString()}\nカテゴリ: ${category}\n種別: ${typeDesc}\n支払者: ${payer}\n━━━━━━━━━━━━━━`;
+  const proxyBanner = isProxy ? `👥 代理入力中（支払者: ${payer}さん）\n━━━━━━━━━━━━━━\n` : '';
+  return `${proxyBanner}✅ 記録しました！\n━━━━━━━━━━━━━━\n品名: ${title}\n金額: ¥${amount.toLocaleString()}\nカテゴリ: ${category}\n種別: ${typeDesc}\n支払者: ${payer}\n━━━━━━━━━━━━━━\n💡 支払切替:「立替モード」「共同カードモード」${isProxy ? '\n💡 代理解除:「代理解除」' : ''}`;
 }
 
 /**
@@ -3559,6 +3643,20 @@ async function processLineImageMessage(supabase, messageId, userId, lineToken) {
     return `店名「${receipt.store || '不明'}」は検出されましたが、購入明細が読み取れませんでした💦`;
   }
 
+  // ユーザーの支払いモード（永続設定）を取得 (v2.9.0)
+  const savedPaymentMode = await getAppSetting(supabase, pairId, `linePaymentMode_${userId}`, 'shared_card');
+  const receiptPaymentType = (savedPaymentMode === 'advanced_by_user' || savedPaymentMode === 'shared_account') ? savedPaymentMode : 'shared_card';
+
+  // 永続代理入力モードの確認 (v2.9.0: 自動解除せず維持)
+  const proxyState = await getAppSetting(supabase, pairId, `lineProxyState_${userId}`, null)
+    || await getAppSetting(supabase, pairId, 'lineProxyState', null);
+  let payer = actor.name;
+  let isProxy = false;
+  if (proxyState && proxyState.payer) {
+    payer = proxyState.payer;
+    isProxy = true;
+  }
+
   // 5. 重複レシートチェック（同日・同額・店名/品名被り）
   const { data: dupTx } = await supabase
     .from('transactions')
@@ -3577,8 +3675,8 @@ async function processLineImageMessage(supabase, messageId, userId, lineToken) {
           date: receipt.date || todayStr(),
           items: receipt.items,
           isShared: true,
-          paymentType: 'shared_card',
-          payer: actor.name,
+          paymentType: receiptPaymentType,
+          payer: payer,
           category: '食費'
         },
         createdAt: Date.now()
@@ -3589,23 +3687,13 @@ async function processLineImageMessage(supabase, messageId, userId, lineToken) {
     }
   }
 
-  // 代理入力モードの確認
-  const proxyState = await getAppSetting(supabase, pairId, 'lineProxyState', null);
-  let payer = actor.name;
-  let isProxy = false;
-  if (proxyState && proxyState.payer && proxyState.expiresAt > Date.now()) {
-    payer = proxyState.payer;
-    isProxy = true;
-    await setAppSetting(supabase, pairId, 'lineProxyState', null);
-  }
-
   // 6. 家計簿への自動保存（receipts + receipt_items + transactions + 買い物リスト消込）
   const saveRes = await handleSaveReceipt(supabase, {
     store: receipt.store || 'レシート店舗',
     date: receipt.date || todayStr(),
     items: receipt.items,
     isShared: true,
-    paymentType: 'shared_card',
+    paymentType: receiptPaymentType,
     payer: payer,
     category: '食費'
   }, actor);
@@ -3622,19 +3710,33 @@ async function processLineImageMessage(supabase, messageId, userId, lineToken) {
     autoCheckMsg = `\n\n✨ 買い物リストの「${saveRes.autoCheckedShoppingItems.join('」「')}」も自動で購入済みにしました！`;
   }
 
-  const proxyBanner = isProxy ? `👥 代理入力（支払者: ${payer}さん）\n━━━━━━━━━━━━━━\n` : '';
+  let paymentLabel = '💳 共同カード（クレカ払）';
+  if (receiptPaymentType === 'advanced_by_user') {
+    paymentLabel = `👤 個人立替（${payer}立替・要精算）`;
+  } else if (receiptPaymentType === 'shared_account') {
+    paymentLabel = '🏦 共同口座振替（直接引落）';
+  }
 
-  return waitNotice + proxyBanner + `🧾 レシートを自動記録しました！\n` +
+  const proxyBanner = isProxy ? `👥 代理入力中（支払者: ${payer}さん）\n━━━━━━━━━━━━━━\n` : '';
+  const currentModeFooter = `\n━━━━━━━━━━━━━━\n（現在の設定: ${isProxy ? `👥 支払者: ${payer}さん ｜ ` : ''}支払方法: ${receiptPaymentType === 'advanced_by_user' ? '👤 個人立替' : (receiptPaymentType === 'shared_account' ? '🏦 口座振替' : '💳 共同カード')}）\n💡 切替:「立替モード」「共同カードモード」${isProxy ? ' ｜ 「代理解除」' : ''}`;
+
+  const isRefundReceipt = receipt.isRefund || receipt.total < 0;
+  const headerTitle = isRefundReceipt ? '💸 返金レシートを記録しました' : '🧾 レシートを自動記録しました！';
+  const totalDisplay = isRefundReceipt
+    ? `-¥${Math.abs(receipt.total).toLocaleString()}（返金計上）`
+    : `¥${Math.abs(receipt.total).toLocaleString()}`;
+
+  return waitNotice + proxyBanner + `${headerTitle}\n` +
     `━━━━━━━━━━━━━━\n` +
     `🏪 店名: ${receipt.store || '未設定'}\n` +
     `📅 日付: ${receipt.date}\n` +
-    `💰 合計: ¥${receipt.total.toLocaleString()}（明細 ${receipt.items.length}件）\n` +
-    `💳 支払: 共同カード / ${payer}\n` +
+    `💰 合計: ${totalDisplay}（明細 ${receipt.items.length}件）\n` +
+    `💳 支払: ${paymentLabel}\n` +
     `━━━━━━━━━━━━━━\n` +
     itemsPreview + moreCount +
     autoCheckMsg + `\n\n` +
-    `アプリの「履歴」タブに反映されました✨\n\n` +
-    `💡 パートナーの代理登録にする場合は「代理 〇〇」と返信してください`;
+    `アプリの「履歴」タブに反映されました✨` +
+    currentModeFooter;
 }
 
 // ==========================================
@@ -3714,7 +3816,7 @@ async function handleHealthCheck(req) {
 
   return {
     success: true,
-    version: 'v2.8.1',
+    version: 'v2.9.0',
     resolvedUrl: resolvedUrl ? resolvedUrl.replace(/\/\/[^@]+@/, '//***@') : '未設定',
     keyType: keyType,
     env: envCheck,
@@ -3899,7 +4001,7 @@ export default async function handler(req, res) {
       if (!actor.allowed) {
         return res.status(200).json({
           success: false,
-          version: 'v2.8.1',
+          version: 'v2.9.0',
           code: actor.code,
           error: actor.error,
           userId: actor.userId || '',

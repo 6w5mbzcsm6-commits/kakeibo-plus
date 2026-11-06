@@ -9,7 +9,7 @@
  */
 
 const APP_CONFIG = window.PAIRBUDGET_CONFIG || {};
-const FRONTEND_VERSION = 'v2.8.1';
+const FRONTEND_VERSION = 'v2.9.0';
 const MAX_HISTORY_MONTHS = 36;
 const FIELD_LABELS = {
   date: '日付', title: '品名', amount: '金額', category: 'カテゴリ', isShared: '共同',
@@ -18,7 +18,7 @@ const FIELD_LABELS = {
   isPaid: '振込状況', billingDay: '引落日', isActive: '有効', keyword: 'キーワード', color: 'カラー', role: '表示名',
   store: '店名', total: '合計', itemCount: '品数'
 };
-const PAYMENT_LABELS = { shared_card: '共同カード', advanced_by_user: '個人立替', personal_cash: '個人自腹' };
+const PAYMENT_LABELS = { shared_card: '共同カード', shared_account: '共同口座振替', advanced_by_user: '個人立替', personal_cash: '個人自腹' };
 
 /**
  * 品名キーワードからの品目別カテゴリ自動推定 (v2.8.0)
@@ -454,9 +454,9 @@ const MOCK_CATEGORIES = [
   { name: '趣味・衣服', color: '#EC4899', icon: 'heart' }, { name: 'その他', color: '#6B7280', icon: 'more-horizontal' }
 ];
 const MOCK_FIXED = [
-  { id: 'f1', title: '家賃', amount: 110000, category: '住居費', billingDay: 27, isActive: true },
-  { id: 'f2', title: '光熱費 (電気・ガス)', amount: 15000, category: '水道光熱費', billingDay: 20, isActive: true },
-  { id: 'f3', title: 'ネット光回線', amount: 5200, category: '通信費', billingDay: 15, isActive: true }
+  { id: 'f1', title: '家賃', amount: 110000, category: '住居費', billingDay: 27, isActive: true, paymentType: 'shared_account', payer: '共同口座' },
+  { id: 'f2', title: '光熱費 (電気・ガス)', amount: 15000, category: '水道光熱費', billingDay: 20, isActive: true, paymentType: 'shared_account', payer: '共同口座' },
+  { id: 'f3', title: 'ネット光回線', amount: 5200, category: '通信費', billingDay: 15, isActive: true, paymentType: 'shared_card', payer: '共同カード' }
 ];
 const MOCK_RULES = [{ keyword: 'イオン', category: '食費' }, { keyword: 'ライフ', category: '食費' }, { keyword: 'ドラッグ', category: '日用品' }];
 
@@ -487,8 +487,8 @@ function seedMockDb() {
   };
   for (let i = 35; i >= 1; i--) {
     const m = shiftMonth(cur, -i);
-    addTx(`${m}-27`, '【固定費】家賃', 110000, '住居費', true, 'shared_card', m1);
-    addTx(`${m}-20`, '【固定費】光熱費', 11000 + Math.floor(rnd(i) * 9000), '水道光熱費', true, 'shared_card', m2);
+    addTx(`${m}-27`, '【固定費】家賃', 110000, '住居費', true, 'shared_account', '共同口座');
+    addTx(`${m}-20`, '【固定費】光熱費', 11000 + Math.floor(rnd(i) * 9000), '水道光熱費', true, 'shared_account', '共同口座');
     addTx(`${m}-10`, 'スーパー', 38000 + Math.floor(rnd(i + 7) * 22000), '食費', true, 'shared_card', m2);
     addTx(`${m}-15`, '外食', 8000 + Math.floor(rnd(i + 3) * 14000), '外食', true, 'shared_card', m1);
     addTx(`${m}-18`, '私物', 5000 + Math.floor(rnd(i + 5) * 15000), '趣味・衣服', false, 'shared_card', i % 2 ? m1 : m2);
@@ -548,7 +548,10 @@ function mockBuildInitial(month) {
       budget: mockDb.budgets[mm] || 240000,
       sharedCard: 0,
       sharedCardLiving: 0,
-      sharedCardPersonal: 0
+      sharedCardPersonal: 0,
+      sharedAccount: 0,
+      sharedAccountLiving: 0,
+      sharedAccountPersonal: 0
     };
     mockDb.transactions.filter(t => t.date.startsWith(mm)).forEach(t => {
       const amt = Number(t.amount) || 0;
@@ -567,6 +570,13 @@ function mockBuildInitial(month) {
           row.sharedCardLiving += amt;
         } else {
           row.sharedCardPersonal += amt;
+        }
+      } else if (t.paymentType === 'shared_account') {
+        row.sharedAccount += amt;
+        if (t.isShared) {
+          row.sharedAccountLiving += amt;
+        } else {
+          row.sharedAccountPersonal += amt;
         }
       }
     });
@@ -902,7 +912,8 @@ async function mockApi(action, data) {
     case 'updateFixedExpense': {
       const id = data.id || mockId();
       const idx = mockDb.fixed.findIndex(f => f.id === id);
-      const next = { id, title: data.title, amount: Number(data.amount), category: data.category || 'その他', billingDay: Number(data.billingDay) || 1, isActive: data.isActive !== false };
+      const pType = data.paymentType || 'shared_account';
+      const next = { id, title: data.title, amount: Number(data.amount), category: data.category || 'その他', billingDay: Number(data.billingDay) || 1, isActive: data.isActive !== false, paymentType: pType, payer: data.payer || (pType === 'shared_card' ? '共同カード' : '共同口座') };
       if (idx >= 0) {
         mockAudit('更新', '固定費', id, { ...mockDb.fixed[idx] }, next);
         mockDb.fixed[idx] = next;
@@ -2098,9 +2109,10 @@ function renderSavingsCard() {
     tbody.innerHTML = rows.length ? rows.slice(-6).reverse().join('') : '<tr><td colspan="3" class="py-3 text-center text-slate-400">実績データがありません（初期残高 ¥0）</td></tr>';
   }
 
-  // 月初に共同口座へ残すお金ガイド
+  // 月初に共同口座へ残すお金ガイド (v2.9.0: 共同カードと共同口座直接引落の完全分離)
   if ($('guideNextMonthBudget')) $('guideNextMonthBudget').textContent = yen(state.summary.budget);
-  // 前月共同カード引落分 (v2.6.0: monthlyTotalsから前月実績を取得 ＆ 当月利用中の親切表示)
+
+  // ② 前月共同カード引落分（クレカ決済のみ・カード会社の請求確定明細と完全一致）
   const lastMonthStr = shiftMonth(state.viewMonth, -1);
   const lastTotalObj = (state.monthlyTotals || []).find(m => m.month === lastMonthStr);
   const lastMonthCardTotal = lastTotalObj ? Number(lastTotalObj.sharedCard || 0) : 0;
@@ -2113,15 +2125,29 @@ function renderSavingsCard() {
 
   if ($('guideLastMonthSharedCardSub')) {
     if (lastMonthCardTotal > 0) {
-      $('guideLastMonthSharedCardSub').textContent = `前月(${lastMonthStr})の共同カード利用実績`;
+      $('guideLastMonthSharedCardSub').textContent = `前月(${lastMonthStr})のカード決済実績 (明細一致)`;
     } else if (curSharedCard > 0) {
       $('guideLastMonthSharedCardSub').textContent = `当月利用中: ${yen(curSharedCard)} (翌月初引落予定)`;
     } else {
-      $('guideLastMonthSharedCardSub').textContent = `利用実績なし (¥0)`;
+      $('guideLastMonthSharedCardSub').textContent = `前月のカード利用なし (¥0)`;
     }
   }
 
-  // 個人カード立替/私物精算控除
+  // ③ 共同口座直接引落分 (家賃・光熱費・口座振替等)
+  const fixedSharedAccountItems = (state.fixedExpenses || []).filter(f => f.isActive && (f.paymentType === 'shared_account' || (!f.paymentType && f.payer !== '共同カード')));
+  const fixedSharedAccountTotal = fixedSharedAccountItems.reduce((s, f) => s + Number(f.amount || 0), 0);
+  if ($('guideSharedAccount')) $('guideSharedAccount').textContent = yen(fixedSharedAccountTotal);
+  if ($('guideSharedAccountSub')) {
+    if (fixedSharedAccountItems.length > 0) {
+      const titles = fixedSharedAccountItems.map(f => f.title).slice(0, 2).join('・');
+      const more = fixedSharedAccountItems.length > 2 ? `他${fixedSharedAccountItems.length - 2}件` : '';
+      $('guideSharedAccountSub').textContent = `口座振替 ${fixedSharedAccountItems.length}件 (${titles}${more ? `・${more}` : ''})`;
+    } else {
+      $('guideSharedAccountSub').textContent = `登録された口座振替なし`;
+    }
+  }
+
+  // ④ 個人カード立替/私物精算控除
   const myAdjustment = (state.transfers && state.transfers[state.currentSlot])
     ? (Number(state.transfers[state.currentSlot].advancedForShared || 0) - Number(state.transfers[state.currentSlot].privateOnSharedCard || 0))
     : 0;
@@ -2432,16 +2458,29 @@ function renderShoppingList() {
 function renderFixedExpenses() {
   const total = state.fixedExpenses.reduce((s, f) => s + (f.isActive ? Number(f.amount) : 0), 0);
   $('fixedExpensesTotal').textContent = `合計: ${yen(total)}（年間 ${yen(total * 12)}）`;
-  $('fixedExpensesList').innerHTML = state.fixedExpenses.length ? state.fixedExpenses.map(f => `
+  $('fixedExpensesList').innerHTML = state.fixedExpenses.length ? state.fixedExpenses.map(f => {
+    const isCard = f.paymentType === 'shared_card' || f.payer === '共同カード';
+    const badge = isCard
+      ? '<span class="inline-flex items-center gap-1 text-[9px] px-1.5 py-0.5 rounded bg-blue-50 text-blue-700 font-bold border border-blue-200">💳 共同カード</span>'
+      : '<span class="inline-flex items-center gap-1 text-[9px] px-1.5 py-0.5 rounded bg-purple-50 text-purple-700 font-bold border border-purple-200">🏦 口座振替</span>';
+    return `
     <div data-action="edit-fixed" data-id="${esc(f.id)}" class="flex items-center justify-between p-2.5 rounded-xl bg-slate-50 hover:bg-slate-100 border border-slate-100 text-xs cursor-pointer transition-colors ${f.isActive ? '' : 'opacity-50'}">
-      <div><span class="font-bold text-slate-800">${esc(f.title)}</span>
-      <span class="text-[10px] text-slate-400 block">毎月${esc(f.billingDay)}日引落 (${esc(f.category)})</span></div>
+      <div>
+        <div class="flex items-center gap-1.5 mb-0.5">
+          <span class="font-bold text-slate-800">${esc(f.title)}</span>
+          ${badge}
+        </div>
+        <span class="text-[10px] text-slate-400 block">毎月${esc(f.billingDay)}日引落 (${esc(f.category)})</span>
+      </div>
       <div class="flex items-center gap-2">
-        <div class="text-right"><span class="font-black text-slate-900">${yen(f.amount)}</span>
-        <span class="text-[9px] ${f.isActive ? 'text-purple-600' : 'text-slate-400'} font-bold block">${f.isActive ? '自動計上 ON' : '停止中 OFF'}</span></div>
+        <div class="text-right">
+          <span class="font-black text-slate-900">${yen(f.amount)}</span>
+          <span class="text-[9px] ${f.isActive ? 'text-purple-600' : 'text-slate-400'} font-bold block">${f.isActive ? '自動計上 ON' : '停止中 OFF'}</span>
+        </div>
         <i data-lucide="edit-3" class="w-3.5 h-3.5 text-slate-300"></i>
       </div>
-    </div>`).join('') : '<div class="py-4 text-center text-xs text-slate-400">固定費はまだ登録されていません</div>';
+    </div>`;
+  }).join('') : '<div class="py-4 text-center text-xs text-slate-400">固定費はまだ登録されていません</div>';
 }
 
 function categoryOptionsHtml(selected) {
@@ -3460,7 +3499,7 @@ function fillReceiptForm(r) {
   updatePayerDropdowns();
   let payer = receipt.payer;
   if (!payer) {
-    payer = pType === 'shared_card' ? '共同' : (state.currentUser || memberName(state.currentSlot));
+    payer = (pType === 'shared_card' || pType === 'shared_account') ? '共同' : (state.currentUser || memberName(state.currentSlot));
   }
   $('receiptPayer').value = payer;
   const isOther = !isSameMember(payer, state.currentUser);
@@ -3610,7 +3649,7 @@ function openExpenseModal(editItem) {
     del.classList.add('hidden');
     $('scanReceiptLabel').classList.remove('hidden');
     const currentPType = $('expensePaymentType')?.value || 'shared_card';
-    if (currentPType === 'shared_card') {
+    if (currentPType === 'shared_card' || currentPType === 'shared_account') {
       renderExpensePayerChips('共同');
     } else {
       const myName = state.currentUser || memberName(state.currentSlot);
@@ -3792,12 +3831,15 @@ function openFixedModal(editItem) {
       $('fixedExpenseCategory').insertAdjacentHTML('beforeend', `<option value="${esc(editItem.category)}">${esc(editItem.category)}</option>`);
     }
     $('fixedExpenseCategory').value = editItem.category;
+    const pType = editItem.paymentType || (editItem.payer === '共同カード' ? 'shared_card' : 'shared_account');
+    if ($('fixedExpensePaymentType')) $('fixedExpensePaymentType').value = pType;
     $('fixedExpenseActive').checked = editItem.isActive !== false;
     $('fixedExpenseDeleteBtn').classList.remove('hidden');
   } else {
     $('fixedModalTitle').textContent = '固定費を追加';
     $('fixedExpenseId').value = '';
     $('fixedExpenseDay').value = 27;
+    if ($('fixedExpensePaymentType')) $('fixedExpensePaymentType').value = 'shared_account';
     $('fixedExpenseActive').checked = true;
     $('fixedExpenseDeleteBtn').classList.add('hidden');
   }
@@ -3820,10 +3862,12 @@ async function handleFixedSubmit(e) {
   if (!Number.isInteger(amount) || amount <= 0) { showToast('月額を1円以上で入力してください'); return; }
   if (!Number.isInteger(billingDay) || billingDay < 1 || billingDay > 31) { showToast('引落日は1〜31日で入力してください'); return; }
   const category = $('fixedExpenseCategory').value;
+  const paymentType = $('fixedExpensePaymentType')?.value || 'shared_account';
+  const payer = paymentType === 'shared_card' ? '共同カード' : '共同口座';
   const isActive = $('fixedExpenseActive').checked;
   closeFixedModal();
   await writeAndRefresh('updateFixedExpense', {
-    id, title, amount, billingDay, category, isActive
+    id, title, amount, billingDay, category, paymentType, payer, isActive
   }, id ? '固定費を更新しました' : '固定費を追加しました', id ? '固定費を更新しています…' : '固定費を追加しています…');
 }
 
@@ -4318,7 +4362,7 @@ function setupEventListeners() {
   $('expenseDate')?.addEventListener('change', updateExpenseDuplicateAlert);
   $('expenseAmount')?.addEventListener('input', updateExpenseDuplicateAlert);
   $('expensePaymentType')?.addEventListener('change', e => {
-    if (e.target.value === 'shared_card') {
+    if (e.target.value === 'shared_card' || e.target.value === 'shared_account') {
       renderExpensePayerChips('共同');
     } else {
       if (currentSelectedExpensePayer === '共同') {
@@ -4335,7 +4379,7 @@ function setupEventListeners() {
   $('receiptPaymentType')?.addEventListener('change', e => {
     const payerEl = $('receiptPayer');
     if (!payerEl) return;
-    if (e.target.value === 'shared_card') {
+    if (e.target.value === 'shared_card' || e.target.value === 'shared_account') {
       payerEl.value = '共同';
     } else {
       if (payerEl.value === '共同') {

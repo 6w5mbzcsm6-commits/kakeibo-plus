@@ -16,7 +16,7 @@
   <!-- LINE LIFF SDK -->
   <script charset="utf-8" src="https://static.line-scdn.net/liff/edge/2/sdk.js"></script>
   <!-- Custom CSS -->
-  <link rel="stylesheet" href="style.css?v=2.8.1">
+  <link rel="stylesheet" href="style.css?v=2.9.0">
   <script>
     tailwind.config = {
       theme: {
@@ -83,7 +83,7 @@
         <div>
           <div class="flex items-center gap-1.5">
             <h1 class="text-base font-bold text-slate-900 leading-tight">ふたり家計簿</h1>
-            <span id="headerVersionBadge" onclick="forceHardReload()" title="タップして最新版に更新" class="bg-brand-50 text-brand-700 hover:bg-brand-100 text-[10px] font-bold px-1.5 py-0.5 rounded-full border border-brand-200 cursor-pointer transition-colors active:scale-95 select-none">v2.8.1</span>
+            <span id="headerVersionBadge" onclick="forceHardReload()" title="タップして最新版に更新" class="bg-brand-50 text-brand-700 hover:bg-brand-100 text-[10px] font-bold px-1.5 py-0.5 rounded-full border border-brand-200 cursor-pointer transition-colors active:scale-95 select-none">v2.9.0</span>
           </div>
           <!-- 月ナビゲーション（過去36ヶ月まで遡れる） -->
           <div class="flex items-center gap-1 -ml-1">
@@ -352,28 +352,36 @@
 
             <!-- 📌 月初に共同口座へ残すお金（精算目安）自動計算ガイド (画像下部メモ再現) -->
             <div class="p-3 rounded-xl bg-slate-50 border border-slate-200/70 text-xs text-slate-600 space-y-1.5">
-              <div class="font-bold text-slate-800 flex items-center gap-1.5 text-[11px]">
-                <i data-lucide="info" class="w-3.5 h-3.5 text-brand-500"></i> 月初に共同口座へ残すお金（精算目安）
+              <div class="font-bold text-slate-800 flex items-center justify-between text-[11px]">
+                <span class="flex items-center gap-1.5"><i data-lucide="info" class="w-3.5 h-3.5 text-brand-500"></i> 月初に共同口座へ残すお金（精算目安）</span>
+                <span class="text-[10px] text-brand-600 font-bold bg-brand-50 px-1.5 py-0.5 rounded border border-brand-200">カード明細完全一致</span>
               </div>
-              <div class="text-[11px] text-slate-500 leading-relaxed space-y-0.5">
+              <div class="text-[11px] text-slate-500 leading-relaxed space-y-1">
                 <div class="flex justify-between">
                   <span>① 翌月の生活費予算目安:</span>
                   <b id="guideNextMonthBudget" class="font-mono text-slate-700">¥240,000</b>
                 </div>
                 <div class="flex justify-between items-baseline">
                   <div>
-                    <span>② 前月生活費のクレカ引落分:</span>
+                    <span class="text-blue-700 font-bold">② 前月クレカ引落分 (カード明細一致):</span>
                     <span id="guideLastMonthSharedCardSub" class="text-[9px] text-slate-400 block font-normal"></span>
                   </div>
-                  <b id="guideLastMonthSharedCard" class="font-mono text-slate-700">¥0</b>
+                  <b id="guideLastMonthSharedCard" class="font-mono text-blue-800 font-bold">¥0</b>
+                </div>
+                <div class="flex justify-between items-baseline">
+                  <div>
+                    <span class="text-purple-700 font-bold">③ 共同口座直接引落 (家賃・口座振替等):</span>
+                    <span id="guideSharedAccountSub" class="text-[9px] text-slate-400 block font-normal">固定費口座振替の予定額</span>
+                  </div>
+                  <b id="guideSharedAccount" class="font-mono text-purple-800 font-bold">¥0</b>
                 </div>
                 <div class="flex justify-between">
-                  <span>③ 個人カード立替/私物精算控除:</span>
+                  <span>④ 個人カード立替/私物精算控除:</span>
                   <b id="guideAdjustment" class="font-mono text-slate-700">¥0</b>
                 </div>
               </div>
               <p class="text-[10px] text-slate-400 border-t border-slate-200/60 pt-1 leading-normal">
-                ※ ①＋②−③ を共同口座に残し、残金は積立・貯金用口座へ移動することで家計が綺麗に整います。
+                ※ ②は前月の「共同カード（クレカ）」のみを集計しているため、カード会社の請求確定明細と1円単位で完全一致します。家賃等の口座直引落は③に独立して集約されます。
               </p>
             </div>
           </section>
@@ -890,7 +898,7 @@
           <footer class="pt-2 pb-6 text-center text-[10px] text-slate-400 font-mono flex items-center justify-center gap-2 select-none flex-wrap">
             <span class="inline-flex items-center gap-1 bg-slate-100 text-slate-600 px-2 py-0.5 rounded-full">
               <span>Web</span>
-              <b id="frontVersionLabel" class="text-slate-800">v2.8.1</b>
+              <b id="frontVersionLabel" class="text-slate-800">v2.9.0</b>
             </span>
             <span>/</span>
             <span class="inline-flex items-center gap-1 bg-slate-100 text-slate-600 px-2 py-0.5 rounded-full">
@@ -1122,9 +1130,10 @@
         <div>
           <label class="text-xs font-bold text-slate-600 block mb-1">決済手段</label>
           <select id="expensePaymentType" class="w-full bg-slate-50 border border-slate-200 rounded-xl px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-brand-500">
-            <option value="shared_card">共同カード / 共同口座 (共同カードで私物購入もここ)</option>
-            <option value="advanced_by_user">個人立替 (自分のお金で支払い、共同口座から還元)</option>
-            <option value="personal_cash">個人自腹 (自分のお金で私物購入・精算対象外)</option>
+            <option value="shared_card">💳 共同カード (クレカ払)</option>
+            <option value="shared_account">🏦 共同口座振替 (家賃・光熱費などの口座直引落)</option>
+            <option value="advanced_by_user">👤 個人立替 (自分のお金で支払い、共同口座から精算)</option>
+            <option value="personal_cash">🔒 個人自腹 (自分のお金で私物購入・精算対象外)</option>
           </select>
         </div>
 
@@ -1174,8 +1183,9 @@
         <div>
           <label class="text-xs font-bold text-slate-600 block mb-1">決済手段</label>
           <select id="buySyncPaymentType" class="w-full bg-slate-50 border border-slate-200 rounded-xl px-3 py-2 text-xs focus:outline-none">
-            <option value="shared_card">共同カード / 共同口座</option>
-            <option value="advanced_by_user">個人立替 (自分のお金で支払い)</option>
+            <option value="shared_card">💳 共同カード (クレカ払)</option>
+            <option value="shared_account">🏦 共同口座振替 (口座直引落)</option>
+            <option value="advanced_by_user">👤 個人立替 (自分のお金で支払い)</option>
           </select>
         </div>
 
@@ -1368,9 +1378,10 @@
           <div>
             <label class="text-xs font-bold text-slate-600 block mb-1">決済手段</label>
             <select id="receiptPaymentType" class="w-full bg-slate-50 border border-slate-200 rounded-xl px-2 py-2 text-xs">
-              <option value="shared_card">共同カード / 共同口座</option>
-              <option value="advanced_by_user">個人立替</option>
-              <option value="personal_cash">個人自腹</option>
+              <option value="shared_card">💳 共同カード (クレカ払)</option>
+              <option value="shared_account">🏦 共同口座振替 (口座直引落)</option>
+              <option value="advanced_by_user">👤 個人立替</option>
+              <option value="personal_cash">🔒 個人自腹</option>
             </select>
           </div>
           <div class="col-span-2">
@@ -1555,12 +1566,19 @@
             <label for="fixedExpenseCategory" class="text-xs font-bold text-slate-600 block mb-1">カテゴリ</label>
             <select id="fixedExpenseCategory" class="w-full bg-slate-50 border border-slate-200 rounded-xl px-3 py-2 text-sm"></select>
           </div>
-          <div class="flex items-end pb-1">
-            <label class="flex items-center gap-2 cursor-pointer text-xs font-bold text-slate-700">
-              <input type="checkbox" id="fixedExpenseActive" checked class="w-4 h-4 text-purple-600 rounded">
-              毎月1日に自動計上する
-            </label>
+          <div>
+            <label for="fixedExpensePaymentType" class="text-xs font-bold text-slate-600 block mb-1">引落・決済区分</label>
+            <select id="fixedExpensePaymentType" class="w-full bg-slate-50 border border-slate-200 rounded-xl px-3 py-2 text-xs">
+              <option value="shared_account" selected>🏦 共同口座振替 (家賃等)</option>
+              <option value="shared_card">💳 共同カード (クレカ)</option>
+            </select>
           </div>
+        </div>
+        <div class="pb-1">
+          <label class="flex items-center gap-2 cursor-pointer text-xs font-bold text-slate-700">
+            <input type="checkbox" id="fixedExpenseActive" checked class="w-4 h-4 text-purple-600 rounded">
+            毎月1日に自動計上する
+          </label>
         </div>
         <div class="pt-1">
           <button type="submit" class="w-full bg-purple-600 hover:bg-purple-500 text-white font-bold py-2.5 rounded-xl text-xs shadow-sm">
@@ -1997,7 +2015,7 @@
   </div>
 
   <!-- アプリ本体スクリプト -->
-  <script src="config.js?v=2.8.1"></script>
-  <script src="app.js?v=2.8.1"></script>
+  <script src="config.js?v=2.9.0"></script>
+  <script src="app.js?v=2.9.0"></script>
 </body>
 </html>
