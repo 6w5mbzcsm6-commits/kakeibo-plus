@@ -16,7 +16,7 @@
   <!-- LINE LIFF SDK -->
   <script charset="utf-8" src="https://static.line-scdn.net/liff/edge/2/sdk.js"></script>
   <!-- Custom CSS -->
-  <link rel="stylesheet" href="style.css?v=2.6.0">
+  <link rel="stylesheet" href="style.css?v=2.7.0">
   <script>
     tailwind.config = {
       theme: {
@@ -83,7 +83,7 @@
         <div>
           <div class="flex items-center gap-1.5">
             <h1 class="text-base font-bold text-slate-900 leading-tight">ふたり家計簿</h1>
-            <span id="headerVersionBadge" onclick="forceHardReload()" title="タップして最新版に更新" class="bg-brand-50 text-brand-700 hover:bg-brand-100 text-[10px] font-bold px-1.5 py-0.5 rounded-full border border-brand-200 cursor-pointer transition-colors active:scale-95 select-none">v2.6.0</span>
+            <span id="headerVersionBadge" onclick="forceHardReload()" title="タップして最新版に更新" class="bg-brand-50 text-brand-700 hover:bg-brand-100 text-[10px] font-bold px-1.5 py-0.5 rounded-full border border-brand-200 cursor-pointer transition-colors active:scale-95 select-none">v2.7.0</span>
           </div>
           <!-- 月ナビゲーション（過去36ヶ月まで遡れる） -->
           <div class="flex items-center gap-1 -ml-1">
@@ -652,6 +652,13 @@
               <!-- JSで動的レンダリング -->
             </div>
 
+            <!-- ＋ 新しい部門（カテゴリ）を追加ボタン (v2.7.0) -->
+            <div class="pt-1">
+              <button type="button" id="openAddCategoryModalBtn" onclick="openAddCategoryModal()" class="w-full bg-brand-50 hover:bg-brand-100 text-brand-700 border border-dashed border-brand-300 py-2 rounded-xl text-xs font-bold transition-all flex items-center justify-center gap-1.5 cursor-pointer active:scale-98">
+                <i data-lucide="plus-circle" class="w-4 h-4 text-brand-600"></i> 新しい部門（カテゴリ）を追加
+              </button>
+            </div>
+
             <div class="pt-1">
               <button type="button" id="saveCategoryBudgetsBtn" class="w-full bg-slate-900 hover:bg-slate-800 text-white py-2.5 rounded-xl text-xs font-bold shadow-sm transition-colors flex items-center justify-center gap-1.5 cursor-pointer">
                 <i data-lucide="check" class="w-3.5 h-3.5"></i> 部門別予算を保存
@@ -866,7 +873,7 @@
           <footer class="pt-2 pb-6 text-center text-[10px] text-slate-400 font-mono flex items-center justify-center gap-2 select-none flex-wrap">
             <span class="inline-flex items-center gap-1 bg-slate-100 text-slate-600 px-2 py-0.5 rounded-full">
               <span>Web</span>
-              <b id="frontVersionLabel" class="text-slate-800">v2.6.0</b>
+              <b id="frontVersionLabel" class="text-slate-800">v2.7.0</b>
             </span>
             <span>/</span>
             <span class="inline-flex items-center gap-1 bg-slate-100 text-slate-600 px-2 py-0.5 rounded-full">
@@ -911,11 +918,11 @@
 
   </main>
 
-  <!-- クイック操作 フローティングボタン群 (レシートAI-OCR & 支出追加) -->
+  <!-- クイック操作 フローティングボタン群 (PC画面専用 / スマホではボトムナビ中央に統合) -->
   <!-- ※ input[type=file] は display:none のモーダル外（body直下）に配置することで全ブラウザで確実に起動させる -->
   <input type="file" id="receiptFileInput" accept="image/*" class="sr-only">
-  <div id="fabContainer" class="fixed right-4 md:right-8 bottom-20 md:bottom-8 z-40 flex flex-col items-end gap-2.5 transition-all duration-300">
-    <!-- FAB最小化/展開トグルボタン (スマホ下部の被りを手動でも解消可能) -->
+  <div id="fabContainer" class="hidden md:flex fixed right-8 bottom-8 z-40 flex-col items-end gap-2.5 transition-all duration-300">
+    <!-- FAB最小化/展開トグルボタン -->
     <button id="fabToggleBtn" type="button" onclick="toggleFabCompact()" class="bg-slate-700/60 hover:bg-slate-800 text-white w-6 h-6 rounded-full flex items-center justify-center text-[10px] shadow-sm backdrop-blur-xs transition-transform active:scale-90 cursor-pointer" aria-label="操作ボタンの表示切替" title="操作ボタンの最小化/展開">
       <i id="fabToggleIcon" data-lucide="chevron-down" class="w-3.5 h-3.5"></i>
     </button>
@@ -929,27 +936,83 @@
     </button>
   </div>
 
-  <!-- ボトムナビゲーションバー (モバイル専用) -->
-  <nav class="md:hidden fixed bottom-0 left-0 right-0 bg-white border-t border-slate-200 z-40 px-3 py-1.5 shadow-lg">
-    <div class="max-w-lg mx-auto grid grid-cols-4 gap-1 text-center">
+  <!-- ボトムナビゲーションバー (モバイル専用 5アイテム統合構成 v2.7.0) -->
+  <nav class="md:hidden fixed bottom-0 left-0 right-0 bg-white/95 backdrop-blur-md border-t border-slate-200 z-40 px-2 py-1 shadow-lg">
+    <div class="max-w-lg mx-auto grid grid-cols-5 gap-0.5 text-center items-end">
       <button onclick="switchTab('home')" id="navHomeBtn" class="py-1 text-brand-600 flex flex-col items-center justify-center gap-0.5">
-        <i data-lucide="home" class="w-5 h-5"></i>
-        <span class="text-[10px] font-bold">ホーム</span>
+        <i data-lucide="home" class="w-4 h-4"></i>
+        <span class="text-[9px] font-bold">ホーム</span>
       </button>
       <button onclick="switchTab('shopping')" id="navShoppingBtn" class="py-1 text-slate-400 flex flex-col items-center justify-center gap-0.5">
-        <i data-lucide="shopping-cart" class="w-5 h-5"></i>
-        <span class="text-[10px] font-bold">買うもの</span>
+        <i data-lucide="shopping-cart" class="w-4 h-4"></i>
+        <span class="text-[9px] font-bold">買うもの</span>
+      </button>
+      <!-- 中央の大きなクイック記録ボタン -->
+      <button type="button" onclick="openMobileRecordActionSheet()" id="navRecordBtn" class="relative -top-2 flex flex-col items-center justify-center cursor-pointer group select-none">
+        <div class="w-12 h-12 rounded-full bg-gradient-to-tr from-brand-600 to-emerald-400 text-white shadow-lg flex items-center justify-center active:scale-90 transition-transform border-3 border-white">
+          <i data-lucide="plus" class="w-6 h-6 stroke-[2.5]"></i>
+        </div>
+        <span class="text-[9px] font-bold text-slate-700 mt-0.5">記録</span>
       </button>
       <button onclick="switchTab('history')" id="navHistoryBtn" class="py-1 text-slate-400 flex flex-col items-center justify-center gap-0.5">
-        <i data-lucide="receipt" class="w-5 h-5"></i>
-        <span class="text-[10px] font-bold">履歴・固定費</span>
+        <i data-lucide="receipt" class="w-4 h-4"></i>
+        <span class="text-[9px] font-bold">履歴・固定費</span>
       </button>
       <button onclick="switchTab('settings')" id="navSettingsBtn" class="py-1 text-slate-400 flex flex-col items-center justify-center gap-0.5">
-        <i data-lucide="settings" class="w-5 h-5"></i>
-        <span class="text-[10px] font-bold">設定</span>
+        <i data-lucide="settings" class="w-4 h-4"></i>
+        <span class="text-[9px] font-bold">設定</span>
       </button>
     </div>
   </nav>
+
+  <!-- スマホ専用 クイック記録アクションシート (v2.7.0) -->
+  <div id="mobileRecordActionSheet" class="hidden fixed inset-0 z-50 bg-black/50 backdrop-blur-xs flex items-end justify-center p-0 md:hidden transition-all duration-300">
+    <div class="bg-white w-full rounded-t-3xl p-5 shadow-2xl space-y-4 max-w-lg mx-auto animate-in slide-in-from-bottom duration-200">
+      <div class="w-10 h-1 bg-slate-200 rounded-full mx-auto -mt-1 mb-2"></div>
+      <div class="flex items-center justify-between">
+        <h3 class="text-sm font-extrabold text-slate-900 flex items-center gap-1.5">
+          <span>✨ 支出・レシートを記録</span>
+        </h3>
+        <button type="button" onclick="closeMobileRecordActionSheet()" class="text-slate-400 hover:text-slate-600 p-1">
+          <i data-lucide="x" class="w-5 h-5"></i>
+        </button>
+      </div>
+
+      <div class="grid grid-cols-1 gap-2.5">
+        <!-- レシート読取 (カメラ / 写真選択) -->
+        <label class="relative flex items-center gap-3 p-3.5 rounded-2xl bg-emerald-50 hover:bg-emerald-100 border border-emerald-200 cursor-pointer active:scale-98 transition-all">
+          <input type="file" accept="image/*" class="sr-only" onchange="handleReceiptInputChange(this); closeMobileRecordActionSheet();">
+          <div class="w-11 h-11 rounded-xl bg-emerald-500 text-white flex items-center justify-center shadow-sm shrink-0">
+            <i data-lucide="camera" class="w-6 h-6"></i>
+          </div>
+          <div class="flex-1">
+            <div class="text-xs font-black text-emerald-950 flex items-center gap-1.5">
+              <span>レシート写真をスキャン (AI-OCR)</span>
+              <span class="text-[9px] bg-emerald-200 text-emerald-900 px-1.5 py-0.2 rounded font-bold">推奨</span>
+            </div>
+            <p class="text-[10px] text-emerald-800/80 mt-0.5">カメラ撮影または保存画像から自動読み取り＆明細仕分け</p>
+          </div>
+          <i data-lucide="chevron-right" class="w-4 h-4 text-emerald-400"></i>
+        </label>
+
+        <!-- 手動で支出記録 -->
+        <button type="button" onclick="closeMobileRecordActionSheet(); openExpenseModal();" class="flex items-center gap-3 p-3.5 rounded-2xl bg-slate-50 hover:bg-slate-100 border border-slate-200 cursor-pointer active:scale-98 transition-all text-left">
+          <div class="w-11 h-11 rounded-xl bg-slate-800 text-white flex items-center justify-center shadow-sm shrink-0">
+            <i data-lucide="edit-3" class="w-5 h-5"></i>
+          </div>
+          <div class="flex-1">
+            <div class="text-xs font-black text-slate-900">支出を手動で記録</div>
+            <p class="text-[10px] text-slate-500 mt-0.5">日付・金額・カテゴリ・支払者を個別に入力</p>
+          </div>
+          <i data-lucide="chevron-right" class="w-4 h-4 text-slate-400"></i>
+        </button>
+      </div>
+
+      <button type="button" onclick="closeMobileRecordActionSheet()" class="w-full py-2.5 text-xs font-bold text-slate-500 hover:text-slate-800 bg-slate-100 rounded-xl transition-colors">
+        キャンセル
+      </button>
+    </div>
+  </div>
 
   <!-- ===================== モーダル群 ===================== -->
 
@@ -1221,18 +1284,18 @@
           </div>
           <p id="receiptDuplicateDetails" class="text-[11px] text-amber-700 leading-relaxed"></p>
         </div>
-        <div class="grid grid-cols-2 gap-2">
-          <div class="col-span-2">
+        <div class="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
+          <div class="col-span-1 sm:col-span-2">
             <label class="text-xs font-bold text-slate-600 block mb-1">店名</label>
-            <input type="text" id="receiptStore" required maxlength="50" class="w-full bg-slate-50 border border-slate-200 rounded-xl px-3 py-2 text-sm">
+            <input type="text" id="receiptStore" required maxlength="50" class="w-full min-w-0 bg-slate-50 border border-slate-200 rounded-xl px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-brand-400">
           </div>
-          <div>
+          <div class="min-w-0">
             <label class="text-xs font-bold text-slate-600 block mb-1">日付</label>
-            <input type="date" id="receiptDate" required class="w-full bg-slate-50 border border-slate-200 rounded-xl px-3 py-2 text-sm">
+            <input type="date" id="receiptDate" required class="w-full min-w-0 bg-slate-50 border border-slate-200 rounded-xl px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-brand-400">
           </div>
-          <div>
+          <div class="min-w-0">
             <label class="text-xs font-bold text-slate-600 block mb-1">カテゴリ</label>
-            <select id="receiptCategory" class="w-full bg-slate-50 border border-slate-200 rounded-xl px-3 py-2 text-sm"></select>
+            <select id="receiptCategory" class="w-full min-w-0 bg-slate-50 border border-slate-200 rounded-xl px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-brand-400"></select>
           </div>
         </div>
 
@@ -1838,6 +1901,53 @@
     </div>
   </div>
 
+  <!-- 部門（カテゴリ）追加モーダル (v2.7.0) -->
+  <div id="addCategoryModal" class="hidden fixed inset-0 z-50 bg-black/50 backdrop-blur-sm flex items-center justify-center p-4">
+    <div class="bg-white w-full max-w-sm rounded-3xl p-5 shadow-2xl space-y-4">
+      <div class="flex items-center justify-between pb-2 border-b border-slate-100">
+        <h3 class="text-sm font-extrabold text-slate-900 flex items-center gap-1.5">
+          <i data-lucide="tag" class="w-4 h-4 text-brand-600"></i> 新しい部門（カテゴリ）を追加
+        </h3>
+        <button type="button" onclick="closeAddCategoryModal()" class="text-slate-400 hover:text-slate-600 p-1">
+          <i data-lucide="x" class="w-5 h-5"></i>
+        </button>
+      </div>
+
+      <div class="space-y-3">
+        <div>
+          <label class="text-xs font-bold text-slate-700 block mb-1">部門名 <span class="text-rose-500">*</span></label>
+          <input type="text" id="newCategoryName" placeholder="例: 子ども費、ペット費、美容衣服など" maxlength="20" class="w-full bg-slate-50 border border-slate-200 rounded-xl px-3 py-2 text-xs focus:outline-none focus:ring-2 focus:ring-brand-400">
+        </div>
+
+        <div>
+          <label class="text-xs font-bold text-slate-700 block mb-1">月間予算額（円）</label>
+          <div class="flex items-center gap-1.5 bg-slate-50 border border-slate-200 rounded-xl px-3 py-1.5">
+            <span class="text-xs text-slate-400 font-mono">¥</span>
+            <input type="number" id="newCategoryBudget" placeholder="0" min="0" step="1000" class="w-full bg-transparent text-xs font-mono focus:outline-none">
+          </div>
+          <p class="text-[10px] text-slate-400 mt-1">※ あとから設定画面でいつでも変更できます</p>
+        </div>
+
+        <div>
+          <label class="text-xs font-bold text-slate-700 block mb-1.5">カラーテーマ</label>
+          <div id="newCategoryColorPalette" class="flex items-center gap-2 flex-wrap">
+            <!-- JSでカラーボタンを生成 -->
+          </div>
+          <input type="hidden" id="newCategoryColor" value="#10b981">
+        </div>
+      </div>
+
+      <div class="grid grid-cols-2 gap-2 pt-2">
+        <button type="button" onclick="closeAddCategoryModal()" class="py-2.5 text-xs font-bold text-slate-600 hover:text-slate-800 bg-slate-100 rounded-xl transition-colors">
+          キャンセル
+        </button>
+        <button type="button" onclick="saveNewCategory()" class="py-2.5 text-xs font-bold text-white bg-brand-500 hover:bg-brand-600 rounded-xl shadow-sm transition-all active:scale-98">
+          追加する
+        </button>
+      </div>
+    </div>
+  </div>
+
   <!-- トースト通知（通常完了 ＆ 処理中スピナー ＆ 流れるプログレスバー対応） -->
   <div id="toast" class="hidden fixed top-5 left-1/2 -translate-x-1/2 z-[60] bg-slate-900/95 text-white text-xs font-bold px-4 py-2.5 rounded-full shadow-xl flex items-center gap-2 backdrop-blur-sm transition-opacity duration-300 max-w-[90vw] overflow-hidden relative">
     <div id="toastSpinner" class="hidden w-4 h-4 border-2 border-white/30 border-t-brand-400 rounded-full animate-spin shrink-0"></div>
@@ -1850,7 +1960,7 @@
   </div>
 
   <!-- アプリ本体スクリプト -->
-  <script src="config.js?v=2.6.0"></script>
-  <script src="app.js?v=2.6.0"></script>
+  <script src="config.js?v=2.7.0"></script>
+  <script src="app.js?v=2.7.0"></script>
 </body>
 </html>

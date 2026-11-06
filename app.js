@@ -9,7 +9,7 @@
  */
 
 const APP_CONFIG = window.PAIRBUDGET_CONFIG || {};
-const FRONTEND_VERSION = 'v2.6.0';
+const FRONTEND_VERSION = 'v2.7.0';
 const MAX_HISTORY_MONTHS = 36;
 const FIELD_LABELS = {
   date: '日付', title: '品名', amount: '金額', category: 'カテゴリ', isShared: '共同',
@@ -79,6 +79,9 @@ const state = {
 
   categoryBudgets: (() => {
     try { return JSON.parse(localStorage.getItem('pairbudget_category_budgets') || '{}'); } catch (_) { return {}; }
+  })(),
+  customCategories: (() => {
+    try { return JSON.parse(localStorage.getItem('pairbudget_custom_categories') || '[]'); } catch (_) { return []; }
   })(),
   surplusPolicy: localStorage.getItem('pairbudget_surplus_policy') || 'savings',
   savingsConfig: (() => {
@@ -561,6 +564,7 @@ function mockBuildInitial(month) {
       shoppingPurgeDays: (mockDb.config && mockDb.config.shoppingPurgeDays !== undefined) ? mockDb.config.shoppingPurgeDays : 1,
       autoCheckShoppingOnReceipt: (mockDb.config && mockDb.config.autoCheckShoppingOnReceipt !== undefined) ? mockDb.config.autoCheckShoppingOnReceipt : true,
       categoryBudgets: (mockDb.config && mockDb.config.categoryBudgets) ? mockDb.config.categoryBudgets : state.categoryBudgets,
+      customCategories: (mockDb.config && mockDb.config.customCategories) ? mockDb.config.customCategories : state.customCategories,
       surplusPolicy: (mockDb.config && mockDb.config.surplusPolicy) ? mockDb.config.surplusPolicy : state.surplusPolicy,
       savingsConfig: (mockDb.config && mockDb.config.savingsConfig) ? mockDb.config.savingsConfig : state.savingsConfig
     },
@@ -641,28 +645,35 @@ async function mockApi(action, data) {
         });
       });
 
-      // 共同と私物に分割して支出レコード作成
+      // 共同と各自の私物に分割して支出レコード作成
       const sharedItems = (data.items || []).filter(it => it.isShared !== false);
-      const personalItems = (data.items || []).filter(it => it.isShared === false);
       const sharedSum = sharedItems.reduce((s, it) => s + (Number(it.price) || 0), 0);
-      const personalSum = personalItems.reduce((s, it) => s + (Number(it.price) || 0), 0);
+
+      const personalByOwner = {};
+      (data.items || []).filter(it => it.isShared === false).forEach(it => {
+        const owner = it.owner || data.payer || state.currentUser;
+        if (!personalByOwner[owner]) personalByOwner[owner] = [];
+        personalByOwner[owner].push(it);
+      });
 
       const createdTxIds = [];
       if (sharedSum !== 0) {
         const txShared = {
           id: mockId(), date: data.date, title: data.store, amount: sharedSum,
           category: data.category, isShared: true, paymentType: data.paymentType,
-          payer: data.payer, memo: 'レシート読み取り (共同)', createdBy: state.currentUser,
+          payer: data.paymentType === 'shared_card' ? '共同' : data.payer, memo: 'レシート読み取り (共同)', createdBy: state.currentUser,
           createdAt: mockNow(), updatedBy: '', updatedAt: '', receiptId: rid
         };
         mockDb.transactions.push(txShared);
         createdTxIds.push(txShared.id);
       }
-      if (personalSum !== 0) {
+      for (const [ownerName, ownerItems] of Object.entries(personalByOwner)) {
+        const ownerSum = ownerItems.reduce((s, it) => s + (Number(it.price) || 0), 0);
+        if (ownerSum === 0) continue;
         const txPriv = {
-          id: mockId(), date: data.date, title: `${data.store}（私物）`, amount: personalSum,
+          id: mockId(), date: data.date, title: `${data.store}（${ownerName}私物）`, amount: ownerSum,
           category: 'その他', isShared: false, paymentType: data.paymentType,
-          payer: data.payer, memo: 'レシート読み取り (私物)', createdBy: state.currentUser,
+          payer: ownerName, memo: `レシート読み取り (${ownerName}私物・要返還)`, createdBy: state.currentUser,
           createdAt: mockNow(), updatedBy: '', updatedAt: '', receiptId: rid
         };
         mockDb.transactions.push(txPriv);
@@ -715,26 +726,33 @@ async function mockApi(action, data) {
       // 既存の紐づくtransactionsを削除して再生成
       mockDb.transactions = mockDb.transactions.filter(t => t.receiptId !== rid);
       const sharedItems = (data.items || []).filter(it => it.isShared !== false);
-      const personalItems = (data.items || []).filter(it => it.isShared === false);
       const sharedSum = sharedItems.reduce((s, it) => s + (Number(it.price) || 0), 0);
-      const personalSum = personalItems.reduce((s, it) => s + (Number(it.price) || 0), 0);
+
+      const personalByOwner = {};
+      (data.items || []).filter(it => it.isShared === false).forEach(it => {
+        const owner = it.owner || data.payer || state.currentUser;
+        if (!personalByOwner[owner]) personalByOwner[owner] = [];
+        personalByOwner[owner].push(it);
+      });
 
       const createdTxIds = [];
       if (sharedSum !== 0) {
         const txShared = {
           id: mockId(), date: data.date, title: data.store, amount: sharedSum,
           category: data.category, isShared: true, paymentType: data.paymentType,
-          payer: data.payer, memo: 'レシート読み取り (共同)', createdBy: state.currentUser,
+          payer: data.paymentType === 'shared_card' ? '共同' : data.payer, memo: 'レシート読み取り (共同)', createdBy: state.currentUser,
           createdAt: mockNow(), updatedBy: state.currentUser, updatedAt: mockNow(), receiptId: rid
         };
         mockDb.transactions.push(txShared);
         createdTxIds.push(txShared.id);
       }
-      if (personalSum !== 0) {
+      for (const [ownerName, ownerItems] of Object.entries(personalByOwner)) {
+        const ownerSum = ownerItems.reduce((s, it) => s + (Number(it.price) || 0), 0);
+        if (ownerSum === 0) continue;
         const txPriv = {
-          id: mockId(), date: data.date, title: `${data.store}（私物）`, amount: personalSum,
+          id: mockId(), date: data.date, title: `${data.store}（${ownerName}私物）`, amount: ownerSum,
           category: 'その他', isShared: false, paymentType: data.paymentType,
-          payer: data.payer, memo: 'レシート読み取り (私物)', createdBy: state.currentUser,
+          payer: ownerName, memo: `レシート読み取り (${ownerName}私物・要返還)`, createdBy: state.currentUser,
           createdAt: mockNow(), updatedBy: state.currentUser, updatedAt: mockNow(), receiptId: rid
         };
         mockDb.transactions.push(txPriv);
@@ -963,6 +981,12 @@ async function mockApi(action, data) {
           transfers: []
         }
       };
+    }
+    case 'updateCustomCategories': {
+      mockDb.config = mockDb.config || {};
+      if (data.customCategories) mockDb.config.customCategories = data.customCategories;
+      if (data.categoryBudgets) mockDb.config.categoryBudgets = data.categoryBudgets;
+      return { success: true, customCategories: mockDb.config.customCategories, categoryBudgets: mockDb.config.categoryBudgets };
     }
     default: return { success: true };
   }
@@ -1621,6 +1645,10 @@ function applyData(data) {
       state.categoryBudgets = data.config.categoryBudgets;
       try { localStorage.setItem('pairbudget_category_budgets', JSON.stringify(state.categoryBudgets)); } catch (_) {}
     }
+    if (data.config.customCategories && Array.isArray(data.config.customCategories)) {
+      state.customCategories = data.config.customCategories;
+      try { localStorage.setItem('pairbudget_custom_categories', JSON.stringify(state.customCategories)); } catch (_) {}
+    }
     if (data.config.surplusPolicy) {
       state.surplusPolicy = data.config.surplusPolicy;
       try { localStorage.setItem('pairbudget_surplus_policy', state.surplusPolicy); } catch (_) {}
@@ -1646,6 +1674,19 @@ function applyData(data) {
   } else {
     state.currentUser = memberName(state.currentSlot);
   }
+
+  // カスタムカテゴリを state.categories にマージ (v2.7.0)
+  (state.customCategories || []).forEach(customCat => {
+    if (!state.categories.some(c => c.name === customCat.name)) {
+      state.categories.push({
+        name: customCat.name,
+        color: customCat.color || '#10b981',
+        icon: customCat.icon || 'tag',
+        isCustom: true
+      });
+    }
+  });
+
   renderAll();
   hideMainSkeleton();
   restoreUiState();
@@ -2403,15 +2444,22 @@ function renderCategoryBudgetsInputs() {
 
   container.innerHTML = categories.map(cat => {
     const bVal = budgets[cat.name] !== undefined ? budgets[cat.name] : '';
+    const isCustom = !!cat.isCustom || ((state.customCategories || []).some(c => c.name === cat.name));
     return `
       <div class="flex items-center justify-between p-2 rounded-xl bg-slate-50 border border-slate-100">
-        <label class="text-xs font-bold text-slate-700 flex items-center gap-1.5 flex-1">
-          <span class="w-2.5 h-2.5 rounded-full" style="background-color: ${cat.color || '#94a3b8'}"></span>
-          ${esc(cat.name)}
+        <label class="text-xs font-bold text-slate-700 flex items-center gap-1.5 flex-1 min-w-0">
+          <span class="w-2.5 h-2.5 rounded-full shrink-0" style="background-color: ${cat.color || '#94a3b8'}"></span>
+          <span class="truncate">${esc(cat.name)}</span>
+          ${isCustom ? '<span class="text-[9px] bg-emerald-100 text-emerald-800 px-1.5 py-0.2 rounded font-normal shrink-0">カスタム</span>' : ''}
         </label>
-        <div class="flex items-center gap-1">
+        <div class="flex items-center gap-1.5 shrink-0">
           <span class="text-xs text-slate-400 font-mono">¥</span>
-          <input type="number" data-category-budget="${esc(cat.name)}" value="${bVal}" placeholder="0" class="w-24 bg-white border border-slate-200 rounded-lg px-2 py-1 text-xs font-mono text-right focus:outline-none focus:ring-1 focus:ring-brand-400">
+          <input type="number" data-category-budget="${esc(cat.name)}" value="${bVal}" placeholder="0" class="w-20 sm:w-24 bg-white border border-slate-200 rounded-lg px-2 py-1 text-xs font-mono text-right focus:outline-none focus:ring-1 focus:ring-brand-400">
+          ${isCustom ? `
+            <button type="button" onclick="deleteCustomCategory('${esc(cat.name)}')" class="text-slate-300 hover:text-rose-500 p-1 transition-colors cursor-pointer" title="部門を削除" aria-label="部門「${esc(cat.name)}」を削除">
+              <i data-lucide="trash-2" class="w-3.5 h-3.5"></i>
+            </button>
+          ` : '<span class="w-5"></span>'}
         </div>
       </div>
     `;
@@ -2450,6 +2498,144 @@ function updateCategoryBudgetsDiffBadge() {
     badge.textContent = `予算オーバー: ${yen(Math.abs(diff))}`;
   }
 }
+
+// ==========================================
+// 部門（カスタムカテゴリ）管理 (v2.7.0)
+// ==========================================
+const DEFAULT_CATEGORY_COLORS = [
+  '#10b981', '#3b82f6', '#ec4899', '#8b5cf6',
+  '#f59e0b', '#f97316', '#06b6d4', '#64748b'
+];
+
+function openAddCategoryModal() {
+  const modal = $('addCategoryModal');
+  if (!modal) return;
+  if ($('newCategoryName')) $('newCategoryName').value = '';
+  if ($('newCategoryBudget')) $('newCategoryBudget').value = '';
+  if ($('newCategoryColor')) $('newCategoryColor').value = DEFAULT_CATEGORY_COLORS[0];
+
+  const palette = $('newCategoryColorPalette');
+  if (palette) {
+    palette.innerHTML = DEFAULT_CATEGORY_COLORS.map((col, idx) => `
+      <button type="button" data-color="${col}" onclick="selectCategoryColor('${col}')" class="category-color-btn w-7 h-7 rounded-full transition-transform active:scale-90 flex items-center justify-center ${idx === 0 ? 'ring-2 ring-offset-2 ring-slate-800 scale-110' : ''}" style="background-color: ${col};" aria-label="色選択 ${col}">
+        <i data-lucide="check" class="w-3.5 h-3.5 text-white ${idx === 0 ? '' : 'hidden'}"></i>
+      </button>
+    `).join('');
+    lucide.createIcons();
+  }
+
+  modal.classList.remove('hidden');
+  setTimeout(() => $('newCategoryName')?.focus(), 100);
+}
+window.openAddCategoryModal = openAddCategoryModal;
+
+function closeAddCategoryModal() {
+  $('addCategoryModal')?.classList.add('hidden');
+}
+window.closeAddCategoryModal = closeAddCategoryModal;
+
+function selectCategoryColor(col) {
+  if ($('newCategoryColor')) $('newCategoryColor').value = col;
+  document.querySelectorAll('.category-color-btn').forEach(btn => {
+    const isSelected = btn.dataset.color === col;
+    btn.classList.toggle('ring-2', isSelected);
+    btn.classList.toggle('ring-offset-2', isSelected);
+    btn.classList.toggle('ring-slate-800', isSelected);
+    btn.classList.toggle('scale-110', isSelected);
+    const icon = btn.querySelector('i');
+    if (icon) icon.classList.toggle('hidden', !isSelected);
+  });
+}
+window.selectCategoryColor = selectCategoryColor;
+
+async function saveNewCategory() {
+  const name = $('newCategoryName')?.value.trim();
+  if (!name) {
+    showToast('部門名を入力してください');
+    $('newCategoryName')?.focus();
+    return;
+  }
+
+  if (state.categories.some(c => c.name.toLowerCase() === name.toLowerCase())) {
+    showToast(`部門「${name}」は既に存在します`);
+    return;
+  }
+
+  const budget = parseInt($('newCategoryBudget')?.value, 10) || 0;
+  const color = $('newCategoryColor')?.value || '#10b981';
+
+  const newCat = {
+    name,
+    color,
+    icon: 'tag',
+    isCustom: true
+  };
+
+  state.categories.push(newCat);
+  state.customCategories = state.customCategories || [];
+  state.customCategories.push(newCat);
+  if (budget > 0) {
+    state.categoryBudgets[name] = budget;
+  }
+
+  try {
+    localStorage.setItem('pairbudget_custom_categories', JSON.stringify(state.customCategories));
+    localStorage.setItem('pairbudget_category_budgets', JSON.stringify(state.categoryBudgets));
+  } catch (_) {}
+
+  closeAddCategoryModal();
+
+  renderCategoryDropdown();
+  renderCategoryBudgetsInputs();
+  renderCategoryBudgets();
+  lucide.createIcons();
+
+  await writeAndRefresh('updateCustomCategories', {
+    customCategories: state.customCategories,
+    categoryBudgets: state.categoryBudgets
+  }, `✅ 新しい部門「${name}」を追加しました`, '部門を保存しています…');
+}
+window.saveNewCategory = saveNewCategory;
+
+async function deleteCustomCategory(catName) {
+  if (!catName) return;
+  const ok = window.confirm(`部門「${catName}」を削除しますか？\n\n※ 過去の支出データは削除されませんが、部門別予算および選択肢から除外されます。`);
+  if (!ok) return;
+
+  state.categories = state.categories.filter(c => c.name !== catName);
+  state.customCategories = (state.customCategories || []).filter(c => c.name !== catName);
+  delete state.categoryBudgets[catName];
+
+  try {
+    localStorage.setItem('pairbudget_custom_categories', JSON.stringify(state.customCategories));
+    localStorage.setItem('pairbudget_category_budgets', JSON.stringify(state.categoryBudgets));
+  } catch (_) {}
+
+  renderCategoryDropdown();
+  renderCategoryBudgetsInputs();
+  renderCategoryBudgets();
+  lucide.createIcons();
+
+  await writeAndRefresh('updateCustomCategories', {
+    customCategories: state.customCategories,
+    categoryBudgets: state.categoryBudgets
+  }, `🗑️ 部門「${catName}」を削除しました`, '部門を更新しています…');
+}
+window.deleteCustomCategory = deleteCustomCategory;
+
+// ==========================================
+// スマホ専用 クイック記録アクションシート (v2.7.0)
+// ==========================================
+function openMobileRecordActionSheet() {
+  const sheet = $('mobileRecordActionSheet');
+  if (sheet) sheet.classList.remove('hidden');
+}
+function closeMobileRecordActionSheet() {
+  const sheet = $('mobileRecordActionSheet');
+  if (sheet) sheet.classList.add('hidden');
+}
+window.openMobileRecordActionSheet = openMobileRecordActionSheet;
+window.closeMobileRecordActionSheet = closeMobileRecordActionSheet;
 
 /**
  * 設定タブの生活費予算設定 警告バナー更新（2段階チェック）
@@ -2675,26 +2861,102 @@ function resizeImageToBase64(file, maxSide = 1024, quality = 0.78) {
   });
 }
 
-function receiptRowHtml(it) {
-  const isShared = it.isShared !== false && String(it.isShared) !== 'false';
+function getMemberNamesList() {
+  if (state.members && state.members.length > 0) {
+    return state.members.map(m => m.name).filter(Boolean);
+  }
+  const h = memberName('husband');
+  const w = memberName('wife');
+  return [h, w].filter(Boolean);
+}
+
+function receiptRowHtml(it, ctx) {
+  const members = getMemberNamesList();
+  const defaultMember = members[0] || 'メンバー1';
+
+  const isShared = (it.isShared !== false && String(it.isShared) !== 'false') && (it.scope === 'shared' || !it.owner);
+  let owner = it.owner || '';
+  if (!isShared && !owner) {
+    owner = (ctx && ctx.payer && ctx.payer !== '共同') ? ctx.payer : defaultMember;
+  }
+
+  const isOther = !isShared && !isSameMember(owner, state.currentUser);
+  const shouldMask = !!(state.privacyMask && isOther);
+
+  const realName = it.name || '';
+  const displayName = shouldMask ? '🔒 私物支出 (マスキング中)' : realName;
+  const inputClass = shouldMask
+    ? 'rc-name flex-1 min-w-0 bg-slate-100 border border-slate-200 rounded-lg px-2 py-1.5 text-xs text-slate-400 cursor-not-allowed select-none'
+    : 'rc-name flex-1 min-w-0 bg-slate-50 border border-slate-200 rounded-lg px-2 py-1.5 text-xs';
+  const readonlyAttr = shouldMask ? 'readonly' : '';
+
+  // 選択肢の生成 (共同 ＆ 各自の私物)
+  let scopeOptionsHtml = `<option value="shared" ${isShared ? 'selected' : ''}>👥 共同</option>`;
+  members.forEach(m => {
+    const val = `personal_${m}`;
+    const sel = (!isShared && owner === m) ? 'selected' : '';
+    scopeOptionsHtml += `<option value="${esc(val)}" ${sel}>🔒 ${esc(m)}の私物</option>`;
+  });
+
   return `<div class="flex gap-1.5 items-center" data-row>
-    <select class="rc-scope bg-white border border-slate-200 rounded-lg px-1 py-1.5 text-[11px] font-bold text-slate-700" aria-label="共同・私物">
-      <option value="true" ${isShared ? 'selected' : ''}>👥共同</option>
-      <option value="false" ${!isShared ? 'selected' : ''}>🔒私物</option>
+    <select class="rc-scope bg-white border border-slate-200 rounded-lg px-1 py-1.5 text-[11px] font-bold text-slate-700 max-w-[110px]" onchange="syncReceiptRowMask(this)" aria-label="共同・私物">
+      ${scopeOptionsHtml}
     </select>
-    <input type="text" class="rc-name flex-1 min-w-0 bg-slate-50 border border-slate-200 rounded-lg px-2 py-1.5 text-xs" value="${esc(it.name)}" maxlength="50" aria-label="品名">
+    <input type="text" ${readonlyAttr} class="${inputClass}" value="${esc(displayName)}" data-real-name="${esc(realName)}" maxlength="50" aria-label="品名">
     <input type="number" class="rc-qty w-12 bg-slate-50 border border-slate-200 rounded-lg px-1.5 py-1.5 text-xs text-center" value="${esc(it.quantity)}" min="1" max="99" inputmode="numeric" aria-label="数量">
     <input type="number" class="rc-price w-20 bg-slate-50 border border-slate-200 rounded-lg px-1.5 py-1.5 text-xs text-right" value="${esc(it.price)}" aria-label="金額（値引きはマイナス）">
     <button type="button" data-action="remove-receipt-row" class="p-1 text-slate-300 hover:text-rose-500" aria-label="行を削除"><i data-lucide="x" class="w-4 h-4"></i></button></div>`;
 }
 
+function syncReceiptRowMask(selectEl) {
+  const row = selectEl.closest('[data-row]');
+  if (!row) return;
+  const nameInp = row.querySelector('.rc-name');
+  if (!nameInp) return;
+
+  const scopeVal = selectEl.value;
+  const isShared = scopeVal === 'shared';
+  const owner = isShared ? '' : scopeVal.replace(/^personal_/, '');
+  const isOther = !isShared && !isSameMember(owner, state.currentUser);
+  const shouldMask = state.privacyMask && isOther;
+
+  if (shouldMask) {
+    if (nameInp.value !== '🔒 私物支出 (マスキング中)') {
+      nameInp.dataset.realName = nameInp.value;
+    }
+    nameInp.value = '🔒 私物支出 (マスキング中)';
+    nameInp.readOnly = true;
+    nameInp.className = 'rc-name flex-1 min-w-0 bg-slate-100 border border-slate-200 rounded-lg px-2 py-1.5 text-xs text-slate-400 cursor-not-allowed select-none';
+  } else {
+    if (nameInp.dataset.realName && nameInp.value === '🔒 私物支出 (マスキング中)') {
+      nameInp.value = nameInp.dataset.realName;
+    }
+    nameInp.readOnly = false;
+    nameInp.className = 'rc-name flex-1 min-w-0 bg-slate-50 border border-slate-200 rounded-lg px-2 py-1.5 text-xs';
+  }
+  updateReceiptTotal();
+}
+window.syncReceiptRowMask = syncReceiptRowMask;
+
 function collectReceiptRows() {
-  return Array.from(document.querySelectorAll('#receiptItemRows [data-row]')).map(row => ({
-    name: row.querySelector('.rc-name').value.trim(),
-    quantity: parseInt(row.querySelector('.rc-qty').value, 10),
-    price: parseInt(row.querySelector('.rc-price').value, 10),
-    isShared: row.querySelector('.rc-scope')?.value !== 'false'
-  }));
+  return Array.from(document.querySelectorAll('#receiptItemRows [data-row]')).map(row => {
+    const nameInp = row.querySelector('.rc-name');
+    let nameVal = nameInp ? nameInp.value.trim() : '';
+    if (nameVal === '🔒 私物支出 (マスキング中)' && nameInp.dataset.realName) {
+      nameVal = nameInp.dataset.realName;
+    }
+    const scopeVal = row.querySelector('.rc-scope')?.value || 'shared';
+    const isShared = scopeVal === 'shared';
+    const owner = isShared ? '' : scopeVal.replace(/^personal_/, '');
+
+    return {
+      name: nameVal,
+      quantity: parseInt(row.querySelector('.rc-qty').value, 10) || 1,
+      price: parseInt(row.querySelector('.rc-price').value, 10) || 0,
+      isShared,
+      owner
+    };
+  });
 }
 
 let scannedTotal = 0;
@@ -2702,11 +2964,36 @@ function updateReceiptTotal() {
   const rows = collectReceiptRows();
   const sum = rows.reduce((s, r) => s + (Number.isInteger(r.price) ? r.price : 0), 0);
   const sharedSum = rows.filter(r => r.isShared).reduce((s, r) => s + (Number.isInteger(r.price) ? r.price : 0), 0);
-  const personalSum = rows.filter(r => !r.isShared).reduce((s, r) => s + (Number.isInteger(r.price) ? r.price : 0), 0);
+
+  // メンバーごとの私物合計
+  const members = getMemberNamesList();
+  const personalByMember = {};
+  members.forEach(m => { personalByMember[m] = 0; });
+  rows.filter(r => !r.isShared).forEach(r => {
+    const o = r.owner || members[0] || '私物';
+    personalByMember[o] = (personalByMember[o] || 0) + (Number.isInteger(r.price) ? r.price : 0);
+  });
 
   $('receiptTotal').textContent = sum < 0 ? `-${yen(Math.abs(sum))}` : yen(sum);
-  if ($('receiptSharedTotal')) $('receiptSharedTotal').textContent = sharedSum < 0 ? `-${yen(Math.abs(sharedSum))}` : yen(sharedSum);
-  if ($('receiptPersonalTotal')) $('receiptPersonalTotal').textContent = personalSum < 0 ? `-${yen(Math.abs(personalSum))}` : yen(personalSum);
+
+  // 内訳プレビュー更新 (共同 ＆ 各メンバーの私物)
+  const breakdownEl = $('receiptScopeBreakdown');
+  if (breakdownEl) {
+    let breakdownHtml = `
+      <span class="flex items-center gap-1 font-bold text-slate-700">
+        <span class="w-2 h-2 rounded-full bg-brand-500"></span> 共同: <b class="text-slate-900">${sharedSum < 0 ? `-${yen(Math.abs(sharedSum))}` : yen(sharedSum)}</b>
+      </span>
+    `;
+    members.forEach(m => {
+      const pSum = personalByMember[m] || 0;
+      breakdownHtml += `
+        <span class="flex items-center gap-1 font-bold text-amber-800">
+          <span class="w-2 h-2 rounded-full bg-amber-500"></span> ${esc(m)}私物: <b class="text-amber-900">${pSum < 0 ? `-${yen(Math.abs(pSum))}` : yen(pSum)}</b>
+        </span>
+      `;
+    });
+    breakdownEl.innerHTML = breakdownHtml;
+  }
 
   const isEdit = !!$('receiptEditId')?.value;
   const diff = scannedTotal ? sum - scannedTotal : 0;
@@ -2907,12 +3194,13 @@ function updateExpenseDuplicateAlert() {
   }
 }
 
-function checkDuplicateReceipt(date, total) {
+function checkDuplicateReceipt(date, total, excludeId) {
   if (!date || !total) return null;
   const numTotal = Number(total);
-  return state.transactions.find(t =>
-    t.date === date && Number(t.amount) === numTotal
-  ) || null;
+  return state.transactions.find(t => {
+    if (excludeId && (t.id === excludeId || t.receiptId === excludeId)) return false;
+    return t.date === date && Number(t.amount) === numTotal;
+  }) || null;
 }
 
 function updateReceiptDuplicateAlert() {
@@ -2920,6 +3208,7 @@ function updateReceiptDuplicateAlert() {
   const detailsEl = $('receiptDuplicateDetails');
   if (!alertEl || !detailsEl) return;
 
+  const editId = $('receiptEditId')?.value || '';
   const date = $('receiptDate')?.value || '';
   const rows = collectReceiptRows();
   const total = rows.reduce((s, r) => s + (Number(r.price) || 0), 0);
@@ -2929,7 +3218,7 @@ function updateReceiptDuplicateAlert() {
     return;
   }
 
-  const dup = checkDuplicateReceipt(date, total);
+  const dup = checkDuplicateReceipt(date, total, editId);
   if (dup) {
     detailsEl.textContent = `同日（${date}）に同じ合計金額（${yen(dup.amount)}）の支出「${dup.title}」（支払者: ${displayPayerName(dup.payer)}）が既に登録されています。`;
     alertEl.classList.remove('hidden');
@@ -2947,13 +3236,20 @@ function fillReceiptForm(r) {
   $('receiptDate').value = receipt.date || localDateStr();
   $('receiptCategory').innerHTML = categoryOptionsHtml(guessCategoryByStore(receipt.store || ''));
   $('receiptIsShared').value = receipt.isShared === false ? 'false' : 'true';
-  $('receiptPaymentType').value = receipt.paymentType || 'shared_card';
+  const pType = receipt.paymentType || 'shared_card';
+  $('receiptPaymentType').value = pType;
   updatePayerDropdowns();
-  $('receiptPayer').value = receipt.payer || memberName(state.currentSlot);
+  let payer = receipt.payer;
+  if (!payer) {
+    payer = pType === 'shared_card' ? '共同' : (state.currentUser || memberName(state.currentSlot));
+  }
+  $('receiptPayer').value = payer;
+  const isOther = !isSameMember(payer, state.currentUser);
+  const ctx = { payer, isOtherMember: isOther };
   const items = Array.isArray(receipt.items) && receipt.items.length ? receipt.items : [{ name: '', quantity: 1, price: 0, isShared: true }];
   $('receiptItemRows').innerHTML =
     '<div class="flex gap-1.5 text-[10px] text-slate-400 px-0.5"><span class="w-16">種別</span><span class="flex-1">品名</span><span class="w-12 text-center">数量</span><span class="w-20 text-right">金額(行合計)</span><span class="w-6"></span></div>' +
-    items.map(receiptRowHtml).join('');
+    items.map(it => receiptRowHtml(it, ctx)).join('');
   $('receiptLoading').classList.add('hidden');
   $('receiptForm').classList.remove('hidden');
   updateReceiptTotal();
@@ -3036,7 +3332,7 @@ function openReceiptEditFromExpense() {
       name: it.name,
       quantity: it.quantity,
       price: it.price,
-      isShared: currentEditingExpense.isShared
+      isShared: it.isShared !== undefined ? it.isShared : currentEditingExpense.isShared
     })) : [{ name: currentEditingExpense.title, quantity: 1, price: currentEditingExpense.amount, isShared: currentEditingExpense.isShared }]
   };
 
@@ -3089,8 +3385,13 @@ function openExpenseModal(editItem) {
     if (actionBox) actionBox.classList.add('hidden');
     del.classList.add('hidden');
     $('scanReceiptLabel').classList.remove('hidden');
-    const myName = state.currentUser || memberName(state.currentSlot);
-    renderExpensePayerChips(myName);
+    const currentPType = $('expensePaymentType')?.value || 'shared_card';
+    if (currentPType === 'shared_card') {
+      renderExpensePayerChips('共同');
+    } else {
+      const myName = state.currentUser || memberName(state.currentSlot);
+      renderExpensePayerChips(myName);
+    }
   }
   $('expenseModal').classList.remove('hidden');
   updateExpenseDuplicateAlert();
@@ -3792,15 +4093,47 @@ function setupEventListeners() {
   $('expenseDeleteBtn')?.addEventListener('click', handleExpenseDelete);
   $('expenseDate')?.addEventListener('change', updateExpenseDuplicateAlert);
   $('expenseAmount')?.addEventListener('input', updateExpenseDuplicateAlert);
+  $('expensePaymentType')?.addEventListener('change', e => {
+    if (e.target.value === 'shared_card') {
+      renderExpensePayerChips('共同');
+    } else {
+      if (currentSelectedExpensePayer === '共同') {
+        const myName = state.currentUser || memberName(state.currentSlot);
+        renderExpensePayerChips(myName);
+      }
+    }
+  });
   $('receiptFileInput')?.addEventListener('change', e => handleReceiptFile(e.target.files[0]));
 
   $('receiptForm')?.addEventListener('submit', handleReceiptSubmit);
   $('receiptCloseBtn')?.addEventListener('click', closeReceiptModal);
   $('receiptDate')?.addEventListener('change', updateReceiptDuplicateAlert);
+  $('receiptPaymentType')?.addEventListener('change', e => {
+    const payerEl = $('receiptPayer');
+    if (!payerEl) return;
+    if (e.target.value === 'shared_card') {
+      payerEl.value = '共同';
+    } else {
+      if (payerEl.value === '共同') {
+        payerEl.value = state.currentUser || memberName(state.currentSlot);
+      }
+    }
+  });
+  $('receiptPayer')?.addEventListener('change', () => {
+    document.querySelectorAll('#receiptItemRows .rc-scope').forEach(scopeEl => syncReceiptRowMask(scopeEl));
+  });
   $('receiptAddRowBtn')?.addEventListener('click', () => {
-    $('receiptItemRows')?.insertAdjacentHTML('beforeend', receiptRowHtml({ name: '', quantity: 1, price: '' }));
+    const payer = $('receiptPayer')?.value || memberName(state.currentSlot);
+    const ctx = { payer, isOtherMember: !isSameMember(payer, state.currentUser) };
+    $('receiptItemRows')?.insertAdjacentHTML('beforeend', receiptRowHtml({ name: '', quantity: 1, price: '', isShared: true }, ctx));
     updateReceiptDuplicateAlert();
     lucide.createIcons();
+  });
+  $('mobileRecordActionSheet')?.addEventListener('click', e => {
+    if (e.target === $('mobileRecordActionSheet')) closeMobileRecordActionSheet();
+  });
+  $('addCategoryModal')?.addEventListener('click', e => {
+    if (e.target === $('addCategoryModal')) closeAddCategoryModal();
   });
   $('receiptItemRows')?.addEventListener('input', () => {
     updateReceiptTotal();
