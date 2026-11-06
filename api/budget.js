@@ -932,7 +932,7 @@ async function handleGetInitialData(supabase, targetMonth, actor, requestedPairI
 
   return {
     success: true,
-    version: 'v2.8.0',
+    version: 'v2.8.1',
     pair: {
       id: pairId,
       name: config.pairName,
@@ -1784,11 +1784,13 @@ async function handleScanReceipt(data, actor) {
     'これは日本のレシート画像です。店名、購入日、明細を精確に読み取ってください。\n' +
     '【重要ルール1: 単価・数量・金額の行ズレ防止（日本のスーパー、ベイシア・イオン等）】\n' +
     '- 商品名のみの行（右端に金額印字がない行）の直下の行に「@単価 数量 小計金額」（例: "@52 2 ¥104"）が印字されている場合、その数量と金額は【必ず直上の商品名（例: まろやか絹豆腐）】のものである。絶対に直下の別商品（例: 白菜）と結びつけたり分断しないこと！\n' +
-    '【重要ルール2: クーポン値引き・末尾マイナス表記（コストコ・スーパー等）】\n' +
-    '- 金額の末尾に「-」「-T」「-E」「-A」が付いている表記（例: "700-T", "897-E", "897-"）や、先頭に「▲」「△」「-」が付く表記は、すべて【負の整数（例: -700, -897）】として出力すること！\n' +
-    '- "CPN"（クーポン）、"TPD"、"値引"、"割引"、"クーポン" の行、またはその直下の値引き金額行は必ず負の整数（例: -700）の price にすること。\n' +
-    '【重要ルール3: 返品・返金レシート（REFUND / 返金 / 返品）】\n' +
-    '- レシート内に「REFUND」「返金」「返品」「RFND」「買上げ点数 : -1」、または合計金額の末尾に「-」（例: "合計 897-"）がある場合、そのレシートは返金レシートである。total およびすべての商品の price は必ず【負の整数（例: total: -897, price: -897）】で出力すること。\n' +
+    '【重要ルール2: クーポン値引き・税区分表記（コストコ・スーパー等）】\n' +
+    '- 「180 E」「480 E」「3498 T」「520 A」のように、金額の右に英字（E=軽減税率8%、T/A=標準税率10%等）が付いている表記で、マイナス記号「-」がないものは【通常の正の整数（例: 180, 480）】である！絶対に負の数にしてはならない！\n' +
+    '- 負の整数（マイナス）になるのは、金額の直後に明確にハイフンが付いている場合（例: "700-T", "897-E", "897-"）や、先頭に「▲」「△」「-」が付く値引きのみ！\n' +
+    '- "CPN"（クーポン）、"TPD"、"値引"、"割引" の行は必ず負の整数（例: -700）の price にすること。\n' +
+    '【重要ルール3: 売上レシートと返品・返金レシートの厳密判定】\n' +
+    '- レシート内に「売上」「買上げ」「お買上」「領収証」「領収金額」と印字されている場合は、通常の購入レシートであり、絶対に返金レシート（isRefund: false）にしてはならない！\n' +
+    '- 逆に、レシート内に「REFUND」「返金」「返品」「RFND」「買上げ点数 : -1」、または合計金額の末尾に「-」（例: "合計 897-"）がある場合のみ返金レシート（isRefund: true）とし、total および商品の price を負の整数で出力すること。\n' +
     '【重要ルール4: 整数円・検算】\n' +
     '- price は「その行の税込合計金額（数量×単価）」の整数円（値引きや返金は負の整数）。\n' +
     '- quantity は数量（不明なら1）。\n' +
@@ -1876,23 +1878,40 @@ async function handleScanReceipt(data, actor) {
     const rawText = (textPart?.text || '').replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/i, '').trim();
     const parsed = JSON.parse(rawText);
 
-    // 返金レシートの判定（REFUND / 返金 / 返品 / 末尾マイナス）
-    const isRefund = parsed.isRefund === true ||
-                     Number(parsed.total) < 0 ||
-                     /返金|返品|REFUND|RFND/i.test(parsed.store || '') ||
-                     /返金|返品|REFUND|RFND|買上げ点数\s*:\s*-1/i.test(rawText) ||
-                     /合計\s*[\d,]+-/i.test(rawText);
+    // 売上表記および返金表記の検出 (v2.8.1: コストコ通常レシート誤認防止)
+    const hasSaleText = /売上|買上げ|お買上|領収証|領収金額/i.test(rawText);
+    const hasExplicitRefundText = /返金|返品|REFUND|RFND|買上げ点数\s*:\s*-1/i.test(rawText) || /合計\s*[\d,]+-/i.test(rawText);
+
+    let isRefund = false;
+    if (hasExplicitRefundText) {
+      isRefund = true;
+    } else if (!hasSaleText && (parsed.isRefund === true || Number(parsed.total) < 0 || /返金|返品|REFUND|RFND/i.test(parsed.store || ''))) {
+      isRefund = true;
+    }
 
     let total = parseInt(parsed.total, 10) || 0;
-    if (isRefund && total > 0) total = -total;
+    if (isRefund) {
+      if (total > 0) total = -total;
+    } else {
+      if (total < 0) total = Math.abs(total);
+    }
 
     let items = (parsed.items || []).slice(0, 60).map(it => {
       let p = parseInt(it.price, 10) || 0;
       const name = String(it.name || '').trim().slice(0, 50);
-      // 返金レシートなら全商品明細の金額もマイナス化
-      if (isRefund && p > 0) p = -p;
-      // 品名が値引き・クーポンの場合でプラスならマイナス化
-      if (/CPN|TPD|値引|割引|クーポン|▲|△/i.test(name) && p > 0) p = -p;
+      const isDiscountItem = /CPN|TPD|値引|割引|クーポン|▲|△/i.test(name);
+
+      if (isRefund) {
+        if (p > 0) p = -p;
+      } else {
+        // 通常購入レシート: 値引き行以外は必ず正の金額（税区分E/Tの誤読を自動修復）
+        if (isDiscountItem) {
+          if (p > 0) p = -p;
+        } else {
+          if (p < 0) p = Math.abs(p);
+        }
+      }
+
       let cat = String(it.category || '').trim();
       if (!cat || cat === '未分類') {
         cat = inferItemCategory(name);
@@ -3695,7 +3714,7 @@ async function handleHealthCheck(req) {
 
   return {
     success: true,
-    version: 'v2.8.0',
+    version: 'v2.8.1',
     resolvedUrl: resolvedUrl ? resolvedUrl.replace(/\/\/[^@]+@/, '//***@') : '未設定',
     keyType: keyType,
     env: envCheck,
@@ -3880,7 +3899,7 @@ export default async function handler(req, res) {
       if (!actor.allowed) {
         return res.status(200).json({
           success: false,
-          version: 'v2.8.0',
+          version: 'v2.8.1',
           code: actor.code,
           error: actor.error,
           userId: actor.userId || '',

@@ -9,7 +9,7 @@
  */
 
 const APP_CONFIG = window.PAIRBUDGET_CONFIG || {};
-const FRONTEND_VERSION = 'v2.8.0';
+const FRONTEND_VERSION = 'v2.8.1';
 const MAX_HISTORY_MONTHS = 36;
 const FIELD_LABELS = {
   date: '日付', title: '品名', amount: '金額', category: 'カテゴリ', isShared: '共同',
@@ -3396,6 +3396,56 @@ function updateReceiptDuplicateAlert() {
   }
 }
 
+/**
+ * 🧾 通常の購入 ⇔ 💸 返品・返金 ワンタップ切替 (v2.8.1新機能)
+ */
+function setReceiptMode(mode, silent = false) {
+  const isRefund = mode === 'refund';
+  const expenseBtn = $('receiptModeExpenseBtn');
+  const refundBtn = $('receiptModeRefundBtn');
+  const modeInp = $('receiptMode');
+  if (modeInp) modeInp.value = isRefund ? 'refund' : 'expense';
+
+  if (expenseBtn && refundBtn) {
+    if (isRefund) {
+      refundBtn.className = 'px-2.5 py-1 rounded-md bg-white text-rose-700 font-bold shadow-xs transition-all flex items-center gap-1 cursor-pointer';
+      expenseBtn.className = 'px-2.5 py-1 rounded-md text-slate-500 hover:text-slate-800 transition-all flex items-center gap-1 cursor-pointer';
+    } else {
+      expenseBtn.className = 'px-2.5 py-1 rounded-md bg-white text-slate-800 font-bold shadow-xs transition-all flex items-center gap-1 cursor-pointer';
+      refundBtn.className = 'px-2.5 py-1 rounded-md text-slate-500 hover:text-slate-800 transition-all flex items-center gap-1 cursor-pointer';
+    }
+  }
+
+  // 明細行の金額の正負をモードに合わせて自動反転・調整
+  document.querySelectorAll('#receiptItemRows [data-row]').forEach(row => {
+    const priceInp = row.querySelector('.rc-price');
+    const nameInp = row.querySelector('.rc-name');
+    if (!priceInp) return;
+    const rawVal = parseInt(priceInp.value, 10);
+    if (isNaN(rawVal) || rawVal === 0) return;
+    const name = nameInp ? (nameInp.value || '') : '';
+    const isDiscount = /CPN|TPD|値引|割引|クーポン|▲|△/i.test(name);
+
+    if (isRefund) {
+      // 返品・返金モード: すべてマイナス金額
+      priceInp.value = -Math.abs(rawVal);
+    } else {
+      // 通常購入モード: 値引き行以外はプラス金額（誤判定されたマイナスを正数へ一括修復）
+      if (isDiscount) {
+        priceInp.value = -Math.abs(rawVal);
+      } else {
+        priceInp.value = Math.abs(rawVal);
+      }
+    }
+  });
+
+  updateReceiptTotal();
+  if (!silent) {
+    showToast(isRefund ? '💸 返品・返金（マイナス支出）に設定しました' : '🧾 通常の購入（支出）に設定しました');
+  }
+}
+window.setReceiptMode = setReceiptMode;
+
 function fillReceiptForm(r) {
   stopReceiptScanAnimation();
   const receipt = r || {};
@@ -3419,6 +3469,11 @@ function fillReceiptForm(r) {
   $('receiptItemRows').innerHTML =
     '<div class="flex gap-1.5 text-[10px] text-slate-400 px-0.5 mb-1"><span class="w-16 sm:w-20">種別</span><span class="w-16 sm:w-20">部門</span><span class="flex-1">品名</span><span class="w-10 sm:w-12 text-center">数量</span><span class="w-16 sm:w-20 text-right">金額</span><span class="w-6"></span></div>' +
     items.map(it => receiptRowHtml(it, ctx)).join('');
+
+  // 🧾 通常購入 ⇔ 💸 返品・返金の初期モード設定 (v2.8.1)
+  const initialMode = (receipt.isRefund === true || scannedTotal < 0) ? 'refund' : 'expense';
+  setReceiptMode(initialMode, true);
+
   $('receiptLoading').classList.add('hidden');
   $('receiptForm').classList.remove('hidden');
   updateReceiptTotal();

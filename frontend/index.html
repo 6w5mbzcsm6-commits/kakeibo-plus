@@ -16,7 +16,7 @@
   <!-- LINE LIFF SDK -->
   <script charset="utf-8" src="https://static.line-scdn.net/liff/edge/2/sdk.js"></script>
   <!-- Custom CSS -->
-  <link rel="stylesheet" href="css/style.css?v=2.8.0">
+  <link rel="stylesheet" href="css/style.css?v=2.8.1">
   <script>
     tailwind.config = {
       theme: {
@@ -83,7 +83,7 @@
         <div>
           <div class="flex items-center gap-1.5">
             <h1 class="text-base font-bold text-slate-900 leading-tight">ふたり家計簿</h1>
-            <span id="headerVersionBadge" onclick="forceHardReload()" title="タップして最新版に更新" class="bg-brand-50 text-brand-700 hover:bg-brand-100 text-[10px] font-bold px-1.5 py-0.5 rounded-full border border-brand-200 cursor-pointer transition-colors active:scale-95 select-none">v2.8.0</span>
+            <span id="headerVersionBadge" onclick="forceHardReload()" title="タップして最新版に更新" class="bg-brand-50 text-brand-700 hover:bg-brand-100 text-[10px] font-bold px-1.5 py-0.5 rounded-full border border-brand-200 cursor-pointer transition-colors active:scale-95 select-none">v2.8.1</span>
           </div>
           <!-- 月ナビゲーション（過去36ヶ月まで遡れる） -->
           <div class="flex items-center gap-1 -ml-1">
@@ -890,7 +890,7 @@
           <footer class="pt-2 pb-6 text-center text-[10px] text-slate-400 font-mono flex items-center justify-center gap-2 select-none flex-wrap">
             <span class="inline-flex items-center gap-1 bg-slate-100 text-slate-600 px-2 py-0.5 rounded-full">
               <span>Web</span>
-              <b id="frontVersionLabel" class="text-slate-800">v2.8.0</b>
+              <b id="frontVersionLabel" class="text-slate-800">v2.8.1</b>
             </span>
             <span>/</span>
             <span class="inline-flex items-center gap-1 bg-slate-100 text-slate-600 px-2 py-0.5 rounded-full">
@@ -1293,6 +1293,22 @@
       <form id="receiptForm" class="hidden space-y-3 mt-3">
         <input type="hidden" id="receiptEditId">
         <p class="text-[11px] text-amber-600 bg-amber-50 rounded-lg px-2.5 py-1.5">AIの読み取りは間違うことがあります。内容を確認・修正して保存してください。</p>
+
+        <!-- 🧾 通常の購入 ⇔ 💸 返品・返金 ワンタップ切替 (v2.8.1新機能) -->
+        <div class="flex items-center justify-between p-2 rounded-xl bg-slate-50 border border-slate-200">
+          <span class="text-xs font-bold text-slate-700 flex items-center gap-1.5">
+            <span class="text-sm">🔄</span> 会計の種別:
+          </span>
+          <div class="inline-flex rounded-lg bg-slate-200/80 p-0.5 text-xs font-bold">
+            <button type="button" id="receiptModeExpenseBtn" onclick="setReceiptMode('expense')" class="px-2.5 py-1 rounded-md bg-white text-slate-800 shadow-xs transition-all flex items-center gap-1 cursor-pointer">
+              <span>🧾 通常の購入</span>
+            </button>
+            <button type="button" id="receiptModeRefundBtn" onclick="setReceiptMode('refund')" class="px-2.5 py-1 rounded-md text-slate-500 hover:text-slate-800 transition-all flex items-center gap-1 cursor-pointer">
+              <span>💸 返品・返金</span>
+            </button>
+          </div>
+          <input type="hidden" id="receiptMode" value="expense">
+        </div>
 
         <!-- ⚠️ 重複レシートの疑いアラートバナー -->
         <div id="receiptDuplicateAlert" class="hidden p-3 rounded-xl bg-amber-50 border border-amber-200 text-xs text-amber-800 space-y-1">
@@ -1981,7 +1997,7 @@
   </div>
 
   <!-- アプリ本体スクリプト -->
-  <script src="js/config.js?v=2.8.0"></script>
-  <script src="js/app.js?v=2.8.0"></script>
+  <script src="js/config.js?v=2.8.1"></script>
+  <script src="js/app.js?v=2.8.1"></script>
 </body>
 </html>
