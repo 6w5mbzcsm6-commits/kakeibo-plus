@@ -161,6 +161,70 @@ function normalizeName(s) {
 }
 
 /**
+ * 主要食材・日用品の同義語辞書（シノニム展開 v2.8.0）
+ */
+const SYNONYM_GROUPS = [
+  ['白菜', 'はくさい', 'ハクサイ'],
+  ['豆腐', 'とうふ', 'トウフ'],
+  ['卵', '玉子', 'たまご', 'タマゴ'],
+  ['牛乳', 'ぎゅうにゅう', 'ギュウニュウ', 'ミルク'],
+  ['玉ねぎ', 'たまねぎ', 'タマネギ', '玉葱'],
+  ['人参', 'にんじん', 'ニンジン'],
+  ['豚肉', 'ぶた肉', 'ポーク', '豚'],
+  ['鶏肉', 'とり肉', 'チキン', '鶏'],
+  ['牛肉', '牛', 'ビーフ'],
+  ['もやし', 'モヤシ'],
+  ['キャベツ', 'きゃべつ'],
+  ['大根', 'だいこん', 'ダイコン'],
+  ['納豆', 'なっとう', 'ナットウ'],
+  ['ネギ', 'ねぎ', '葱'],
+  ['きゅうり', 'キュウリ', '胡瓜'],
+  ['じゃがいも', 'ジャガイモ', 'ポテト'],
+  ['レタス', 'れたす'],
+  ['トマト', 'とまと'],
+  ['醤油', 'しょうゆ', 'ショウユ'],
+  ['味噌', 'みそ', 'ミソ'],
+  ['マヨネーズ', 'マヨ'],
+  ['食パン', 'パン'],
+  ['米', 'お米', 'ごはん', 'コメ'],
+  ['ティッシュ', 'ティシュ', 'boxティッシュ'],
+  ['トイレットペーパー', 'トイレロール', 'トイレットロール'],
+  ['ラップ', 'サランラップ', 'クレラップ'],
+  ['洗剤', '食器用洗剤', '洗濯洗剤']
+];
+
+/**
+ * 検索クエリのシノニム・表記揺れ展開 (v2.8.0)
+ */
+function expandSearchKeywords(rawQuery) {
+  const qClean = String(rawQuery || '').trim();
+  if (!qClean) return [];
+
+  const normQ = normalizeName(qClean);
+  const keywords = new Set([qClean, normQ]);
+
+  // カタカナ ➔ ひらがな変換も追加
+  const hiraQ = normQ.replace(/[\u30A1-\u30F6]/g, ch => String.fromCharCode(ch.charCodeAt(0) - 0x60));
+  keywords.add(hiraQ);
+
+  // シノニム辞書探索
+  for (const group of SYNONYM_GROUPS) {
+    const isMatch = group.some(w => {
+      const nw = normalizeName(w);
+      return normQ === nw || normQ.includes(nw) || nw.includes(normQ);
+    });
+    if (isMatch) {
+      group.forEach(w => {
+        keywords.add(w);
+        keywords.add(normalizeName(w));
+      });
+    }
+  }
+
+  return Array.from(keywords).filter(k => k && k.length > 0);
+}
+
+/**
  * 6〜8桁の英数字招待コード生成（見間違えやすい 0/O, 1/I を除外）
  */
 function generateInviteCode() {
@@ -407,6 +471,7 @@ async function getConfigData(supabase, pairId) {
     wifeName: 'メンバー2',
     shoppingPurgeDays: 1,
     categoryBudgets: {},
+    categoryBudgetsByMonth: {},
     surplusPolicy: 'savings',
     savingsConfig: { initialSavings: 0, monthlyInterests: {} },
     autoCheckShoppingOnReceipt: true
@@ -423,6 +488,12 @@ async function getConfigData(supabase, pairId) {
     if (s.key === 'categoryBudgets') {
       try {
         config.categoryBudgets = JSON.parse(s.value);
+      } catch (_) {}
+    }
+    if (/^categoryBudgets_\d{4}-\d{2}$/.test(s.key)) {
+      const mKey = s.key.replace('categoryBudgets_', '');
+      try {
+        config.categoryBudgetsByMonth[mKey] = JSON.parse(s.value);
       } catch (_) {}
     }
     if (s.key === 'customCategories') {
@@ -758,14 +829,44 @@ async function handleGetInitialData(supabase, targetMonth, actor, requestedPairI
     category: r.category_id
   }));
 
-  // 予算額の決定
+  // 部門別予算（categoryBudgets）の探索＆前月自動引き継ぎ (v2.8.0)
+  let resolvedCategoryBudgets = {};
+  let categoryBudgetsInheritedFrom = null;
+
+  if (config.categoryBudgetsByMonth && config.categoryBudgetsByMonth[month]) {
+    resolvedCategoryBudgets = config.categoryBudgetsByMonth[month];
+  } else {
+    const pastMonths = Object.keys(config.categoryBudgetsByMonth || {})
+      .filter(m => m < month)
+      .sort((a, b) => (a < b ? 1 : -1));
+    if (pastMonths.length > 0) {
+      resolvedCategoryBudgets = config.categoryBudgetsByMonth[pastMonths[0]];
+      categoryBudgetsInheritedFrom = pastMonths[0];
+    } else if (config.categoryBudgets && Object.keys(config.categoryBudgets).length > 0) {
+      resolvedCategoryBudgets = config.categoryBudgets;
+    }
+  }
+
+  // 予算額の決定＆前月自動引き継ぎ (v2.8.0)
   const curBudgetObj = (budgetsRes.data || []).find(b => b.month === month);
   let resolvedBudget = DEFAULT_BUDGET;
+  let budgetInheritedFrom = null;
   if (curBudgetObj) {
     resolvedBudget = Number(curBudgetObj.budget_amount) || DEFAULT_BUDGET;
   } else {
     const past = (budgetsRes.data || []).filter(b => b.month < month).sort((a, b) => (a.month < b.month ? 1 : -1));
-    if (past.length > 0) resolvedBudget = Number(past[0].budget_amount) || DEFAULT_BUDGET;
+    if (past.length > 0) {
+      resolvedBudget = Number(past[0].budget_amount) || DEFAULT_BUDGET;
+      budgetInheritedFrom = past[0].month;
+    }
+    // monthlyBudgets 配列に対象月分を仮想補完（フロントエンドでシームレス参照）
+    monthlyBudgets.unshift({
+      month: month,
+      amount: resolvedBudget,
+      note: budgetInheritedFrom ? `${budgetInheritedFrom}から自動引き継ぎ` : '初期値',
+      isInherited: true,
+      inheritedFrom: budgetInheritedFrom
+    });
   }
 
   // 振込・精算計算
@@ -831,7 +932,7 @@ async function handleGetInitialData(supabase, targetMonth, actor, requestedPairI
 
   return {
     success: true,
-    version: 'v2.7.0',
+    version: 'v2.8.0',
     pair: {
       id: pairId,
       name: config.pairName,
@@ -852,7 +953,9 @@ async function handleGetInitialData(supabase, targetMonth, actor, requestedPairI
       husbandName: config.husbandName,
       wifeName: config.wifeName,
       shoppingPurgeDays: Number(config.shoppingPurgeDays !== undefined ? config.shoppingPurgeDays : 1),
-      categoryBudgets: config.categoryBudgets || {},
+      categoryBudgets: resolvedCategoryBudgets,
+      categoryBudgetsInheritedFrom: categoryBudgetsInheritedFrom,
+      budgetInheritedFrom: budgetInheritedFrom,
       customCategories: config.customCategories || [],
       surplusPolicy: config.surplusPolicy || 'savings',
       savingsConfig: config.savingsConfig || { initialSavings: 0, monthlyInterests: {} }
@@ -1256,16 +1359,27 @@ async function handleDeleteShoppingItem(supabase, id, actor) {
 }
 
 /**
- * 部門（カテゴリ）別予算更新
+ * 部門（カテゴリ）別予算更新 (v2.8.0: 月別保存＆グローバル自動同期)
  */
 async function handleUpdateCategoryBudgets(supabase, data, actor) {
   const pairId = getTargetPairId(actor, data);
   const budgets = typeof data.categoryBudgets === 'object' && data.categoryBudgets !== null ? data.categoryBudgets : {};
-  const { error } = await supabase
+  const month = data.month || currentMonthStr();
+
+  // 1. 全体デフォルト設定を更新
+  const { error: globalErr } = await supabase
     .from('app_settings')
     .upsert({ pair_id: pairId, key: 'categoryBudgets', value: JSON.stringify(budgets) }, { onConflict: 'pair_id, key' });
-  if (error) return { success: false, error: '部門別予算の保存に失敗しました' };
-  return { success: true, categoryBudgets: budgets };
+  if (globalErr) return { success: false, error: '部門別予算の保存に失敗しました' };
+
+  // 2. 対象月の月別設定も保存
+  if (month && /^\d{4}-\d{2}$/.test(month)) {
+    await supabase
+      .from('app_settings')
+      .upsert({ pair_id: pairId, key: `categoryBudgets_${month}`, value: JSON.stringify(budgets) }, { onConflict: 'pair_id, key' });
+  }
+
+  return { success: true, categoryBudgets: budgets, month };
 }
 
 /**
@@ -1628,6 +1742,26 @@ async function getAvailableGeminiModels(apiKey) {
 }
 
 /**
+ * 品名キーワードからの品目別カテゴリ自動推定フォールバック (v2.8.0)
+ */
+function inferItemCategory(name) {
+  const n = String(name || '').toLowerCase();
+  if (/洗剤|ティッシュ|トイレット|ペーパー|ラップ|アルミ|ゴミ袋|スポンジ|タオル|日用|シャンプー|リンス|ソープ|歯磨き|ハブラシ|電池|ウェット|サランラップ|クレラップ/i.test(n)) {
+    return '日用品';
+  }
+  if (/薬|目薬|湿布|マスク|サプリ|ビタミン|絆創膏|パブロン|ロキソニン|風邪|医療/i.test(n)) {
+    return '医療・健康';
+  }
+  if (/シートマスク|パック|化粧|コスメ|リップ|ファンデ|下着|ソックス|服|シャツ|パンツ|美容|ネイリパ/i.test(n)) {
+    return '衣服・美容';
+  }
+  if (/弁当|定食|バーガー|マック|スタバ|カフェ|寿司|ラーメン|レストラン|外食/i.test(n)) {
+    return '外食';
+  }
+  return '食費';
+}
+
+/**
  * レシートOCR (Gemini API)
  */
 async function handleScanReceipt(data, actor) {
@@ -1662,8 +1796,16 @@ async function handleScanReceipt(data, actor) {
     '- date は yyyy-MM-dd。読み取れなければ空文字。\n' +
     '- total はレシートに印字された最終支払合計（税込）の整数円（返金なら負の整数）。読み取れなければ0。\n' +
     '- 各明細の price の合計（プラス分とマイナス値引き分の和）が total と一致するか検算すること。\n' +
+    '【重要ルール5: 品目別カテゴリ自動推測 (v2.8.0)】\n' +
+    '- 各品目の品名から最も適したカテゴリを自動判定し category に指定してください:\n' +
+    '  - 食料品・生鮮食品・調味料・飲料・お菓子・パン → "食費"\n' +
+    '  - 日用品・洗剤・ティッシュ・トイレットペーパー・ラップ・ゴミ袋・掃除用品・キッチン雑貨 → "日用品"\n' +
+    '  - 医薬品・目薬・湿布・サプリメント・マスク・絆創膏 → "医療・健康"\n' +
+    '  - 化粧品・コスメ・スキンケア・シートマスク・衣料品・ヘアケア → "衣服・美容"\n' +
+    '  - レストラン・カフェ・テイクアウト弁当等で明確に外食の場合 → "外食"\n' +
+    '  - その他・不明・値引き行 → 前後の品目と同じ、または "食費" もしくは "日用品"\n' +
     '必ず以下のJSON形式のみで出力してください:\n' +
-    '{"store":"店名","date":"yyyy-MM-dd","total":528,"isRefund":false,"items":[{"name":"品名","quantity":1,"price":390},{"name":"CPN値引","quantity":1,"price":-700}]}';
+    '{"store":"店名","date":"yyyy-MM-dd","total":528,"isRefund":false,"items":[{"name":"品名","category":"食費","quantity":1,"price":390},{"name":"クレラップ","category":"日用品","quantity":1,"price":218},{"name":"CPN値引","category":"食費","quantity":1,"price":-80}]}';
 
   // 最速・高互換のリクエストBody（余計なresponseSchemaを持たせずresponseMimeTypeのみで超高速推論）
   const requestBody = {
@@ -1751,8 +1893,13 @@ async function handleScanReceipt(data, actor) {
       if (isRefund && p > 0) p = -p;
       // 品名が値引き・クーポンの場合でプラスならマイナス化
       if (/CPN|TPD|値引|割引|クーポン|▲|△/i.test(name) && p > 0) p = -p;
+      let cat = String(it.category || '').trim();
+      if (!cat || cat === '未分類') {
+        cat = inferItemCategory(name);
+      }
       return {
         name,
+        category: cat,
         quantity: Math.min(99, Math.max(1, parseInt(it.quantity, 10) || 1)),
         price: p
       };
@@ -1804,16 +1951,18 @@ async function handleSaveReceipt(supabase, data, actor) {
   }
 
   const items = [];
+  const defaultCategory = String(data.category || '食費').slice(0, 20);
   for (const it of data.items) {
     const name = String(it.name || '').trim().slice(0, 50);
     const qty = Number(it.quantity);
     const price = Number(it.price);
     const isShared = it.isShared !== false && String(it.isShared) !== 'false';
     const owner = String(it.owner || it.payer || '').trim();
+    const itCat = String(it.category || defaultCategory).trim().slice(0, 20) || defaultCategory;
     if (!name || !Number.isInteger(qty) || qty < 1 || !Number.isInteger(price) || price === 0) {
       return { success: false, error: '明細の入力内容が不正です: ' + name };
     }
-    items.push({ name, qty, price, unitPrice: Math.round(price / qty), isShared, owner });
+    items.push({ name, qty, price, unitPrice: Math.round(price / qty), isShared, owner, category: itCat });
   }
 
   const total = items.reduce((s, it) => s + it.price, 0);
@@ -1821,7 +1970,7 @@ async function handleSaveReceipt(supabase, data, actor) {
 
   const payer = String(data.payer || actor.name).trim();
   const paymentType = data.paymentType || 'shared_card';
-  const category = String(data.category || '食費').slice(0, 20);
+  const category = defaultCategory;
 
   // 1. receipts 登録
   const { data: recRow, error: recErr } = await supabase.from('receipts').insert({
@@ -1839,7 +1988,7 @@ async function handleSaveReceipt(supabase, data, actor) {
 
   const receiptId = recRow.id;
 
-  // 2. receipt_items 登録
+  // 2. receipt_items 登録（品目別カテゴリ保存 v2.8.0）
   const itemRows = items.map(it => ({
     receipt_id: receiptId,
     item_name: it.name,
@@ -1847,7 +1996,7 @@ async function handleSaveReceipt(supabase, data, actor) {
     quantity: it.qty,
     price: it.price,
     unit_price: it.unitPrice,
-    category_id: category
+    category_id: it.category || category
   }));
 
   const { error: itemErr } = await supabase.from('receipt_items').insert(itemRows);
@@ -1855,52 +2004,63 @@ async function handleSaveReceipt(supabase, data, actor) {
     console.error('receipt_items登録失敗:', itemErr);
   }
 
-  // 3. transactions 登録（明細ごとの「共同 / 各自の私物」マルチ分割対応 v2.7.0）
-  const itemsShared = items.filter(it => it.isShared);
-  const totalShared = itemsShared.reduce((s, it) => s + it.price, 0);
-
-  // 各メンバーごとの私物明細をグループ化
-  const personalByOwner = {};
-  items.filter(it => !it.isShared).forEach(it => {
-    const ownerName = String(it.owner || it.payer || payer).trim() || payer;
-    if (!personalByOwner[ownerName]) personalByOwner[ownerName] = [];
-    personalByOwner[ownerName].push(it);
-  });
-
+  // 3. transactions 登録（カテゴリ別 ＆ 共同/私物マルチ分割対応 v2.8.0）
   const createdTxIds = [];
 
-  // 共同生活費分
-  if (totalShared !== 0) {
+  // A. 共同生活費分（カテゴリ別にグループ化）
+  const sharedByCat = {};
+  items.filter(it => it.isShared).forEach(it => {
+    const cat = it.category || category;
+    if (!sharedByCat[cat]) sharedByCat[cat] = [];
+    sharedByCat[cat].push(it);
+  });
+  const sharedCatEntries = Object.entries(sharedByCat);
+
+  for (const [cat, catItems] of sharedCatEntries) {
+    const catTotal = catItems.reduce((s, it) => s + it.price, 0);
+    if (catTotal === 0) continue;
+    const txTitle = sharedCatEntries.length > 1 ? `${store} (${cat})` : store;
     const { data: txSharedData } = await supabase.from('transactions').insert({
       pair_id: pairId,
       date: date,
-      title: store,
-      amount: totalShared,
-      category_id: category,
+      title: txTitle,
+      amount: catTotal,
+      category_id: cat,
       is_shared: true,
       payment_type: paymentType,
       payer_id: (paymentType === 'shared_card' ? '共同' : payer),
-      memo: 'レシート読み取り（共同生活費分）',
+      memo: `レシート読み取り（共同生活費・${cat}分）`,
       created_by: actor.name,
       receipt_id: receiptId
     }).select('id').single();
     if (txSharedData?.id) createdTxIds.push(txSharedData.id);
   }
 
-  // 各自の私物分
-  for (const [ownerName, ownerItems] of Object.entries(personalByOwner)) {
-    const ownerTotal = ownerItems.reduce((s, it) => s + it.price, 0);
+  // B. 私物分（メンバー別 ＆ カテゴリ別にグループ化）
+  const personalGroups = {};
+  items.filter(it => !it.isShared).forEach(it => {
+    const ownerName = String(it.owner || it.payer || payer).trim() || payer;
+    const cat = it.category || category;
+    const key = `${ownerName}___${cat}`;
+    if (!personalGroups[key]) personalGroups[key] = { owner: ownerName, category: cat, items: [] };
+    personalGroups[key].items.push(it);
+  });
+  const personalEntries = Object.values(personalGroups);
+
+  for (const grp of personalEntries) {
+    const ownerTotal = grp.items.reduce((s, it) => s + it.price, 0);
     if (ownerTotal === 0) continue;
+    const txTitle = `${store} (${grp.owner}私物・${grp.category})`;
     const { data: txPersonalData } = await supabase.from('transactions').insert({
       pair_id: pairId,
       date: date,
-      title: `${store} (${ownerName}私物)`,
+      title: txTitle,
       amount: ownerTotal,
-      category_id: category,
+      category_id: grp.category,
       is_shared: false,
       payment_type: paymentType,
-      payer_id: ownerName,
-      memo: `レシート読み取り（${ownerName}私物・要返還）`,
+      payer_id: grp.owner,
+      memo: `レシート読み取り（${grp.owner}私物・${grp.category}・要返還）`,
       created_by: actor.name,
       receipt_id: receiptId
     }).select('id').single();
@@ -1981,16 +2141,18 @@ async function handleUpdateReceipt(supabase, data, actor) {
   const { data: oldItems } = await supabase.from('receipt_items').select('*').eq('receipt_id', receiptId);
 
   const items = [];
+  const defaultCategory = String(data.category || '食費').slice(0, 20);
   for (const it of data.items) {
     const name = String(it.name || '').trim().slice(0, 50);
     const qty = Number(it.quantity);
     const price = Number(it.price);
     const isShared = it.isShared !== false && String(it.isShared) !== 'false';
     const owner = String(it.owner || it.payer || '').trim();
+    const itCat = String(it.category || defaultCategory).trim().slice(0, 20) || defaultCategory;
     if (!name || !Number.isInteger(qty) || qty < 1 || !Number.isInteger(price) || price === 0) {
       return { success: false, error: '明細の入力内容が不正です: ' + name };
     }
-    items.push({ name, qty, price, unitPrice: Math.round(price / qty), isShared, owner });
+    items.push({ name, qty, price, unitPrice: Math.round(price / qty), isShared, owner, category: itCat });
   }
 
   const total = items.reduce((s, it) => s + it.price, 0);
@@ -2003,12 +2165,12 @@ async function handleUpdateReceipt(supabase, data, actor) {
     total_amount: total
   }).eq('id', receiptId).eq('pair_id', pairId);
 
-  // 2. 既存の receipt_items を一旦削除して再挿入
+  // 2. 既存の receipt_items を一旦削除して再挿入（品目別カテゴリ保存 v2.8.0）
   await supabase.from('receipt_items').delete().eq('receipt_id', receiptId);
 
   const payer = String(data.payer || actor.name).trim();
   const paymentType = data.paymentType || 'shared_card';
-  const category = String(data.category || '食費').slice(0, 20);
+  const category = defaultCategory;
 
   const itemRows = items.map(it => ({
     receipt_id: receiptId,
@@ -2017,56 +2179,66 @@ async function handleUpdateReceipt(supabase, data, actor) {
     quantity: it.qty,
     price: it.price,
     unit_price: it.unitPrice,
-    category_id: category
+    category_id: it.category || category
   }));
   await supabase.from('receipt_items').insert(itemRows);
 
-  // 3. transactions の更新（明細ごとの「共同 / 各自の私物」マルチ分割対応 v2.7.0）
-  const itemsShared = items.filter(it => it.isShared);
-  const totalShared = itemsShared.reduce((s, it) => s + it.price, 0);
-
-  // 各メンバーごとの私物明細をグループ化
-  const personalByOwner = {};
-  items.filter(it => !it.isShared).forEach(it => {
-    const ownerName = String(it.owner || it.payer || payer).trim() || payer;
-    if (!personalByOwner[ownerName]) personalByOwner[ownerName] = [];
-    personalByOwner[ownerName].push(it);
-  });
-
-  // 既存の関連 transactions を削除
+  // 3. transactions の更新（カテゴリ別 ＆ 共同/私物マルチ分割対応 v2.8.0）
   await supabase.from('transactions').delete().eq('receipt_id', receiptId).eq('pair_id', pairId);
 
-  // 共同生活費分
-  if (totalShared !== 0) {
+  // A. 共同生活費分（カテゴリ別にグループ化）
+  const sharedByCat = {};
+  items.filter(it => it.isShared).forEach(it => {
+    const cat = it.category || category;
+    if (!sharedByCat[cat]) sharedByCat[cat] = [];
+    sharedByCat[cat].push(it);
+  });
+  const sharedCatEntries = Object.entries(sharedByCat);
+
+  for (const [cat, catItems] of sharedCatEntries) {
+    const catTotal = catItems.reduce((s, it) => s + it.price, 0);
+    if (catTotal === 0) continue;
+    const txTitle = sharedCatEntries.length > 1 ? `${store} (${cat})` : store;
     await supabase.from('transactions').insert({
       pair_id: pairId,
       date: date,
-      title: store,
-      amount: totalShared,
-      category_id: category,
+      title: txTitle,
+      amount: catTotal,
+      category_id: cat,
       is_shared: true,
       payment_type: paymentType,
       payer_id: (paymentType === 'shared_card' ? '共同' : payer),
-      memo: 'レシート修正（共同生活費分）',
+      memo: `レシート修正（共同生活費・${cat}分）`,
       created_by: actor.name,
       receipt_id: receiptId
     });
   }
 
-  // 各自の私物分
-  for (const [ownerName, ownerItems] of Object.entries(personalByOwner)) {
-    const ownerTotal = ownerItems.reduce((s, it) => s + it.price, 0);
+  // B. 私物分（メンバー別 ＆ カテゴリ別にグループ化）
+  const personalGroups = {};
+  items.filter(it => !it.isShared).forEach(it => {
+    const ownerName = String(it.owner || it.payer || payer).trim() || payer;
+    const cat = it.category || category;
+    const key = `${ownerName}___${cat}`;
+    if (!personalGroups[key]) personalGroups[key] = { owner: ownerName, category: cat, items: [] };
+    personalGroups[key].items.push(it);
+  });
+  const personalEntries = Object.values(personalGroups);
+
+  for (const grp of personalEntries) {
+    const ownerTotal = grp.items.reduce((s, it) => s + it.price, 0);
     if (ownerTotal === 0) continue;
+    const txTitle = `${store} (${grp.owner}私物・${grp.category})`;
     await supabase.from('transactions').insert({
       pair_id: pairId,
       date: date,
-      title: `${store} (${ownerName}私物)`,
+      title: txTitle,
       amount: ownerTotal,
-      category_id: category,
+      category_id: grp.category,
       is_shared: false,
       payment_type: paymentType,
-      payer_id: ownerName,
-      memo: `レシート修正（${ownerName}私物・要返還）`,
+      payer_id: grp.owner,
+      memo: `レシート修正（${grp.owner}私物・${grp.category}・要返還）`,
       created_by: actor.name,
       receipt_id: receiptId
     });
@@ -2091,12 +2263,12 @@ async function handleUpdateReceipt(supabase, data, actor) {
 }
 
 /**
- * 価格検索 (searchPrices)
+ * 価格検索 (searchPrices: 表記揺れ吸収型スマート検索 v2.8.0)
  */
 async function handleSearchPrices(supabase, query, actor) {
   const pairId = getTargetPairId(actor, {});
-  const q = normalizeName(query);
-  if (!q) return { success: false, error: '検索する品名を入力してください' };
+  const keywords = expandSearchKeywords(query);
+  if (keywords.length === 0) return { success: false, error: '検索する品名を入力してください' };
 
   const config = await getConfigData(supabase, pairId);
   const actorSlot = resolvePayerSlot(actor?.name, config);
@@ -2116,14 +2288,22 @@ async function handleSearchPrices(supabase, query, actor) {
     }
   });
 
-  // 品名のあいまい検索（当該ペアのレシートに限定）
-  const { data: matchedItems } = await supabase
+  // シノニム展開された全キーワードで OR 検索（白菜/はくさい/ハクサイ等すべての表記を網羅）
+  const normKeywords = Array.from(new Set(keywords.map(k => normalizeName(k)).filter(Boolean)));
+  const orConditions = normKeywords.map(k => `normalized_name.ilike.%${k}%`).join(',');
+
+  let queryBuilder = supabase
     .from('receipt_items')
     .select('id, receipt_id, item_name, normalized_name, quantity, price, unit_price, receipts!inner(date, store_name, pair_id)')
     .eq('receipts.pair_id', pairId)
     .gt('price', 0)
-    .gt('unit_price', 0)
-    .ilike('normalized_name', `%${q}%`);
+    .gt('unit_price', 0);
+
+  if (orConditions) {
+    queryBuilder = queryBuilder.or(orConditions);
+  }
+
+  const { data: matchedItems } = await queryBuilder;
 
   const getReceiptData = (it) => {
     if (!it || !it.receipts) return { date: '', store_name: '不明' };
@@ -3515,7 +3695,7 @@ async function handleHealthCheck(req) {
 
   return {
     success: true,
-    version: 'v2.7.0',
+    version: 'v2.8.0',
     resolvedUrl: resolvedUrl ? resolvedUrl.replace(/\/\/[^@]+@/, '//***@') : '未設定',
     keyType: keyType,
     env: envCheck,
@@ -3700,7 +3880,7 @@ export default async function handler(req, res) {
       if (!actor.allowed) {
         return res.status(200).json({
           success: false,
-          version: 'v2.7.0',
+          version: 'v2.8.0',
           code: actor.code,
           error: actor.error,
           userId: actor.userId || '',
