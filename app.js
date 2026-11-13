@@ -9,7 +9,7 @@
  */
 
 const APP_CONFIG = window.PAIRBUDGET_CONFIG || {};
-const FRONTEND_VERSION = 'v2.12.0';
+const FRONTEND_VERSION = 'v2.12.1';
 const MAX_HISTORY_MONTHS = 36;
 const FIELD_LABELS = {
   date: '日付', title: '品名', amount: '金額', category: 'カテゴリ', isShared: '共同',
@@ -6062,130 +6062,350 @@ function switchImportTab(tab) {
 }
 
 /**
- * CSVファイル選択時のハンドラ（Shift_JIS / UTF-8 自動判別）
+ * 日付文字列の完全正規化ヘルパー (YYYY-MM-DD) (v2.12.1)
  */
-function handleCsvFileSelected(event) {
-  const file = event.target.files?.[0];
-  if (!file) return;
+function normalizeStatementDate(raw) {
+  if (!raw) return null;
+  let str = String(raw).trim().replace(/['"“”]/g, '');
+  if (!str) return null;
 
+  const curYear = new Date().getFullYear();
+
+  // 1. 8桁連続数値: 20261015
+  let m = str.match(/^(\d{4})(\d{2})(\d{2})$/);
+  if (m) {
+    const y = parseInt(m[1], 10);
+    const mon = parseInt(m[2], 10);
+    const d = parseInt(m[3], 10);
+    if (y >= 2000 && y <= 2099 && mon >= 1 && mon <= 12 && d >= 1 && d <= 31) {
+      return `${y}-${String(mon).padStart(2, '0')}-${String(d).padStart(2, '0')}`;
+    }
+  }
+
+  // 2. 年月日漢字: 2026年10月15日, 2026年10月15
+  m = str.match(/^(\d{4})年(\d{1,2})月(\d{1,2})日?/);
+  if (m) {
+    return `${m[1]}-${String(m[2]).padStart(2, '0')}-${String(m[3]).padStart(2, '0')}`;
+  }
+
+  // 3. 4桁年スラッシュ/ハイフン/ドット: 2026/10/15, 2026-10-15, 2026.10.15
+  m = str.match(/^(\d{4})[-/.](\d{1,2})[-/.](\d{1,2})/);
+  if (m) {
+    return `${m[1]}-${String(m[2]).padStart(2, '0')}-${String(m[3]).padStart(2, '0')}`;
+  }
+
+  // 4. 2桁年: 26/10/15, 26-10-15, 26.10.15
+  m = str.match(/^(\d{2})[-/.](\d{1,2})[-/.](\d{1,2})/);
+  if (m) {
+    const y = 2000 + parseInt(m[1], 10);
+    return `${y}-${String(m[2]).padStart(2, '0')}-${String(m[3]).padStart(2, '0')}`;
+  }
+
+  // 5. 年省略 (月日のみ): 10/15, 10-15, 10月15日
+  m = str.match(/^(\d{1,2})[-/.月](\d{1,2})日?/);
+  if (m) {
+    const mon = parseInt(m[1], 10);
+    const d = parseInt(m[2], 10);
+    if (mon >= 1 && mon <= 12 && d >= 1 && d <= 31) {
+      return `${curYear}-${String(mon).padStart(2, '0')}-${String(d).padStart(2, '0')}`;
+    }
+  }
+
+  return null;
+}
+
+/**
+ * 汎用CSV・明細パーサー (v2.12.1 全面強化)
+ * - 楽天・三井住友(Vpass)・JCB・イオン・エポス・各行通帳CSV・コピペテキストに完全対応
+ */
+function parseStatementCsv(csvText) {
+  if (!csvText) return [];
+  // UTF-8 BOM除去
+  let cleanText = String(csvText).replace(/^\uFEFF/, '').trim();
+  const rawLines = cleanText.split(/\r?\n/).map(l => l.trim()).filter(l => l.length > 0);
+  if (rawLines.length === 0) return [];
+
+  // 行分割パーサー（カンマ/タブ/空白対応）
+  function parseLine(line) {
+    if (line.includes('\t')) {
+      return line.split('\t').map(c => c.trim().replace(/^"|"$/g, ''));
+    }
+    // カンマ区切り（クォート考慮）
+    if (line.includes(',')) {
+      const res = [];
+      let cur = '';
+      let inQuotes = false;
+      for (let i = 0; i < line.length; i++) {
+        const c = line[i];
+        if (c === '"') {
+          inQuotes = !inQuotes;
+        } else if (c === ',' && !inQuotes) {
+          res.push(cur.trim().replace(/^"|"$/g, ''));
+          cur = '';
+        } else {
+          cur += c;
+        }
+      }
+      res.push(cur.trim().replace(/^"|"$/g, ''));
+      return res;
+    }
+    // スペース区切り
+    return line.split(/[\s　]+/).map(c => c.trim().replace(/^"|"$/g, ''));
+  }
+
+  const parsedRows = rawLines.map(parseLine).filter(r => r.length > 0);
+  if (parsedRows.length === 0) return [];
+
+  // ヘッダー探索
+  const dateRegex = /(?:利用日|年月日|取引日|日付|決済日|計上日|取扱日|Date)/i;
+  const titleRegex = /(?:利用先|利用店|店名|商品名|取引内容|お取扱|お取り扱い|摘要|加盟店|利用場所|箇所|入出金内容|内容|詳細|品名|メモ|ショップ|Title|Description)/i;
+  const amountRegex = /(?:利用金額|支払総額|支払金額|支払い金額|お支払金額|請求金額|決済金額|引落金額|お引出し|出金|入出金|利用額|金額|Amount)/i;
+  const depositRegex = /(?:お預入れ|預入れ|入金|受取)/i;
+
+  let headerIndex = -1;
+  let dateCol = -1;
+  let titleCol = -1;
+  let amountCol = -1;
+  let depositCol = -1;
+
+  for (let i = 0; i < Math.min(parsedRows.length, 15); i++) {
+    const row = parsedRows[i];
+    const dIdx = row.findIndex(c => dateRegex.test(c));
+    const aIdx = row.findIndex(c => amountRegex.test(c));
+    const tIdx = row.findIndex(c => titleRegex.test(c));
+
+    if (dIdx !== -1 && (aIdx !== -1 || tIdx !== -1)) {
+      headerIndex = i;
+      dateCol = dIdx;
+      amountCol = aIdx;
+      titleCol = tIdx;
+      depositCol = row.findIndex(c => depositRegex.test(c));
+      break;
+    }
+  }
+
+  // カテゴリ自動推測ヘルパー
+  function guessCategory(title) {
+    if (/(?:電気|ガス|水道|東京電力|東京ガス|水道局|通信|docomo|au|softbank|wifi|NHK|インターネット)/i.test(title)) return '光熱費';
+    if (/(?:マツモトキヨシ|ウエルシア|ツルハ|サンドラッグ|ドラッグ|薬局|クリニック|病院|処方|調剤|眼科|歯科)/i.test(title)) return '医療・健康';
+    if (/(?:レストラン|カフェ|スターバックス|マクドナルド|すき家|サイゼリヤ|居酒屋|寿司|バル|ドトール|タリーズ|コメダ|ガスト)/i.test(title)) return '外食';
+    if (/(?:ユニクロ|GU|ZARA|無印良品|コスメ|資生堂|美容|ヘアサロン|理容|アパレル|ZOZO)/i.test(title)) return '衣服・美容';
+    if (/(?:JR|東京メトロ|Suica|PASMO|タクシー|タイムズ|Times|新幹線|ETC|ガソリン|エネオス|出光)/i.test(title)) return '交通費';
+    if (/(?:日用品|ホームセンター|カインズ|ニトリ|セリア|ダイソー|キャンドゥ|Amazon|ヨドバシ|ビックカメラ)/i.test(title)) return '日用品';
+    if (/(?:家賃|管理費|共益費|火災保険)/i.test(title)) return '住居';
+    return '食費';
+  }
+
+  const items = [];
+
+  if (headerIndex !== -1) {
+    // ヘッダーがある場合
+    if (titleCol === -1) {
+      titleCol = parsedRows[headerIndex].findIndex((_, idx) => idx !== dateCol && idx !== amountCol && idx !== depositCol);
+      if (titleCol === -1) titleCol = 1;
+    }
+
+    for (let i = headerIndex + 1; i < parsedRows.length; i++) {
+      const row = parsedRows[i];
+      if (row.length === 0) continue;
+
+      // 銀行CSVで出金列が空でお預入れ(入金)のみの場合はスキップ
+      if (depositCol !== -1 && amountCol !== -1) {
+        const outVal = (row[amountCol] || '').replace(/[,，¥円\s]/g, '');
+        const inVal = (row[depositCol] || '').replace(/[,，¥円\s]/g, '');
+        if ((!outVal || outVal === '0' || outVal === '-') && inVal && parseInt(inVal, 10) > 0) {
+          continue;
+        }
+      }
+
+      const rawDate = row[dateCol];
+      const normDate = normalizeStatementDate(rawDate);
+      if (!normDate) continue;
+
+      const rawTitle = (row[titleCol] || '').trim();
+      const rawAmountStr = (row[amountCol] || '').replace(/[,，¥円\s]/g, '');
+      const amount = Math.abs(parseInt(rawAmountStr, 10));
+
+      if (!rawTitle || isNaN(amount) || amount === 0) continue;
+
+      items.push({
+        date: normDate,
+        title: rawTitle,
+        amount: amount,
+        category: guessCategory(rawTitle),
+        payer: '共同カード',
+        paymentType: 'shared_card',
+        isShared: true
+      });
+    }
+  } else {
+    // ヘッダーなしCSV・三井住友カードVpass・1行目からデータ・テキストコピペ
+    for (let i = 0; i < parsedRows.length; i++) {
+      const row = parsedRows[i];
+      if (row.length < 2) continue;
+
+      let foundDate = null;
+      let dateIdx = -1;
+      for (let c = 0; c < row.length; c++) {
+        const nd = normalizeStatementDate(row[c]);
+        if (nd) {
+          foundDate = nd;
+          dateIdx = c;
+          break;
+        }
+      }
+      if (!foundDate) continue;
+
+      // 金額列の探索（数値・カンマで構成され、日付列でないもの）
+      let foundAmount = null;
+      let amountIdx = -1;
+      for (let c = row.length - 1; c >= 0; c--) {
+        if (c === dateIdx) continue;
+        const cleaned = (row[c] || '').replace(/[,，¥円\s]/g, '');
+        if (/^-?\d+$/.test(cleaned)) {
+          const num = Math.abs(parseInt(cleaned, 10));
+          if (num > 0) {
+            foundAmount = num;
+            amountIdx = c;
+            break;
+          }
+        }
+      }
+      if (!foundAmount) continue;
+
+      // 店名列の探索（日付と金額以外の最も長い文字列）
+      let foundTitle = '';
+      for (let c = 0; c < row.length; c++) {
+        if (c === dateIdx || c === amountIdx) continue;
+        const val = (row[c] || '').trim();
+        if (val.length > foundTitle.length && !/^\d+$/.test(val)) {
+          foundTitle = val;
+        }
+      }
+      if (!foundTitle) foundTitle = '明細支出';
+
+      items.push({
+        date: foundDate,
+        title: foundTitle,
+        amount: foundAmount,
+        category: guessCategory(foundTitle),
+        payer: '共同カード',
+        paymentType: 'shared_card',
+        isShared: true
+      });
+    }
+  }
+
+  return items;
+}
+
+/**
+ * CSVファイル解析の共通処理 (v2.12.1)
+ */
+function processCsvFile(file) {
+  if (!file) return;
   const reader = new FileReader();
   reader.onload = (e) => {
-    let buffer = e.target.result;
+    const buffer = e.target.result;
     let text = '';
-    // まずUTF-8でデコード
     try {
       text = new TextDecoder('utf-8', { fatal: true }).decode(buffer);
     } catch (_) {
-      // UTF-8失敗時はShift_JIS (Windows/各カード会社標準)
       text = new TextDecoder('shift_jis').decode(buffer);
     }
-
     const items = parseStatementCsv(text);
     if (items.length === 0) {
-      showToast('明細を読み取れませんでした。対応形式のCSVかご確認ください', 'error');
+      showToast('明細を読み取れませんでした。内容をご確認ください', 'error');
       return;
     }
-
     state.importedStatementItems = items;
     renderImportPreviewTable();
+    showToast(`📄 ${items.length} 件の明細を読み込みました！`, 'success');
   };
   reader.readAsArrayBuffer(file);
 }
 
 /**
- * CSVパーサー（楽天・三井住友・JCB・イオン・エポス・銀行CSV自動対応）
+ * ファイル選択イベント
  */
-function parseStatementCsv(csvText) {
-  const lines = csvText.split(/\r?\n/).filter(line => line.trim().length > 0);
-  if (lines.length < 2) return [];
-
-  // カンマ区切りパース（ダブルクォート考慮）
-  function parseCsvLine(line) {
-    const result = [];
-    let cur = '';
-    let inQuotes = false;
-    for (let i = 0; i < line.length; i++) {
-      const c = line[i];
-      if (c === '"') {
-        inQuotes = !inQuotes;
-      } else if (c === ',' && !inQuotes) {
-        result.push(cur.trim().replace(/^"|"$/g, ''));
-        cur = '';
-      } else {
-        cur += c;
-      }
-    }
-    result.push(cur.trim().replace(/^"|"$/g, ''));
-    return result;
+function handleCsvFileSelected(event) {
+  const file = event.target.files?.[0];
+  if (file) {
+    processCsvFile(file);
   }
+  if (event.target) event.target.value = '';
+}
 
-  // ヘッダー行探索（先頭10行の中から日付や金額を含む行を探す）
-  let headerIndex = -1;
-  let headers = [];
-  for (let i = 0; i < Math.min(lines.length, 10); i++) {
-    const row = parseCsvLine(lines[i]);
-    const rowStr = row.join(' ');
-    if (/(?:利用日|年月日|取引日|日付)/i.test(rowStr) && /(?:金額|支払総額|引落金額|ご利用先)/i.test(rowStr)) {
-      headerIndex = i;
-      headers = row;
-      break;
-    }
+/**
+ * ドラッグ＆ドロップ対応 (v2.12.1)
+ */
+function handleCsvDragOver(event) {
+  event.preventDefault();
+  event.stopPropagation();
+  const zone = $('csvDropZone');
+  if (zone) zone.classList.add('border-sky-500', 'bg-sky-100/70');
+}
+
+function handleCsvDragLeave(event) {
+  event.preventDefault();
+  event.stopPropagation();
+  const zone = $('csvDropZone');
+  if (zone) zone.classList.remove('border-sky-500', 'bg-sky-100/70');
+}
+
+function handleCsvDrop(event) {
+  event.preventDefault();
+  event.stopPropagation();
+  const zone = $('csvDropZone');
+  if (zone) zone.classList.remove('border-sky-500', 'bg-sky-100/70');
+
+  const file = event.dataTransfer?.files?.[0];
+  if (file) {
+    processCsvFile(file);
   }
+}
 
-  if (headerIndex === -1) {
-    // ヘッダーなし、1行目をヘッダーと仮定
-    headerIndex = 0;
-    headers = parseCsvLine(lines[0]);
+/**
+ * コピペテキスト直接読込 (v2.12.1)
+ */
+function handleCsvTextPaste() {
+  const input = $('statementCsvPasteInput');
+  const text = (input?.value || '').trim();
+  if (!text) {
+    showToast('貼り付け欄にCSVまたは明細テキストを入力してください', 'info');
+    return;
   }
-
-  // 列インデックスの特定
-  let dateCol = headers.findIndex(h => /(?:利用日|年月日|取引日|日付)/i.test(h));
-  let titleCol = headers.findIndex(h => /(?:利用先|店名|商品名|取引内容|お取扱内容|摘要|加盟店)/i.test(h));
-  let amountCol = headers.findIndex(h => /(?:利用金額|支払総額|支払金額|金額|引落金額)/i.test(h));
-
-  if (dateCol === -1) dateCol = 0;
-  if (titleCol === -1) titleCol = 1;
-  if (amountCol === -1) amountCol = 2;
-
-  const parsedItems = [];
-  for (let i = headerIndex + 1; i < lines.length; i++) {
-    const row = parseCsvLine(lines[i]);
-    if (row.length <= Math.max(dateCol, titleCol, amountCol)) continue;
-
-    let rawDate = (row[dateCol] || '').replace(/\//g, '-');
-    let title = (row[titleCol] || '').trim();
-    let rawAmount = (row[amountCol] || '').replace(/[,¥円\s]/g, '');
-
-    // 日付フォーマットの正規化 yyyy-MM-dd
-    const dateMatch = rawDate.match(/^(\d{4})[-/](\d{1,2})[-/](\d{1,2})/);
-    if (dateMatch) {
-      rawDate = `${dateMatch[1]}-${String(dateMatch[2]).padStart(2, '0')}-${String(dateMatch[3]).padStart(2, '0')}`;
-    }
-
-    const amount = Math.abs(parseInt(rawAmount, 10));
-    if (!title || isNaN(amount) || amount === 0) continue;
-
-    // カテゴリ自動推測
-    let category = '食費';
-    if (/(?:電気|ガス|水道|東京電力|東京ガス|水道局|通信|docomo|au|softbank|wifi)/i.test(title)) category = '光熱費';
-    else if (/(?:マツモトキヨシ|ウエルシア|ツルハ|サンドラッグ|ドラッグ|薬局|クリニック|病院|処方)/i.test(title)) category = '医療・健康';
-    else if (/(?:レストラン|カフェ|スターバックス|マクドナルド|すき家|サイゼリヤ|居酒屋|寿司|バル)/i.test(title)) category = '外食';
-    else if (/(?:ユニクロ|GU|ZARA|無印良品|コスメ|資生堂|美容)/i.test(title)) category = '衣服・美容';
-    else if (/(?:JR|東京メトロ|Suica|PASMO|タクシー|タイムズ|Times|新幹線)/i.test(title)) category = '交通費';
-    else if (/(?:日用品|ホームセンター|カインズ|ニトリ|セリア|ダイソー)/i.test(title)) category = '日用品';
-
-    parsedItems.push({
-      date: rawDate || localDateStr(),
-      title: title,
-      amount: amount,
-      category: category,
-      payer: '共同カード',
-      paymentType: 'shared_card',
-      isShared: true
-    });
+  const items = parseStatementCsv(text);
+  if (items.length === 0) {
+    showToast('明細を読み取れませんでした。日付と金額が含まれているかご確認ください', 'error');
+    return;
   }
+  state.importedStatementItems = items;
+  renderImportPreviewTable();
+  showToast(`📋 コピペから ${items.length} 件の明細を読み込みました！`, 'success');
+}
 
-  return parsedItems;
+/**
+ * サンプルCSV明細読込 (v2.12.1)
+ */
+function loadSampleStatementCsv() {
+  const today = new Date();
+  const y = today.getFullYear();
+  const m = String(today.getMonth() + 1).padStart(2, '0');
+  const sample = `利用日,利用先・店名,利用金額,支払区分
+${y}/${m}/02,ライフ 渋谷東店,3840,1回払い
+${y}/${m}/05,マツモトキヨシ 恵比寿店,1580,1回払い
+${y}/${m}/08,スターバックス コーヒー,1240,1回払い
+${y}/${m}/10,東京電力エナジーパートナー,8920,1回払い
+${y}/${m}/12,セリア（100円ショップ）,550,1回払い`;
+
+  const input = $('statementCsvPasteInput');
+  if (input) input.value = sample;
+
+  const items = parseStatementCsv(sample);
+  state.importedStatementItems = items;
+  renderImportPreviewTable();
+  showToast('🧪 サンプル明細5件を読み込みました！', 'info');
 }
 
 /**
@@ -6237,7 +6457,7 @@ async function handleStatementImageSelected(event) {
       // 明細が検出された場合
       if (res.statements && res.statements.length > 0) {
         state.importedStatementItems = res.statements.map(s => ({
-          date: s.date || localDateStr(),
+          date: normalizeStatementDate(s.date) || localDateStr(),
           title: s.title || '明細',
           amount: Math.abs(Number(s.amount) || 0),
           category: s.category || '食費',
@@ -6255,6 +6475,8 @@ async function handleStatementImageSelected(event) {
   } catch (err) {
     if (spinner) spinner.classList.add('hidden');
     showToast('画像読み取りエラー: ' + err.message, 'error');
+  } finally {
+    if (event.target) event.target.value = '';
   }
 }
 
@@ -6362,7 +6584,7 @@ function toggleAllImportItems(isShared) {
 }
 
 /**
- * 仕分け完了明細の家計簿への一括登録
+ * 仕分け完了明細の家計簿への一括登録 (v2.12.1 自動月切り替え対応)
  */
 async function submitImportedStatements() {
   const selectedItems = (state.importedStatementItems || []).filter(i => i.isShared);
@@ -6386,6 +6608,20 @@ async function submitImportedStatements() {
     showToast(`🎉 ${selectedItems.length} 件の明細を家計簿に登録しました！`, 'success');
     closeStatementImportModal();
     state.importedStatementItems = [];
+
+    // 登録された明細の対象月を特定し、もし現在の表示月と異なれば自動移動 (v2.12.1)
+    const monthCounts = {};
+    selectedItems.forEach(item => {
+      const ym = String(item.date || '').slice(0, 7);
+      if (/^\d{4}-\d{2}$/.test(ym)) {
+        monthCounts[ym] = (monthCounts[ym] || 0) + 1;
+      }
+    });
+    const sortedMonths = Object.keys(monthCounts).sort((a, b) => monthCounts[b] - monthCounts[a]);
+    if (sortedMonths.length > 0 && sortedMonths[0] !== state.viewMonth) {
+      state.viewMonth = sortedMonths[0];
+      try { localStorage.setItem('pairbudget_view_month', state.viewMonth); } catch (_) {}
+    }
 
     // データ再読み込み
     await loadInitialData(state.viewMonth, { skipCache: true });

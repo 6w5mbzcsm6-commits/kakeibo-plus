@@ -1057,7 +1057,7 @@ async function handleGetInitialData(supabase, targetMonth, actor, requestedPairI
 
   return {
     success: true,
-    version: 'v2.12.0',
+    version: 'v2.12.1',
     pair: {
       id: pairId,
       name: config.pairName,
@@ -4062,7 +4062,7 @@ async function handleHealthCheck(req) {
 
   return {
     success: true,
-    version: 'v2.12.0',
+    version: 'v2.12.1',
     resolvedUrl: resolvedUrl ? resolvedUrl.replace(/\/\/[^@]+@/, '//***@') : '未設定',
     keyType: keyType,
     env: envCheck,
@@ -4125,7 +4125,12 @@ async function handleImportCardStatements(supabase, actor, data) {
 
   const rowsToInsert = items.map(item => ({
     pair_id: pairId,
-    date: item.date || new Date().toISOString().slice(0, 10),
+    date: (() => {
+      const raw = String(item.date || '').trim();
+      const m = raw.match(/^(\d{4})[-/.](\d{1,2})[-/.](\d{1,2})/);
+      if (m) return `${m[1]}-${String(m[2]).padStart(2, '0')}-${String(m[3]).padStart(2, '0')}`;
+      return raw.slice(0, 10) || new Date().toISOString().slice(0, 10);
+    })(),
     title: String(item.title || '明細インポート').trim(),
     amount: Math.abs(Number(item.amount) || 0),
     category_id: String(item.category || '食費').trim(),
@@ -4496,7 +4501,7 @@ export default async function handler(req, res) {
       if (!actor.allowed) {
         return res.status(200).json({
           success: false,
-          version: 'v2.12.0',
+          version: 'v2.12.1',
           code: actor.code,
           error: actor.error,
           userId: actor.userId || '',
