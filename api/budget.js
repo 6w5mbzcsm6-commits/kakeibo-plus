@@ -17,6 +17,14 @@ export const maxDuration = 60;
 const DEFAULT_BUDGET = 240000;
 const MAX_HISTORY_MONTHS = 36;
 const DEFAULT_PAIR_ID = '00000000-0000-0000-0000-000000000001';
+// ==========================================
+// 暗号学的ソルト付きハッシュ (PBKDF2-HMAC-SHA256) 設定 (v2.12.0)
+// ==========================================
+const HASH_PEPPER = normalizeEnvSecret(process.env.HASH_PEPPER) || 'pair_budget_secure_pepper_2026_salt_v2';
+const PBKDF2_ITERATIONS = 100000;
+const PBKDF2_KEYLEN = 32;
+const PBKDF2_DIGEST = 'sha256';
+
 const ALLOWED_PAYMENT_TYPES = [
   'shared_card',
   'shared_account',
@@ -410,8 +418,100 @@ function verifyLineSignature(rawBody, signature, channelSecret) {
 // ==========================================
 // 監査ログヘルパー
 // ==========================================
+/**
+ * 128bit (16バイト) の安全な暗号学的ソルトを生成 (hex文字列)
+ */
+function generateSalt(bytes = 16) {
+  return crypto.randomBytes(bytes).toString('hex');
+}
+
+/**
+ * ソルト付きPBKDF2-HMAC-SHA256ハッシュを生成 (v2.12.0)
+ * フォーマット: pbkdf2_sha256$<iterations>$<salt>$<hash>
+ */
+function hashSecretWithSalt(secret, customSalt = null, iterations = PBKDF2_ITERATIONS) {
+  if (secret === undefined || secret === null || secret === '') return '';
+  const salt = customSalt || generateSalt(16);
+  const saltedSecret = String(secret) + HASH_PEPPER;
+  const hash = crypto.pbkdf2Sync(saltedSecret, salt, iterations, PBKDF2_KEYLEN, PBKDF2_DIGEST).toString('hex');
+  return `pbkdf2_sha256$${iterations}$${salt}$${hash}`;
+}
+
+/**
+ * ソルト付きハッシュの定数時間比較検証（タイミング攻撃耐性）
+ */
+function verifySecretWithSalt(secret, storedHashRecord) {
+  if (!secret || !storedHashRecord) return false;
+  try {
+    const parts = String(storedHashRecord).split('$');
+    if (parts.length !== 4 || parts[0] !== 'pbkdf2_sha256') {
+      if (storedHashRecord === crypto.createHash('sha256').update(String(secret)).digest('hex') || storedHashRecord === String(secret)) {
+        return true;
+      }
+      return false;
+    }
+    const iterations = parseInt(parts[1], 10) || PBKDF2_ITERATIONS;
+    const salt = parts[2];
+    const expectedHash = parts[3];
+
+    const saltedSecret = String(secret) + HASH_PEPPER;
+    const computedHash = crypto.pbkdf2Sync(saltedSecret, salt, iterations, PBKDF2_KEYLEN, PBKDF2_DIGEST).toString('hex');
+
+    const expectedBuf = Buffer.from(expectedHash, 'hex');
+    const computedBuf = Buffer.from(computedHash, 'hex');
+    if (expectedBuf.length !== computedBuf.length) return false;
+    return crypto.timingSafeEqual(expectedBuf, computedBuf);
+  } catch (err) {
+    console.error('ハッシュ検証エラー:', err);
+    return false;
+  }
+}
+
+/**
+ * デフォルト口座構成の生成ヘルパー (v2.12.0)
+ */
+function getDefaultBankAccounts() {
+  const now = new Date().toISOString();
+  return [
+    {
+      id: 'acc_shared_main',
+      name: '三井住友銀行（共有普通口座）',
+      type: 'shared_bank',
+      balance: 300000,
+      institution: '三井住友銀行',
+      note: '家賃・光熱費・クレカ引落用口座',
+      updatedAt: now
+    },
+    {
+      id: 'acc_shared_card',
+      name: '楽天カード（共同利用）',
+      type: 'shared_card',
+      balance: 0,
+      institution: '楽天カード',
+      note: '日常の食費・日用品決済用',
+      updatedAt: now
+    }
+  ];
+}
+
 async function writeAudit(supabase, actor, pairId, action, targetType, targetId, before, after) {
   try {
+    const afterData = after ? { ...after } : {};
+    // ソルト付き改ざん防止整合性署名を付与 (PBKDF2 10,000回・v2.12.0)
+    const salt = generateSalt(8);
+    const signPayload = JSON.stringify({
+      pairId: pairId || DEFAULT_PAIR_ID,
+      actor: actor ? actor.name : 'system',
+      action: action,
+      targetType: targetType,
+      targetId: String(targetId || ''),
+      before: before || null,
+      after: afterData
+    });
+    const integrityHash = hashSecretWithSalt(signPayload, salt, 10000);
+    afterData._salt = salt;
+    afterData._integrityHash = integrityHash;
+
     await supabase.from('audit_logs').insert({
       pair_id: pairId || DEFAULT_PAIR_ID,
       actor_id: actor ? actor.name : 'system',
@@ -419,7 +519,7 @@ async function writeAudit(supabase, actor, pairId, action, targetType, targetId,
       target_type: targetType,
       target_id: String(targetId || ''),
       before_data: before || null,
-      after_data: after || null
+      after_data: afterData
     });
   } catch (err) {
     console.error('監査ログの記録に失敗:', err);
@@ -475,7 +575,9 @@ async function getConfigData(supabase, pairId) {
     categoryBudgetsByMonth: {},
     surplusPolicy: 'savings',
     savingsConfig: { initialSavings: 0, monthlyInterests: {} },
-    autoCheckShoppingOnReceipt: true
+    autoCheckShoppingOnReceipt: true,
+    bankAccounts: null,
+    securityPinHash: null
   };
 
   (settingsRes.data || []).forEach(s => {
@@ -955,7 +1057,7 @@ async function handleGetInitialData(supabase, targetMonth, actor, requestedPairI
 
   return {
     success: true,
-    version: 'v2.11.0',
+    version: 'v2.12.0',
     pair: {
       id: pairId,
       name: config.pairName,
@@ -970,6 +1072,14 @@ async function handleGetInitialData(supabase, targetMonth, actor, requestedPairI
     fixedExpenses: fixedExpenses,
     categories: categories,
     rules: rules,
+    bankAccounts: config.bankAccounts,
+    securitySettings: {
+      hasSecurityPin: !!config.securityPinHash,
+      algorithm: 'PBKDF2-HMAC-SHA256',
+      iterations: PBKDF2_ITERATIONS,
+      saltBits: 128,
+      status: 'active'
+    },
     config: {
       husbandBaseContribution: Number(config.husbandBaseContribution) || 60000,
       wifeBaseContribution: Number(config.wifeBaseContribution) || 60000,
@@ -2956,6 +3066,92 @@ async function processNaturalLanguageMessage(supabase, text, userId) {
   const pairId = user?.pair_id || DEFAULT_PAIR_ID;
   const config = await getConfigData(supabase, pairId);
 
+  // 0. 口座残高・カード明細確認コマンド (v2.12.0 おしどり連携)
+  const balanceCheckRegex = /^(?:口座残高|預金残高|残高確認|カード明細|クレカ明細|口座|残高)$/i;
+  if (balanceCheckRegex.test(text)) {
+    const curMonth = getMonthDateRange(getCurrentMonth()).startDate.slice(0, 7);
+    const { startDate, endDate } = getMonthDateRange(curMonth);
+
+    // 当月の支出取得
+    const { data: monthTxs } = await supabase
+      .from('transactions')
+      .select('amount, payment_type, is_shared')
+      .eq('pair_id', pairId)
+      .gte('date', startDate)
+      .lte('date', endDate);
+
+    const bankAccounts = config.bankAccounts || getDefaultBankAccounts();
+    const sharedBankTotal = bankAccounts
+      .filter(a => a.type === 'shared_bank')
+      .reduce((sum, a) => sum + (Number(a.balance) || 0), 0);
+
+    const sharedCardUsage = (monthTxs || [])
+      .filter(t => t.is_shared && t.payment_type === 'shared_card')
+      .reduce((sum, t) => sum + (Number(t.amount) || 0), 0);
+
+    const sharedTransferUsage = (monthTxs || [])
+      .filter(t => t.is_shared && t.payment_type === 'shared_account')
+      .reduce((sum, t) => sum + (Number(t.amount) || 0), 0);
+
+    const nextBillingTotal = sharedCardUsage + sharedTransferUsage;
+    const projectedBalance = sharedBankTotal - nextBillingTotal;
+
+    let reply = `🏦【口座預金＆利用明細ボード】\n\n`;
+    reply += `■ 口座残高一覧:\n`;
+    bankAccounts.forEach(acc => {
+      const typeLabel = acc.type === 'shared_bank' ? '共有口座' : (acc.type === 'shared_card' ? '共同カード' : '個人口座');
+      reply += `・${acc.name} (${typeLabel}): ¥${Number(acc.balance || 0).toLocaleString()}\n`;
+    });
+
+    reply += `\n■ 次回自動引落シミュレーション:\n`;
+    reply += `・共有口座残高合計: ¥${sharedBankTotal.toLocaleString()}\n`;
+    reply += `・今月カード利用額: ¥${sharedCardUsage.toLocaleString()}\n`;
+    reply += `・口座振替（家賃等）: ¥${sharedTransferUsage.toLocaleString()}\n`;
+    reply += `・次回引落予定合計: ¥${nextBillingTotal.toLocaleString()}\n`;
+    reply += `──────────────\n`;
+    reply += `▶ 引落後予想残高: ¥${projectedBalance.toLocaleString()}\n`;
+
+    if (projectedBalance < 0) {
+      reply += `\n⚠️【残高不足警告】引落後に ¥${Math.abs(projectedBalance).toLocaleString()} 不足します！早めの口座入金をおすすめします。`;
+    } else if (projectedBalance < 10000) {
+      reply += `\n⚠️【残高注意】引落後の残高が1万円未満になります。`;
+    } else {
+      reply += `\n✨ 次回引落も残高十分で安心です！`;
+    }
+
+    reply += `\n\n💡 残高の更新は「口座残高 350000」や「残高 35万」と送るだけでいつでも即時反映されます。`;
+    return reply;
+  }
+
+  // 0-2. 口座残高即時更新コマンド (v2.12.0: 例:「口座残高 350000」「残高更新 385000」「残高 35万」)
+  const balanceUpdateMatch = text.match(/^(?:口座残高|残高更新|残高)\s*[:：]?\s*([0-9０-９万億,.\s]+)$/i);
+  if (balanceUpdateMatch) {
+    let rawAmountStr = balanceUpdateMatch[1].replace(/,/g, '').replace(/\s+/g, '');
+    rawAmountStr = rawAmountStr.replace(/[０-９]/g, s => String.fromCharCode(s.charCodeAt(0) - 0xFEE0));
+    let parsedAmount = 0;
+    if (rawAmountStr.includes('万')) {
+      const parts = rawAmountStr.split('万');
+      parsedAmount = (parseFloat(parts[0]) || 0) * 10000 + (parseFloat(parts[1]) || 0);
+    } else {
+      parsedAmount = parseInt(rawAmountStr, 10) || 0;
+    }
+
+    if (parsedAmount < 0) {
+      return '残高には0以上の数値を指定してください🙏';
+    }
+
+    const bankAccounts = config.bankAccounts || getDefaultBankAccounts();
+    let targetAcc = bankAccounts.find(a => a.type === 'shared_bank') || bankAccounts[0];
+    const prevBalance = targetAcc.balance;
+    targetAcc.balance = parsedAmount;
+    targetAcc.updatedAt = new Date().toISOString();
+
+    await setAppSetting(supabase, pairId, 'bankAccounts', bankAccounts);
+    await writeAudit(supabase, actor, pairId, '残高更新', '口座残高ボード', targetAcc.id, { balance: prevBalance }, { balance: parsedAmount, accountName: targetAcc.name });
+
+    return `🏦 ${targetAcc.name}の残高を【¥${parsedAmount.toLocaleString()}】に更新しました！✨\n（「口座残高」と送ると引落シミュレーションを確認できます）`;
+  }
+
   // 1. メンバー登録コマンド
   const regMatch = text.match(/^(.{1,15})として登録(?:\s+(.+))?$/);
   if (regMatch) {
@@ -3816,7 +4012,7 @@ async function handleHealthCheck(req) {
 
   return {
     success: true,
-    version: 'v2.11.0',
+    version: 'v2.12.0',
     resolvedUrl: resolvedUrl ? resolvedUrl.replace(/\/\/[^@]+@/, '//***@') : '未設定',
     keyType: keyType,
     env: envCheck,
@@ -3833,6 +4029,255 @@ async function handleHealthCheck(req) {
 // ==========================================
 // Vercel Serverless Function メインハンドラ
 // ==========================================
+
+
+// ==========================================
+// 口座預金＆クレカ明細・セキュリティ新機能ハンドラ (v2.12.0)
+// ==========================================
+
+/**
+ * 口座リスト・残高の更新 (updateBankAccounts)
+ */
+async function handleUpdateBankAccounts(supabase, actor, data) {
+  const pairId = getTargetPairId(actor, data);
+  const accounts = Array.isArray(data.bankAccounts) ? data.bankAccounts : [];
+
+  // 各口座データのサニタイズ
+  const sanitizedAccounts = accounts.map((acc, index) => ({
+    id: acc.id || `acc_${Date.now()}_${index}`,
+    name: String(acc.name || '口座名未設定').trim(),
+    type: ['shared_bank', 'personal_bank', 'shared_card', 'personal_card'].includes(acc.type) ? acc.type : 'shared_bank',
+    balance: Number(acc.balance) || 0,
+    institution: String(acc.institution || '').trim(),
+    note: String(acc.note || '').trim(),
+    updatedAt: acc.updatedAt || new Date().toISOString()
+  }));
+
+  await setAppSetting(supabase, pairId, 'bankAccounts', sanitizedAccounts);
+  await writeAudit(supabase, actor, pairId, '更新', '口座残高ボード', 'bankAccounts', null, { count: sanitizedAccounts.length });
+
+  return { success: true, bankAccounts: sanitizedAccounts };
+}
+
+/**
+ * クレカ/銀行明細の一括取り込み (importCardStatements)
+ */
+async function handleImportCardStatements(supabase, actor, data) {
+  const pairId = getTargetPairId(actor, data);
+  const items = Array.isArray(data.items) ? data.items : [];
+
+  if (items.length === 0) {
+    return { success: false, error: '登録する明細がありません' };
+  }
+
+  const actorSlot = resolvePayerSlot(actor?.name) || 'husband';
+  const defaultPayer = actorSlot === 'husband' ? '夫' : '妻';
+
+  const rowsToInsert = items.map(item => ({
+    pair_id: pairId,
+    date: item.date || new Date().toISOString().slice(0, 10),
+    title: String(item.title || '明細インポート').trim(),
+    amount: Math.abs(Number(item.amount) || 0),
+    category_id: String(item.category || '食費').trim(),
+    is_shared: item.isShared !== false,
+    payment_type: item.paymentType || 'shared_card',
+    payer_id: item.payer || (item.paymentType === 'shared_card' ? '共同カード' : (item.paymentType === 'shared_account' ? '共同口座' : defaultPayer)),
+    memo: String(item.memo || 'クレカ/明細取込').trim(),
+    created_by: actor?.name || '明細インポート'
+  }));
+
+  const { data: inserted, error } = await supabase.from('transactions').insert(rowsToInsert).select();
+  if (error) {
+    console.error('明細一括インポートエラー:', error);
+    return { success: false, error: '明細の保存に失敗しました: ' + error.message };
+  }
+
+  await writeAudit(supabase, actor, pairId, '一括取込', '取引', 'batch_import', null, { count: rowsToInsert.length });
+
+  return { success: true, count: rowsToInsert.length, transactions: inserted || [] };
+}
+
+/**
+ * 口座残高画面またはクレカ明細スクショのAI解析 (scanStatementOrBalance)
+ */
+async function handleScanStatementOrBalance(data, actor) {
+  if (!actor || (!actor.allowed && !actor.verified && !isDemoAllowed())) {
+    return { success: false, code: 'AUTH', error: '画像解析にはLINEログインとメンバー登録が必要です' };
+  }
+  const apiKey = normalizeEnvSecret(process.env.GEMINI_API_KEY);
+  if (!apiKey) return { success: false, error: 'Vercelの環境変数 GEMINI_API_KEY が未設定です' };
+
+  const mime = String(data.mimeType || 'image/jpeg');
+  const b64 = String(data.imageBase64 || '');
+  if (!['image/jpeg', 'image/png', 'image/webp'].includes(mime)) {
+    return { success: false, error: '対応していない画像形式です' };
+  }
+  if (!b64 || b64.length > 7000000) {
+    return { success: false, error: '画像が空、または大きすぎます' };
+  }
+
+  const prompt =
+    'これは日本の銀行アプリの残高画面、またはクレジットカード利用明細のキャプチャ画像です。\n' +
+    '画面の内容を精緻に判別し、以下のJSON形式で出力してください。\n' +
+    '【判別基準】\n' +
+    '1. 画面に通帳の預金残高や口座残高が大きく表示されている場合 -> screenType: "balance"\n' +
+    '2. 画面に利用履歴、支払明細、引落明細のリストが並んでいる場合 -> screenType: "statement"\n' +
+    '3. 残高と直近明細の両方が含まれる場合 -> screenType: "both"\n' +
+    '【出力JSONフォーマット】\n' +
+    '{\n' +
+    '  "screenType": "balance" または "statement" または "both",\n' +
+    '  "balanceInfo": {\n' +
+    '    "institution": "三井住友銀行 などの金融機関名またはカード会社名（不明なら空文字）",\n' +
+    '    "accountName": "普通預金 または 口座名",\n' +
+    '    "balance": 350000（残高の正の整数円。読み取れなければ null）\n' +
+    '  },\n' +
+    '  "detectedCard": "楽天カード / 三井住友カード / JCB等（推定できれば）",\n' +
+    '  "statements": [\n' +
+    '    {\n' +
+    '      "date": "yyyy-MM-dd",\n' +
+    '      "title": "利用店名・利用先（例: イオン、アマゾン、東京電力等）",\n' +
+    '      "amount": 3480（正の整数円）,\n' +
+    '      "category": "食費 / 日用品 / 光熱費 / 外食 / 交通費 / 衣服・美容 / その他 から最適推定",\n' +
+    '      "isShared": true\n' +
+    '    }\n' +
+    '  ]\n' +
+    '}\n' +
+    '必ず上記JSONのみを出力してください。';
+
+  const requestBody = {
+    contents: [{ parts: [{ text: prompt }, { inline_data: { mime_type: mime, data: b64 } }] }],
+    generationConfig: {
+      responseMimeType: 'application/json',
+      temperature: 0
+    }
+  };
+
+  const availableModels = await getAvailableGeminiModels(apiKey);
+  const customModel = normalizeEnvSecret(process.env.GEMINI_MODEL);
+  let modelsToTry = customModel ? [customModel, ...availableModels.filter(m => m !== customModel)] : availableModels;
+
+  let lastError = null;
+  for (const model of modelsToTry) {
+    try {
+      const url = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:generateContent`;
+      const ctrl = new AbortController();
+      const timer = setTimeout(() => ctrl.abort(), 12000);
+
+      const res = await fetch(url, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'x-goog-api-key': apiKey },
+        body: JSON.stringify(requestBody),
+        signal: ctrl.signal
+      });
+      clearTimeout(timer);
+
+      if (!res.ok) {
+        lastError = new Error(`Gemini HTTP ${res.status}`);
+        continue;
+      }
+
+      const json = await res.json();
+      const rawText = json?.candidates?.[0]?.content?.parts?.[0]?.text;
+      if (!rawText) continue;
+
+      let parsed = null;
+      try {
+        parsed = JSON.parse(rawText);
+      } catch (pe) {
+        const match = rawText.match(/\{[\s\S]*\}/);
+        if (match) parsed = JSON.parse(match[0]);
+      }
+
+      if (parsed) {
+        return {
+          success: true,
+          screenType: parsed.screenType || 'statement',
+          balanceInfo: parsed.balanceInfo || null,
+          detectedCard: parsed.detectedCard || '',
+          statements: Array.isArray(parsed.statements) ? parsed.statements : []
+        };
+      }
+    } catch (err) {
+      lastError = err;
+    }
+  }
+
+  return { success: false, error: '明細・残高画像の解析に失敗しました: ' + (lastError?.message || '不明なエラー') };
+}
+
+/**
+ * セキュリティPINの更新 (updateSecurityPin)
+ */
+async function handleUpdateSecurityPin(supabase, actor, data) {
+  const pairId = getTargetPairId(actor, data);
+  const pin = String(data.pin || '').trim();
+
+  if (!pin || pin.length < 4 || pin.length > 8) {
+    return { success: false, error: 'PINは4〜8桁の数字で指定してください' };
+  }
+
+  // 暗号学的ソルト付きハッシュ化 (PBKDF2-HMAC-SHA256, 100,000回)
+  const salt = generateSalt(16);
+  const hashedPin = hashSecretWithSalt(pin, salt, PBKDF2_ITERATIONS);
+
+  await setAppSetting(supabase, pairId, 'securityPinHash', hashedPin);
+  await writeAudit(supabase, actor, pairId, '変更', 'セキュリティPIN', 'securityPin', null, { algorithm: 'PBKDF2-HMAC-SHA256', iterations: PBKDF2_ITERATIONS });
+
+  return { success: true, message: 'セキュリティPINをソルト付きPBKDF2で安全に保存しました' };
+}
+
+/**
+ * セキュリティPINの照合・検証 (verifySecurityPin)
+ */
+async function handleVerifySecurityPin(supabase, actor, data) {
+  const pairId = getTargetPairId(actor, data);
+  const pin = String(data.pin || '').trim();
+
+  const storedHash = await getAppSetting(supabase, pairId, 'securityPinHash', null);
+  if (!storedHash) {
+    // PIN未設定の場合は常にOK
+    return { success: true, isConfigured: false, isValid: true };
+  }
+
+  const isValid = verifySecretWithSalt(pin, storedHash);
+  return { success: true, isConfigured: true, isValid: isValid };
+}
+
+/**
+ * ソルト付きハッシュのシミュレーション・体験API (testSaltedHash)
+ */
+async function handleTestSaltedHash(data, actor) {
+  const input = String(data.input || 'sample_secret_pin_1234');
+  const t0 = Date.now();
+
+  // 1回目のソルト付きハッシュ生成
+  const salt1 = generateSalt(16);
+  const hashRecord1 = hashSecretWithSalt(input, salt1, PBKDF2_ITERATIONS);
+
+  // 2回目のソルト付きハッシュ生成（同じ入力なのに全く異なるハッシュになることを証明）
+  const salt2 = generateSalt(16);
+  const hashRecord2 = hashSecretWithSalt(input, salt2, PBKDF2_ITERATIONS);
+
+  const durationMs = Date.now() - t0;
+
+  return {
+    success: true,
+    input: input,
+    algorithm: 'PBKDF2-HMAC-SHA256',
+    iterations: PBKDF2_ITERATIONS,
+    saltLengthBits: 128,
+    durationMs: durationMs,
+    sample1: {
+      salt: salt1,
+      hashRecord: hashRecord1
+    },
+    sample2: {
+      salt: salt2,
+      hashRecord: hashRecord2
+    },
+    explanation: '同一の入力であっても、毎回生成される128bitランダムソルトによりハッシュ値が完全に異なります。これによりレインボーテーブル辞書攻撃を100%無力化します。'
+  };
+}
 
 export default async function handler(req, res) {
   // CORSヘッダー設定
@@ -4001,7 +4446,7 @@ export default async function handler(req, res) {
       if (!actor.allowed) {
         return res.status(200).json({
           success: false,
-          version: 'v2.11.0',
+          version: 'v2.12.0',
           code: actor.code,
           error: actor.error,
           userId: actor.userId || '',

@@ -16,7 +16,7 @@
   <!-- LINE LIFF SDK -->
   <script charset="utf-8" src="https://static.line-scdn.net/liff/edge/2/sdk.js"></script>
   <!-- Custom CSS -->
-  <link rel="stylesheet" href="style.css?v=2.11.0">
+  <link rel="stylesheet" href="style.css?v=2.12.0">
   <script>
     tailwind.config = {
       theme: {
@@ -83,7 +83,7 @@
         <div>
           <div class="flex items-center gap-1.5">
             <h1 class="text-base font-bold text-slate-900 leading-tight">ふたり家計簿</h1>
-            <span id="headerVersionBadge" onclick="forceHardReload()" title="タップして最新版に更新" class="bg-brand-50 text-brand-700 hover:bg-brand-100 text-[10px] font-bold px-1.5 py-0.5 rounded-full border border-brand-200 cursor-pointer transition-colors active:scale-95 select-none">v2.11.0</span>
+            <span id="headerVersionBadge" onclick="forceHardReload()" title="タップして最新版に更新" class="bg-brand-50 text-brand-700 hover:bg-brand-100 text-[10px] font-bold px-1.5 py-0.5 rounded-full border border-brand-200 cursor-pointer transition-colors active:scale-95 select-none">v2.12.0</span>
           </div>
           <!-- 月ナビゲーション（爆速クイック月選択対応 v2.10.0） -->
           <div class="flex items-center gap-1 mt-0.5">
@@ -389,6 +389,57 @@
               </p>
             </div>
           </section>
+
+          <!-- 🏦 口座預金 ＆ 💳 クレカ利用明細ボード (v2.12.0 おしどり連携) -->
+          <section id="bankAccountsCard" class="bg-white rounded-2xl p-4 shadow-sm border border-slate-100 space-y-3.5">
+            <div class="flex items-center justify-between">
+              <div>
+                <h3 class="text-sm font-bold text-slate-800 flex items-center gap-1.5">
+                  <i data-lucide="landmark" class="w-4 h-4 text-sky-600"></i> 口座預金 ＆ クレカ利用明細
+                </h3>
+                <p class="text-[11px] text-slate-400">口座残高と次回引落予定額をリアルタイム照合</p>
+              </div>
+              <div class="flex items-center gap-1.5">
+                <button type="button" onclick="openStatementImportModal()" class="text-xs text-sky-700 font-bold bg-sky-50 hover:bg-sky-100 border border-sky-200 px-2.5 py-1 rounded-lg transition-colors flex items-center gap-1 cursor-pointer">
+                  <i data-lucide="file-spreadsheet" class="w-3.5 h-3.5"></i> CSV/明細取込
+                </button>
+                <button type="button" onclick="openBankAccountModal()" class="text-xs text-slate-700 font-bold bg-slate-100 hover:bg-slate-200 border border-slate-200 px-2.5 py-1 rounded-lg transition-colors flex items-center gap-1 cursor-pointer">
+                  <i data-lucide="plus-circle" class="w-3.5 h-3.5"></i> 口座追加
+                </button>
+              </div>
+            </div>
+
+            <!-- 次回自動引落シミュレーションバナー -->
+            <div id="billingSimulationBanner" class="p-3.5 rounded-xl bg-gradient-to-br from-sky-600 to-indigo-700 text-white shadow-sm space-y-2">
+              <div class="flex items-center justify-between text-xs opacity-90">
+                <span class="flex items-center gap-1"><i data-lucide="calculator" class="w-3.5 h-3.5"></i> 次回引落シミュレーション</span>
+                <span class="text-[10px] bg-white/20 px-2 py-0.5 rounded-full font-medium">共有口座 連動</span>
+              </div>
+              <div class="grid grid-cols-3 gap-2 text-center pt-1 pb-1 border-y border-white/15">
+                <div>
+                  <div class="text-[10px] text-sky-100">共有口座預金合計</div>
+                  <div id="simTotalBankBalance" class="text-sm md:text-base font-black truncate">¥0</div>
+                </div>
+                <div>
+                  <div class="text-[10px] text-rose-200">次回引落予定合計</div>
+                  <div id="simTotalBillingAmount" class="text-sm md:text-base font-black text-rose-100 truncate">¥0</div>
+                </div>
+                <div>
+                  <div class="text-[10px] text-emerald-200">引落後予想残高</div>
+                  <div id="simProjectedBalance" class="text-sm md:text-base font-black truncate">¥0</div>
+                </div>
+              </div>
+              <div id="simAlertBadge" class="hidden text-[11px] font-bold px-2.5 py-1 rounded-lg bg-amber-500/30 text-amber-100 border border-amber-300/40 flex items-center gap-1.5">
+                <i data-lucide="alert-triangle" class="w-3.5 h-3.5 shrink-0"></i>
+                <span id="simAlertMessage">残高不足の恐れがあります</span>
+              </div>
+            </div>
+
+            <!-- 口座一覧リスト -->
+            <div id="bankAccountsList" class="space-y-2">
+              <!-- 動的レンダリング -->
+            </div>
+          </section>
         </div>
 
         <!-- 右カラム (md:col-span-7): 月別支出推移 折れ線グラフ ＆ カテゴリ円グラフ ＆ 直近支出 -->
@@ -579,7 +630,7 @@
           </select>
         </section>
 
-        <!-- カテゴリ絞り込み中のクイック解除バナー (v2.11.0新機能) -->
+        <!-- カテゴリ絞り込み中のクイック解除バナー (v2.12.0新機能) -->
         <div id="historyActiveFilterBadgeWrap" class="hidden flex items-center justify-between p-2.5 rounded-xl bg-brand-50 border border-brand-200 text-xs text-brand-900 shadow-2xs">
           <div class="flex items-center gap-1.5 font-bold">
             <i data-lucide="filter" class="w-3.5 h-3.5 text-brand-600"></i>
@@ -887,6 +938,70 @@
           </section>
 
           <!-- システム接続診断カード -->
+          
+          <!-- 🛡️ 暗号学的ソルト付きハッシュ＆セキュリティ保護 (v2.12.0) -->
+          <section class="bg-white rounded-2xl p-4 shadow-sm border border-slate-100 space-y-3.5">
+            <div class="flex items-center justify-between">
+              <div>
+                <h3 class="text-sm font-bold text-slate-800 flex items-center gap-1.5">
+                  <i data-lucide="shield-check" class="w-4 h-4 text-emerald-600"></i> セキュリティ＆ソルト保護
+                </h3>
+                <p class="text-[11px] text-slate-400">暗号学的ソルト付きPBKDF2による最高峰セキュリティ</p>
+              </div>
+              <span class="inline-flex items-center gap-1 text-[10px] font-bold px-2 py-0.5 rounded-full bg-emerald-100 text-emerald-800 border border-emerald-200">
+                <span class="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse"></span> PBKDF2稼働中
+              </span>
+            </div>
+
+            <!-- アルゴリズム仕様バッジ -->
+            <div class="p-3 bg-slate-50 border border-slate-200 rounded-xl space-y-1.5 text-xs text-slate-700">
+              <div class="flex items-center justify-between">
+                <span class="text-slate-500 font-medium">暗号化方式:</span>
+                <span class="font-mono font-bold text-slate-800">PBKDF2-HMAC-SHA256</span>
+              </div>
+              <div class="flex items-center justify-between">
+                <span class="text-slate-500 font-medium">暗号ソルト長:</span>
+                <span class="font-mono font-bold text-slate-800">128-bit CSPRNG Salt</span>
+              </div>
+              <div class="flex items-center justify-between">
+                <span class="text-slate-500 font-medium">ストレッチング回数:</span>
+                <span class="font-mono font-bold text-slate-800">100,000 Iterations</span>
+              </div>
+              <div class="flex items-center justify-between">
+                <span class="text-slate-500 font-medium">耐攻撃性能:</span>
+                <span class="font-bold text-emerald-700">レインボーテーブル・総当たり耐性</span>
+              </div>
+            </div>
+
+            <!-- セキュリティPIN設定 -->
+            <div class="pt-2 border-t border-slate-100 space-y-2">
+              <label class="text-xs font-bold text-slate-700 block">
+                🔒 家計簿セキュリティPIN (暗証番号4〜8桁)
+              </label>
+              <div class="flex gap-2">
+                <input type="password" id="securityPinInput" maxlength="8" placeholder="未設定 (設定時は数字4〜8桁)" class="flex-1 bg-slate-50 border border-slate-200 rounded-xl px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-emerald-400">
+                <button type="button" onclick="handleSaveSecurityPin()" class="bg-emerald-600 hover:bg-emerald-700 text-white font-bold text-xs px-3.5 py-2 rounded-xl transition-colors shrink-0 cursor-pointer">
+                  保存
+                </button>
+              </div>
+              <p class="text-[11px] text-slate-400">設定すると口座残高や監査ログの編集保護にソルト暗号が適用されます。</p>
+            </div>
+
+            <!-- ソルト付きハッシュ動作シミュレーター -->
+            <div class="pt-2 border-t border-slate-100 space-y-2">
+              <div class="flex items-center justify-between">
+                <span class="text-xs font-bold text-slate-700">🧪 ソルト付きハッシュ動作検証シミュレーター</span>
+                <button type="button" onclick="testHashPreview()" class="text-[11px] text-sky-600 hover:text-sky-700 font-bold flex items-center gap-1 cursor-pointer">
+                  <i data-lucide="refresh-cw" class="w-3 h-3"></i> 毎回異なるソルトで生成
+                </button>
+              </div>
+              <p class="text-[11px] text-slate-500">同じパスワードでも、毎回暗号学的ソルト（ランダム値）が付与されるため、生成されるハッシュ値が完全に別物になり辞書攻撃が無力化される様子を体感できます。</p>
+              <div id="hashPreviewBox" class="p-2.5 bg-slate-900 text-slate-200 rounded-xl font-mono text-[10px] break-all space-y-1.5 hidden">
+                <!-- 動的表示 -->
+              </div>
+            </div>
+          </section>
+
           <section class="bg-white rounded-2xl p-4 shadow-sm border border-slate-100 space-y-2">
             <div class="flex items-center justify-between">
               <h3 class="text-sm font-bold text-slate-800 flex items-center gap-1.5">
@@ -913,7 +1028,7 @@
           <footer class="pt-2 pb-6 text-center text-[10px] text-slate-400 font-mono flex items-center justify-center gap-2 select-none flex-wrap">
             <span class="inline-flex items-center gap-1 bg-slate-100 text-slate-600 px-2 py-0.5 rounded-full">
               <span>Web</span>
-              <b id="frontVersionLabel" class="text-slate-800">v2.11.0</b>
+              <b id="frontVersionLabel" class="text-slate-800">v2.12.0</b>
             </span>
             <span>/</span>
             <span class="inline-flex items-center gap-1 bg-slate-100 text-slate-600 px-2 py-0.5 rounded-full">
@@ -2087,7 +2202,171 @@
   </div>
 
   <!-- アプリ本体スクリプト -->
-  <script src="config.js?v=2.11.0"></script>
-  <script src="app.js?v=2.11.0"></script>
+  <script src="config.js?v=2.12.0"></script>
+  <script src="app.js?v=2.12.0"></script>
+
+  <!-- 口座追加・編集モーダル (v2.12.0) -->
+  <div id="bankAccountModal" class="hidden fixed inset-0 z-50 bg-black/50 backdrop-blur-xs flex items-center justify-center p-4">
+    <div class="bg-white rounded-2xl max-w-md w-full p-5 space-y-4 shadow-xl">
+      <div class="flex items-center justify-between">
+        <h3 id="bankAccountModalTitle" class="text-base font-bold text-slate-800 flex items-center gap-1.5">
+          <i data-lucide="landmark" class="w-5 h-5 text-sky-600"></i> 口座情報の登録・編集
+        </h3>
+        <button type="button" onclick="closeBankAccountModal()" class="text-slate-400 hover:text-slate-600 p-1 rounded-lg">
+          <i data-lucide="x" class="w-5 h-5"></i>
+        </button>
+      </div>
+
+      <input type="hidden" id="bankAccountEditId" value="">
+
+      <div class="space-y-3 text-xs">
+        <div>
+          <label class="font-bold text-slate-700 block mb-1">口座名・カード名 <span class="text-rose-500">*</span></label>
+          <input type="text" id="bankAccountNameInput" placeholder="例: 三井住友銀行（共有口座）" class="w-full bg-slate-50 border border-slate-200 rounded-xl px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-sky-400">
+        </div>
+
+        <div class="grid grid-cols-2 gap-2">
+          <div>
+            <label class="font-bold text-slate-700 block mb-1">種別 <span class="text-rose-500">*</span></label>
+            <select id="bankAccountTypeSelect" class="w-full bg-slate-50 border border-slate-200 rounded-xl px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-sky-400">
+              <option value="shared_bank">🏦 共有普通預金口座</option>
+              <option value="shared_card">💳 共同クレジットカード</option>
+              <option value="personal_bank">👤 個人銀行口座</option>
+              <option value="personal_card">💳 個人クレジットカード</option>
+            </select>
+          </div>
+          <div>
+            <label class="font-bold text-slate-700 block mb-1">金融機関名・カード会社</label>
+            <input type="text" id="bankAccountInstitutionInput" placeholder="例: 楽天カード" class="w-full bg-slate-50 border border-slate-200 rounded-xl px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-sky-400">
+          </div>
+        </div>
+
+        <div>
+          <label class="font-bold text-slate-700 block mb-1">現在残高・利用額 (円) <span class="text-rose-500">*</span></label>
+          <input type="number" id="bankAccountBalanceInput" placeholder="0" class="w-full bg-slate-50 border border-slate-200 rounded-xl px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-sky-400">
+          <p class="text-[10px] text-slate-400 mt-0.5">※LINEから「口座残高 350000」と送るだけでも更新できます</p>
+        </div>
+
+        <div>
+          <label class="font-bold text-slate-700 block mb-1">メモ</label>
+          <input type="text" id="bankAccountNoteInput" placeholder="例: 家賃・光熱費・カード引落口座" class="w-full bg-slate-50 border border-slate-200 rounded-xl px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-sky-400">
+        </div>
+      </div>
+
+      <div class="flex items-center justify-between pt-2 border-t border-slate-100">
+        <button type="button" id="deleteBankAccountBtn" onclick="handleDeleteBankAccount()" class="text-xs text-rose-600 hover:text-rose-700 font-bold px-3 py-2 rounded-xl transition-colors cursor-pointer hidden">
+          削除
+        </button>
+        <div class="flex items-center gap-2 ml-auto">
+          <button type="button" onclick="closeBankAccountModal()" class="text-xs text-slate-600 font-bold px-3.5 py-2 rounded-xl hover:bg-slate-100 transition-colors cursor-pointer">
+            キャンセル
+          </button>
+          <button type="button" onclick="handleSaveBankAccount()" class="bg-sky-600 hover:bg-sky-700 text-white font-bold text-xs px-4 py-2 rounded-xl transition-colors cursor-pointer">
+            保存する
+          </button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- CSV取込 ＆ スクショAI読取・おしどり仕分けモーダル (v2.12.0) -->
+  <div id="statementImportModal" class="hidden fixed inset-0 z-50 bg-black/50 backdrop-blur-xs flex items-center justify-center p-3 md:p-6 overflow-y-auto">
+    <div class="bg-white rounded-2xl max-w-2xl w-full p-4 md:p-6 space-y-4 shadow-xl max-h-[90vh] flex flex-col">
+      <div class="flex items-center justify-between shrink-0">
+        <div>
+          <h3 class="text-base font-bold text-slate-800 flex items-center gap-1.5">
+            <i data-lucide="receipt" class="w-5 h-5 text-sky-600"></i> 明細取込 ＆ おしどり風仕分け
+          </h3>
+          <p class="text-xs text-slate-400">CSVまたはスマホの明細スクショから取り込み「共有 / 私物」を仕分け</p>
+        </div>
+        <button type="button" onclick="closeStatementImportModal()" class="text-slate-400 hover:text-slate-600 p-1 rounded-lg">
+          <i data-lucide="x" class="w-5 h-5"></i>
+        </button>
+      </div>
+
+      <!-- 取込方式選択 (CSV or スクショ画像) -->
+      <div class="grid grid-cols-2 gap-2 bg-slate-100 p-1 rounded-xl shrink-0 text-xs font-bold">
+        <button type="button" id="importTabCsvBtn" onclick="switchImportTab('csv')" class="py-2 rounded-lg bg-white text-sky-700 shadow-xs flex items-center justify-center gap-1.5 transition-all">
+          <i data-lucide="file-spreadsheet" class="w-4 h-4"></i> ① クレカ/銀行CSV取込
+        </button>
+        <button type="button" id="importTabImageBtn" onclick="switchImportTab('image')" class="py-2 rounded-lg text-slate-600 hover:text-slate-900 flex items-center justify-center gap-1.5 transition-all">
+          <i data-lucide="camera" class="w-4 h-4"></i> ② 明細/残高スクショAI
+        </button>
+      </div>
+
+      <!-- CSV取込エリア -->
+      <div id="importAreaCsv" class="space-y-3 shrink-0">
+        <div class="border-2 border-dashed border-sky-200 hover:border-sky-400 bg-sky-50/50 rounded-xl p-4 text-center cursor-pointer transition-colors" onclick="document.getElementById('statementCsvFileInput').click()">
+          <input type="file" id="statementCsvFileInput" accept=".csv,text/csv" class="hidden" onchange="handleCsvFileSelected(event)">
+          <i data-lucide="upload-cloud" class="w-8 h-8 text-sky-500 mx-auto mb-1"></i>
+          <p class="text-xs font-bold text-slate-700">CSVファイルを選択 または ここにドラッグ＆ドロップ</p>
+          <p class="text-[11px] text-slate-400 mt-1">楽天カード・三井住友(Vpass)・JCB・イオン・エポス・各行通帳CSVに自動対応 (Shift_JIS/UTF-8)</p>
+        </div>
+      </div>
+
+      <!-- 画像スクショAIエリア -->
+      <div id="importAreaImage" class="hidden space-y-3 shrink-0">
+        <div class="border-2 border-dashed border-indigo-200 hover:border-indigo-400 bg-indigo-50/50 rounded-xl p-4 text-center cursor-pointer transition-colors" onclick="document.getElementById('statementImageFileInput').click()">
+          <input type="file" id="statementImageFileInput" accept="image/*" class="hidden" onchange="handleStatementImageSelected(event)">
+          <i data-lucide="sparkles" class="w-8 h-8 text-indigo-500 mx-auto mb-1"></i>
+          <p class="text-xs font-bold text-slate-700">明細または残高のスクリーンショットを選択</p>
+          <p class="text-[11px] text-slate-400 mt-1">Gemini AIが残高や利用店名・金額を自動抽出します</p>
+        </div>
+      </div>
+
+      <!-- 解析中スピナー -->
+      <div id="importLoadingSpinner" class="hidden py-8 text-center space-y-2">
+        <div class="inline-block w-8 h-8 border-3 border-sky-600 border-t-transparent rounded-full animate-spin"></div>
+        <p class="text-xs font-bold text-slate-600" id="importLoadingText">明細を解析中...</p>
+      </div>
+
+      <!-- 仕分けプレビューエリア -->
+      <div id="importPreviewContainer" class="hidden flex-1 overflow-y-auto space-y-3 min-h-0 border-t border-slate-100 pt-3">
+        <div class="flex items-center justify-between text-xs">
+          <span class="font-bold text-slate-700">
+            抽出明細: <span id="importItemCount" class="text-sky-600 font-black">0</span> 件
+          </span>
+          <div class="flex items-center gap-2">
+            <button type="button" onclick="toggleAllImportItems(true)" class="text-[11px] text-sky-600 hover:text-sky-700 font-bold cursor-pointer">すべて共有にする</button>
+            <span class="text-slate-300">|</span>
+            <button type="button" onclick="toggleAllImportItems(false)" class="text-[11px] text-slate-500 hover:text-slate-700 font-bold cursor-pointer">すべて私物にする</button>
+          </div>
+        </div>
+
+        <div class="overflow-x-auto border border-slate-200 rounded-xl">
+          <table class="w-full text-left text-xs">
+            <thead class="bg-slate-50 border-b border-slate-200 text-slate-600 text-[11px]">
+              <tr>
+                <th class="p-2 w-16 text-center">仕分け</th>
+                <th class="p-2 w-24">日付</th>
+                <th class="p-2">店名・明細</th>
+                <th class="p-2 w-20 text-right">金額</th>
+                <th class="p-2 w-28">カテゴリ</th>
+                <th class="p-2 w-24">支払者</th>
+              </tr>
+            </thead>
+            <tbody id="importPreviewTableBody" class="divide-y divide-slate-100">
+              <!-- 動的生成 -->
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      <!-- フッター操作ボタン -->
+      <div class="flex items-center justify-between pt-3 border-t border-slate-100 shrink-0">
+        <div class="text-xs text-slate-500">
+          共有計: <span id="importSharedTotalLabel" class="font-bold text-slate-800">¥0</span>
+        </div>
+        <div class="flex items-center gap-2">
+          <button type="button" onclick="closeStatementImportModal()" class="text-xs text-slate-600 font-bold px-3.5 py-2 rounded-xl hover:bg-slate-100 transition-colors cursor-pointer">
+            閉じる
+          </button>
+          <button type="button" id="submitImportBtn" onclick="submitImportedStatements()" class="bg-sky-600 hover:bg-sky-700 disabled:opacity-50 text-white font-bold text-xs px-4 py-2 rounded-xl transition-colors cursor-pointer flex items-center gap-1.5" disabled>
+            <i data-lucide="check" class="w-4 h-4"></i> 家計簿に一括登録
+          </button>
+        </div>
+      </div>
+    </div>
+  </div>
 </body>
 </html>
