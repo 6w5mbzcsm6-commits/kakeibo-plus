@@ -1285,6 +1285,9 @@ async function callGas(action, data, extra = {}) {
   }
 }
 
+// API通信関数のエイリアス (v2.12.0 互換性確保)
+const callApi = (...args) => api(...args);
+
 async function api(action, data = {}, extra = {}) {
   if (state.isMockMode) {
     return await mockApi(action, data);
@@ -5987,7 +5990,7 @@ async function handleSaveBankAccount() {
   // バックエンドへ保存
   if (!state.isMockMode) {
     try {
-      await callApi('updateBankAccounts', { bankAccounts: state.bankAccounts });
+      await api('updateBankAccounts', { bankAccounts: state.bankAccounts });
     } catch (e) {
       console.warn('口座情報のバックエンド保存失敗:', e);
     }
@@ -6015,7 +6018,7 @@ async function handleDeleteBankAccount() {
 
   if (!state.isMockMode) {
     try {
-      await callApi('updateBankAccounts', { bankAccounts: state.bankAccounts });
+      await api('updateBankAccounts', { bankAccounts: state.bankAccounts });
     } catch (e) {
       console.warn('口座削除のバックエンド保存失敗:', e);
     }
@@ -6207,7 +6210,7 @@ async function handleStatementImageSelected(event) {
       const [mimePrefix, base64] = dataUrl.split(',');
       const mime = mimePrefix.match(/:(.*?);/)?.[1] || 'image/jpeg';
 
-      const res = await callApi('scanStatementOrBalance', { mimeType: mime, imageBase64: base64 });
+      const res = await api('scanStatementOrBalance', { mimeType: mime, imageBase64: base64 });
       if (spinner) spinner.classList.add('hidden');
 
       if (!res || !res.success) {
@@ -6225,7 +6228,7 @@ async function handleStatementImageSelected(event) {
             target.balance = bal;
             target.updatedAt = new Date().toISOString();
             renderBankAccountsCard();
-            callApi('updateBankAccounts', { bankAccounts: state.bankAccounts }).catch(() => {});
+            api('updateBankAccounts', { bankAccounts: state.bankAccounts }).catch(() => {});
             showToast(`残高を ¥${bal.toLocaleString()} に更新しました✨`, 'success');
           }
         }
@@ -6375,7 +6378,7 @@ async function submitImportedStatements() {
   }
 
   try {
-    const res = await callApi('importCardStatements', { items: selectedItems });
+    const res = await api('importCardStatements', { items: selectedItems });
     if (!res || !res.success) {
       throw new Error(res?.error || '明細の登録に失敗しました');
     }
@@ -6407,7 +6410,7 @@ async function handleSaveSecurityPin() {
   }
 
   try {
-    const res = await callApi('updateSecurityPin', { pin });
+    const res = await api('updateSecurityPin', { pin });
     if (res && res.success) {
       showToast('🛡️ セキュリティPINをソルト付きPBKDF2で保存しました！', 'success');
       pinInput.value = '';
@@ -6431,7 +6434,7 @@ async function testHashPreview() {
   box.innerHTML = '<span class="text-slate-400">PBKDF2ストレッチング中... (100,000回計算)</span>';
 
   try {
-    const res = await callApi('testSaltedHash', { input: 'user_secret_pin_7788' });
+    const res = await api('testSaltedHash', { input: 'user_secret_pin_7788' });
     if (!res || !res.success) {
       box.textContent = 'シミュレーションエラー';
       return;

@@ -3066,92 +3066,6 @@ async function processNaturalLanguageMessage(supabase, text, userId) {
   const pairId = user?.pair_id || DEFAULT_PAIR_ID;
   const config = await getConfigData(supabase, pairId);
 
-  // 0. 口座残高・カード明細確認コマンド (v2.12.0 おしどり連携)
-  const balanceCheckRegex = /^(?:口座残高|預金残高|残高確認|カード明細|クレカ明細|口座|残高)$/i;
-  if (balanceCheckRegex.test(text)) {
-    const curMonth = getMonthDateRange(getCurrentMonth()).startDate.slice(0, 7);
-    const { startDate, endDate } = getMonthDateRange(curMonth);
-
-    // 当月の支出取得
-    const { data: monthTxs } = await supabase
-      .from('transactions')
-      .select('amount, payment_type, is_shared')
-      .eq('pair_id', pairId)
-      .gte('date', startDate)
-      .lte('date', endDate);
-
-    const bankAccounts = config.bankAccounts || getDefaultBankAccounts();
-    const sharedBankTotal = bankAccounts
-      .filter(a => a.type === 'shared_bank')
-      .reduce((sum, a) => sum + (Number(a.balance) || 0), 0);
-
-    const sharedCardUsage = (monthTxs || [])
-      .filter(t => t.is_shared && t.payment_type === 'shared_card')
-      .reduce((sum, t) => sum + (Number(t.amount) || 0), 0);
-
-    const sharedTransferUsage = (monthTxs || [])
-      .filter(t => t.is_shared && t.payment_type === 'shared_account')
-      .reduce((sum, t) => sum + (Number(t.amount) || 0), 0);
-
-    const nextBillingTotal = sharedCardUsage + sharedTransferUsage;
-    const projectedBalance = sharedBankTotal - nextBillingTotal;
-
-    let reply = `🏦【口座預金＆利用明細ボード】\n\n`;
-    reply += `■ 口座残高一覧:\n`;
-    bankAccounts.forEach(acc => {
-      const typeLabel = acc.type === 'shared_bank' ? '共有口座' : (acc.type === 'shared_card' ? '共同カード' : '個人口座');
-      reply += `・${acc.name} (${typeLabel}): ¥${Number(acc.balance || 0).toLocaleString()}\n`;
-    });
-
-    reply += `\n■ 次回自動引落シミュレーション:\n`;
-    reply += `・共有口座残高合計: ¥${sharedBankTotal.toLocaleString()}\n`;
-    reply += `・今月カード利用額: ¥${sharedCardUsage.toLocaleString()}\n`;
-    reply += `・口座振替（家賃等）: ¥${sharedTransferUsage.toLocaleString()}\n`;
-    reply += `・次回引落予定合計: ¥${nextBillingTotal.toLocaleString()}\n`;
-    reply += `──────────────\n`;
-    reply += `▶ 引落後予想残高: ¥${projectedBalance.toLocaleString()}\n`;
-
-    if (projectedBalance < 0) {
-      reply += `\n⚠️【残高不足警告】引落後に ¥${Math.abs(projectedBalance).toLocaleString()} 不足します！早めの口座入金をおすすめします。`;
-    } else if (projectedBalance < 10000) {
-      reply += `\n⚠️【残高注意】引落後の残高が1万円未満になります。`;
-    } else {
-      reply += `\n✨ 次回引落も残高十分で安心です！`;
-    }
-
-    reply += `\n\n💡 残高の更新は「口座残高 350000」や「残高 35万」と送るだけでいつでも即時反映されます。`;
-    return reply;
-  }
-
-  // 0-2. 口座残高即時更新コマンド (v2.12.0: 例:「口座残高 350000」「残高更新 385000」「残高 35万」)
-  const balanceUpdateMatch = text.match(/^(?:口座残高|残高更新|残高)\s*[:：]?\s*([0-9０-９万億,.\s]+)$/i);
-  if (balanceUpdateMatch) {
-    let rawAmountStr = balanceUpdateMatch[1].replace(/,/g, '').replace(/\s+/g, '');
-    rawAmountStr = rawAmountStr.replace(/[０-９]/g, s => String.fromCharCode(s.charCodeAt(0) - 0xFEE0));
-    let parsedAmount = 0;
-    if (rawAmountStr.includes('万')) {
-      const parts = rawAmountStr.split('万');
-      parsedAmount = (parseFloat(parts[0]) || 0) * 10000 + (parseFloat(parts[1]) || 0);
-    } else {
-      parsedAmount = parseInt(rawAmountStr, 10) || 0;
-    }
-
-    if (parsedAmount < 0) {
-      return '残高には0以上の数値を指定してください🙏';
-    }
-
-    const bankAccounts = config.bankAccounts || getDefaultBankAccounts();
-    let targetAcc = bankAccounts.find(a => a.type === 'shared_bank') || bankAccounts[0];
-    const prevBalance = targetAcc.balance;
-    targetAcc.balance = parsedAmount;
-    targetAcc.updatedAt = new Date().toISOString();
-
-    await setAppSetting(supabase, pairId, 'bankAccounts', bankAccounts);
-    await writeAudit(supabase, actor, pairId, '残高更新', '口座残高ボード', targetAcc.id, { balance: prevBalance }, { balance: parsedAmount, accountName: targetAcc.name });
-
-    return `🏦 ${targetAcc.name}の残高を【¥${parsedAmount.toLocaleString()}】に更新しました！✨\n（「口座残高」と送ると引落シミュレーションを確認できます）`;
-  }
-
   // 1. メンバー登録コマンド
   const regMatch = text.match(/^(.{1,15})として登録(?:\s+(.+))?$/);
   if (regMatch) {
@@ -3642,6 +3556,142 @@ async function processNaturalLanguageMessage(supabase, text, userId) {
       `📊 平均相場: ¥${avgPrice}\n` +
       (topStores ? `\n🏪 店舗別ランキング:\n${topStores}\n` : '') +
       `━━━━━━━━━━━━━━`;
+  }
+
+  // 11-2. 口座残高即時更新コマンド (v2.12.0 おしどり連携)
+  // 例:「口座残高 350000」「残高更新 385000」「残高 35万」「預金残高 300,000円」
+  const balanceUpdateMatch = text.match(/^(?:口座残高|残高更新|預金残高|残高)\s*[:：]?\s*([0-9０-９,，万億.\s]+)\s*円?$/i);
+  if (balanceUpdateMatch) {
+    let rawAmountStr = balanceUpdateMatch[1].replace(/[,，]/g, '').replace(/\s+/g, '');
+    rawAmountStr = rawAmountStr.replace(/[０-９]/g, s => String.fromCharCode(s.charCodeAt(0) - 0xFEE0));
+    let parsedAmount = 0;
+    if (rawAmountStr.includes('万')) {
+      const parts = rawAmountStr.split('万');
+      parsedAmount = (parseFloat(parts[0]) || 0) * 10000 + (parseFloat(parts[1]) || 0);
+    } else if (rawAmountStr.includes('億')) {
+      const parts = rawAmountStr.split('億');
+      parsedAmount = (parseFloat(parts[0]) || 0) * 100000000 + (parseFloat(parts[1]) || 0);
+    } else {
+      parsedAmount = parseInt(rawAmountStr, 10) || 0;
+    }
+
+    if (isNaN(parsedAmount) || parsedAmount < 0) {
+      return '残高には0以上の数値を指定してください🙏\n例:「口座残高 350000」「残高 35万」';
+    }
+
+    let bankAccounts = config.bankAccounts || [];
+    if (!Array.isArray(bankAccounts) || bankAccounts.length === 0) {
+      bankAccounts = getDefaultBankAccounts();
+    }
+
+    let targetAcc = bankAccounts.find(a => a.type === 'shared_bank');
+    if (!targetAcc) {
+      targetAcc = bankAccounts[0];
+    }
+    if (!targetAcc) {
+      targetAcc = { id: 'bank_default_shared', name: '共有メイン口座', type: 'shared_bank', balance: parsedAmount, updatedAt: new Date().toISOString() };
+      bankAccounts.push(targetAcc);
+    } else {
+      targetAcc.balance = parsedAmount;
+      targetAcc.updatedAt = new Date().toISOString();
+    }
+
+    await setAppSetting(supabase, pairId, 'bankAccounts', bankAccounts);
+    await writeAudit(supabase, actor, pairId, '残高更新', '口座残高ボード', targetAcc.id, null, { balance: parsedAmount, accountName: targetAcc.name });
+
+    // 次回引落予定額（当月利用分: 共同カード + 共同口座振替）を計算
+    const curMonth = getMonthDateRange(getCurrentMonth()).startDate.slice(0, 7);
+    const { startDate, endDate } = getMonthDateRange(curMonth);
+    const { data: monthTxs } = await supabase
+      .from('transactions')
+      .select('amount, payment_type, is_shared')
+      .eq('pair_id', pairId)
+      .gte('date', startDate)
+      .lte('date', endDate);
+
+    const sharedBankTotal = bankAccounts
+      .filter(a => a.type === 'shared_bank')
+      .reduce((sum, a) => sum + (Number(a.balance) || 0), 0);
+
+    const sharedCardUsage = (monthTxs || [])
+      .filter(t => t.is_shared && t.payment_type === 'shared_card')
+      .reduce((sum, t) => sum + (Number(t.amount) || 0), 0);
+
+    const sharedTransferUsage = (monthTxs || [])
+      .filter(t => t.is_shared && t.payment_type === 'shared_account')
+      .reduce((sum, t) => sum + (Number(t.amount) || 0), 0);
+
+    const nextBillingTotal = sharedCardUsage + sharedTransferUsage;
+    const projectedBalance = sharedBankTotal - nextBillingTotal;
+
+    let reply = `🏦 ${targetAcc.name}の預金残高を【¥${parsedAmount.toLocaleString()}】に更新しました！✨\n\n`;
+    reply += `💳 次回引落予定: ¥${nextBillingTotal.toLocaleString()} (カード¥${sharedCardUsage.toLocaleString()} + 口座振替¥${sharedTransferUsage.toLocaleString()})\n`;
+    reply += `💰 引落後予想残高: ¥${projectedBalance.toLocaleString()}`;
+
+    if (projectedBalance < 0) {
+      reply += `\n⚠️【残高不足警告】引落後に ¥${Math.abs(projectedBalance).toLocaleString()} 不足します！早めの口座入金が必要です。`;
+    } else if (projectedBalance < 10000) {
+      reply += `\n⚠️【残高注意】引落後の残高が1万円未満になります。`;
+    }
+
+    return reply;
+  }
+
+  // 11-3. 口座残高照会コマンド (v2.12.0 おしどり連携)
+  // 例:「口座残高」「残高確認」「預金残高」「口座確認」「引落予定」「引き落とし予定」「カード明細」「クレカ明細」「口座」「残高」
+  const balanceCheckRegex = /^(?:口座残高|残高確認|預金残高|口座確認|引落予定|引き落とし予定|カード明細|クレカ明細|口座|残高)$/i;
+  if (balanceCheckRegex.test(text)) {
+    const curMonth = getMonthDateRange(getCurrentMonth()).startDate.slice(0, 7);
+    const { startDate, endDate } = getMonthDateRange(curMonth);
+
+    const { data: monthTxs } = await supabase
+      .from('transactions')
+      .select('amount, payment_type, is_shared')
+      .eq('pair_id', pairId)
+      .gte('date', startDate)
+      .lte('date', endDate);
+
+    const bankAccounts = config.bankAccounts || getDefaultBankAccounts();
+    const sharedBankTotal = bankAccounts
+      .filter(a => a.type === 'shared_bank')
+      .reduce((sum, a) => sum + (Number(a.balance) || 0), 0);
+
+    const sharedCardUsage = (monthTxs || [])
+      .filter(t => t.is_shared && t.payment_type === 'shared_card')
+      .reduce((sum, t) => sum + (Number(t.amount) || 0), 0);
+
+    const sharedTransferUsage = (monthTxs || [])
+      .filter(t => t.is_shared && t.payment_type === 'shared_account')
+      .reduce((sum, t) => sum + (Number(t.amount) || 0), 0);
+
+    const nextBillingTotal = sharedCardUsage + sharedTransferUsage;
+    const projectedBalance = sharedBankTotal - nextBillingTotal;
+
+    let reply = `🏦【口座預金＆次回引落シミュレーション】\n\n`;
+    reply += `■ 口座残高一覧:\n`;
+    bankAccounts.forEach(acc => {
+      const typeLabel = acc.type === 'shared_bank' ? '共有口座' : (acc.type === 'shared_card' ? '共同カード' : '個人口座');
+      reply += `・${acc.name} (${typeLabel}): ¥${Number(acc.balance || 0).toLocaleString()}\n`;
+    });
+
+    reply += `\n■ 次回引落シミュレーション:\n`;
+    reply += `・共有口座預金合計: ¥${sharedBankTotal.toLocaleString()}\n`;
+    reply += `・今月カード利用額: ¥${sharedCardUsage.toLocaleString()}\n`;
+    reply += `・口座振替（家賃等）: ¥${sharedTransferUsage.toLocaleString()}\n`;
+    reply += `・次回引落予定合計: ¥${nextBillingTotal.toLocaleString()}\n`;
+    reply += `──────────────\n`;
+    reply += `💰 引落後予想残高: ¥${projectedBalance.toLocaleString()}\n`;
+
+    if (projectedBalance < 0) {
+      reply += `\n⚠️【残高不足警告】引落後に ¥${Math.abs(projectedBalance).toLocaleString()} 不足します！早めの口座入金をおすすめします。`;
+    } else if (projectedBalance < 10000) {
+      reply += `\n⚠️【残高注意】引落後の残高が1万円未満になります。`;
+    } else {
+      reply += `\n✨ 次回引落も残高十分で安心です！`;
+    }
+
+    reply += `\n\n💡 残高の更新は「口座残高 350000」や「残高 35万」と送るだけでいつでも即時反映されます。`;
+    return reply;
   }
 
   // 12. 支出入力パーサー
@@ -4554,6 +4604,24 @@ export default async function handler(req, res) {
           break;
         case 'getAuditLog':
           result = await handleGetAuditLog(supabase, data, actor);
+          break;
+        case 'updateBankAccounts':
+          result = await handleUpdateBankAccounts(supabase, actor, data);
+          break;
+        case 'importCardStatements':
+          result = await handleImportCardStatements(supabase, actor, data);
+          break;
+        case 'scanStatementOrBalance':
+          result = await handleScanStatementOrBalance(data, actor);
+          break;
+        case 'updateSecurityPin':
+          result = await handleUpdateSecurityPin(supabase, actor, data);
+          break;
+        case 'verifySecurityPin':
+          result = await handleVerifySecurityPin(supabase, actor, data);
+          break;
+        case 'testSaltedHash':
+          result = await handleTestSaltedHash(data, actor);
           break;
         default:
           result = { success: false, error: `未定義のアクション: ${action}` };
