@@ -2988,9 +2988,12 @@ async function getMonthlyReportData(supabase, actor, pairId, targetMonth) {
   const s = initData.summary || {};
   const config = await getConfigData(supabase, pairId);
 
-  // カテゴリ別支出集計
+  // カテゴリ別支出集計（共同支出を優先し、0件の場合は当月全支出を集計してグラフ生成）
   const catSums = {};
-  (initData.transactions || []).filter(t => t.isShared).forEach(t => {
+  const sharedTxs = (initData.transactions || []).filter(t => t.isShared);
+  const targetTxsForChart = sharedTxs.length > 0 ? sharedTxs : (initData.transactions || []);
+  const chartTotalAmount = targetTxsForChart.reduce((sum, t) => sum + Number(t.amount || 0), 0);
+  targetTxsForChart.forEach(t => {
     const c = t.category || '未分類';
     catSums[c] = (catSums[c] || 0) + Number(t.amount || 0);
   });
@@ -3016,7 +3019,7 @@ async function getMonthlyReportData(supabase, actor, pairId, targetMonth) {
       options: {
         plugins: {
           legend: { position: 'right' },
-          title: { display: true, text: `${m} 家計支出内訳 (計 ¥${s.totalExpense.toLocaleString()})` }
+          title: { display: true, text: `${m} 家計支出内訳 (計 ¥${(s.totalExpense || chartTotalAmount).toLocaleString()})` }
         }
       }
     };
@@ -3955,7 +3958,7 @@ async function executeVerifiedLineCommand(supabase, text, userId, pairId, config
   }
 
   // 6. 月次収支報告（QuickChartグラフ付き）
-  if (/^(?:収支報告|月次レポート|今月のまとめ|レポート|月次報告)(?:見せて|教えて|確認|お願い|だして|出して)?[！!〜ー♪✨\s]*$/i.test(text)) {
+  if (/^(?:収支報告|月次レポート|今月のまとめ|レポート|月次報告|グラフ|円グラフ|支出グラフ|内訳グラフ|家計グラフ|今月のグラフ)(?:を)?(?:見せて|教えて|確認|お願い|だして|出して|表示|送って)?[！!〜ー♪✨\s]*$/i.test(text)) {
     return await generateMonthlyReportMessage(supabase, actor, pairId, config);
   }
 
