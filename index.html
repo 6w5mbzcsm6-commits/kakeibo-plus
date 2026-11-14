@@ -83,7 +83,7 @@
         <div>
           <div class="flex items-center gap-1.5">
             <h1 class="text-base font-bold text-slate-900 leading-tight">ふたり家計簿</h1>
-            <span id="headerVersionBadge" onclick="forceHardReload()" title="タップして最新版に更新" class="bg-brand-50 text-brand-700 hover:bg-brand-100 text-[10px] font-bold px-1.5 py-0.5 rounded-full border border-brand-200 cursor-pointer transition-colors active:scale-95 select-none">v2.15.1</span>
+            <span id="headerVersionBadge" onclick="forceHardReload()" title="タップして最新版に更新" class="bg-brand-50 text-brand-700 hover:bg-brand-100 text-[10px] font-bold px-1.5 py-0.5 rounded-full border border-brand-200 cursor-pointer transition-colors active:scale-95 select-none">v2.16.0</span>
           </div>
           <!-- 月ナビゲーション（爆速クイック月選択対応 v2.10.0） -->
           <div class="flex items-center gap-1 mt-0.5">
@@ -268,10 +268,15 @@
             </div>
           </section>
 
-          <!-- 予算消化状況メーター -->
+          <!-- 予算消化状況メーター（今月使ったお金 ＆ レシート枚数カウンター付き v2.16.0） -->
           <section class="bg-white rounded-2xl p-4 shadow-sm border border-slate-100">
-            <div class="flex items-center justify-between mb-2">
-              <div class="text-xs font-bold text-slate-500 uppercase tracking-wider">今月の生活費 予算消化状況</div>
+            <div class="flex items-center justify-between gap-2 mb-2 flex-wrap">
+              <div class="text-xs font-bold text-slate-600 flex items-center gap-1.5">
+                <span>今月の生活費 消化状況</span>
+                <span id="homeReceiptCounterBadge" class="inline-flex items-center gap-1 text-[10px] font-bold bg-emerald-50 text-emerald-700 border border-emerald-200 px-2 py-0.5 rounded-full">
+                  🧾 レシート 0枚
+                </span>
+              </div>
               <div class="text-xs font-bold text-brand-600" id="budgetProgressRate">0% 消化</div>
             </div>
 
@@ -280,16 +285,21 @@
               <div id="budgetProgressBar" class="bg-brand-500 h-full rounded-full transition-all duration-500" style="width: 0%"></div>
             </div>
 
-            <div class="grid grid-cols-2 gap-2 text-center pt-1 border-t border-slate-50">
+            <div class="grid grid-cols-3 gap-2 text-center pt-1.5 border-t border-slate-50">
               <div>
+                <span id="monthlySpentMainLabel" class="text-[11px] text-slate-400 block">今月使ったお金</span>
+                <span id="homeMonthlySpentAmount" class="text-base font-black text-[#ff6b00] font-mono">¥0</span>
+                <span id="homeMonthlySpentSub" class="text-[10px] text-slate-400 block">共同支出計</span>
+              </div>
+              <div class="border-l border-slate-100">
                 <span id="remainingBudgetLabel" class="text-[11px] text-slate-400 block">生活費予算 残金</span>
-                <span id="remainingBudget" class="text-base font-black text-slate-900">¥0</span>
+                <span id="remainingBudget" class="text-base font-black text-slate-900 font-mono">¥0</span>
                 <span id="remainingBudgetSub" class="text-[10px] text-slate-400 block"></span>
               </div>
               <div class="border-l border-slate-100">
-                <span id="dailyAllowanceLabel" class="text-[11px] text-slate-400 block">今月使えるお金</span>
-                <span id="dailyAllowance" class="text-base font-black text-brand-600">¥0</span>
-                <span id="dailyAllowanceSub" class="text-[10px] text-slate-400 block">1日あたり目安: ¥0 (残0日)</span>
+                <span id="dailyAllowanceLabel" class="text-[11px] text-slate-400 block">今月使える目安</span>
+                <span id="dailyAllowance" class="text-base font-black text-brand-600 font-mono">¥0</span>
+                <span id="dailyAllowanceSub" class="text-[10px] text-slate-400 block">1日目安: ¥0</span>
               </div>
             </div>
 
@@ -352,7 +362,8 @@
                     <span class="text-[9px] bg-sky-500/30 text-sky-100 px-1.5 py-0.5 rounded">明細を見る ＞</span>
                   </div>
                   <div id="simTotalBankBalance" class="text-lg font-black font-mono text-white truncate">¥0</div>
-                  <div class="flex items-center justify-between text-[10px] text-slate-200 pt-1 border-t border-white/10">
+                  <div class="flex items-center justify-between text-[10px] text-slate-200 pt-1 border-t border-white/10 flex-wrap gap-1">
+                    <span>今月利用: <b id="simMonthlySpentAmount" class="text-amber-200 font-mono">¥0</b></span>
                     <span>次回引落: <b id="simTotalBillingAmount" class="text-rose-200 font-mono">¥0</b></span>
                     <span>引落後: <b id="simProjectedBalance" class="text-emerald-200 font-mono">¥0</b></span>
                   </div>
@@ -586,24 +597,149 @@
       </div>
     </div>
 
-    <!-- ===================== タブ3: 履歴・固定費 ===================== -->
+    <!-- ===================== タブ3: 履歴・固定費（おしどり風 カレンダー＆取引履歴 v2.16.0） ===================== -->
     <div id="tabContentHistory" class="hidden">
       <div class="space-y-4 md:space-y-0 md:grid md:grid-cols-12 md:gap-6 items-start">
-      <!-- 左カラム (md:col-span-5): 価格検索 ＆ 固定費マスタ ＆ ふたりの記録帳 -->
-      <div class="space-y-4 md:col-span-5">
-        <!-- 価格検索（レシート明細から過去の購入価格を調べる） -->
-        <section class="bg-white rounded-2xl p-4 shadow-sm border border-slate-100">
-          <h3 class="text-sm font-bold text-slate-800 mb-2 flex items-center gap-1.5">
-            <i data-lucide="search" class="w-4 h-4 text-brand-500"></i> 過去の価格を調べる
-          </h3>
-          <form id="priceSearchForm" class="flex gap-2">
-            <input type="text" id="priceSearchInput" placeholder="品名 (例: ネギ、豆腐)" maxlength="30"
-                   class="flex-1 bg-slate-50 border border-slate-200 rounded-xl px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-brand-500">
-            <button type="submit" class="bg-slate-800 hover:bg-slate-700 text-white px-4 py-2 rounded-xl text-xs font-bold">検索</button>
-          </form>
-          <div id="priceSearchResult" class="mt-3 hidden"></div>
+
+      <!-- メインカラム（スマホ最上部 / PC右カラム md:col-span-7 md:order-2）: 📅 おしどり風カレンダー ＆ 取引履歴 -->
+      <div class="space-y-4 md:col-span-7 md:order-2">
+        <!-- 📅 おしどり風 カレンダー＆月間収支カード -->
+        <section id="oshidoriCalendarCard" class="bg-white rounded-2xl shadow-sm border border-slate-100 overflow-hidden">
+          <!-- おしどり風 グリーンヘッダーバー -->
+          <div class="bg-[#65c400] text-white px-4 py-2.5 flex items-center justify-between">
+            <button type="button" onclick="document.getElementById('priceSearchInput')?.focus()" class="flex flex-col items-center justify-center text-[10px] font-bold hover:opacity-85 cursor-pointer leading-tight">
+              <i data-lucide="search" class="w-4 h-4"></i>
+              <span>探す</span>
+            </button>
+            <h3 id="historyViewMainTitle" class="text-base font-bold tracking-wide">カレンダー</h3>
+            <div class="flex items-center gap-3">
+              <button type="button" onclick="openStatementImportModal()" class="flex flex-col items-center justify-center text-[10px] font-bold hover:opacity-85 cursor-pointer leading-tight relative">
+                <i data-lucide="inbox" class="w-4 h-4"></i>
+                <span>明細取込</span>
+              </button>
+              <button type="button" id="toggleHistoryCalendarModeBtn" onclick="toggleHistoryCalendarViewMode()" class="flex flex-col items-center justify-center text-[10px] font-bold hover:opacity-85 cursor-pointer leading-tight">
+                <i data-lucide="receipt" class="w-4 h-4"></i>
+                <span id="toggleHistoryCalendarModeLabel">取引履歴</span>
+              </button>
+            </div>
+          </div>
+
+          <!-- 月切り替えバー（◀ 2026年11月 / 集計期間 11/1〜11/30 ▶） -->
+          <div class="bg-white px-4 py-2.5 flex items-center justify-between border-b border-slate-100">
+            <button type="button" onclick="loadInitialData(shiftMonth(state.viewMonth, -1))" class="p-1.5 text-slate-400 hover:text-slate-700 cursor-pointer active:scale-90 transition-transform" aria-label="前月">
+              <i data-lucide="play" class="w-4 h-4 rotate-180 fill-current"></i>
+            </button>
+            <div onclick="openMonthPickerSheet()" class="text-center cursor-pointer group">
+              <div id="calMonthTitle" class="text-base font-bold text-slate-800 group-hover:text-[#58ad00] transition-colors">2026年11月</div>
+              <div id="calPeriodSub" class="text-[11px] text-slate-400">集計期間 11/1〜11/30</div>
+            </div>
+            <button type="button" onclick="loadInitialData(shiftMonth(state.viewMonth, 1))" class="p-1.5 text-slate-400 hover:text-slate-700 cursor-pointer active:scale-90 transition-transform" aria-label="翌月">
+              <i data-lucide="play" class="w-4 h-4 fill-current"></i>
+            </button>
+          </div>
+
+          <!-- おしどり風 収入・支出・収支サマリー（👦👧 アイコン ＆ レシート枚数付き） -->
+          <div class="bg-[#f2f2f4] px-4 py-3 text-center space-y-2">
+            <div class="flex items-center justify-between">
+              <span class="w-20"></span>
+              <div id="calAvatarHeader" class="flex items-center justify-center">
+                <div class="inline-flex items-center -space-x-1.5">
+                  <span class="w-8 h-8 rounded-full bg-white border-2 border-slate-200 text-base flex items-center justify-center shadow-2xs">👦</span>
+                  <span class="w-8 h-8 rounded-full bg-white border-2 border-slate-200 text-base flex items-center justify-center shadow-2xs">👧</span>
+                </div>
+              </div>
+              <span id="calReceiptCountBadge" class="text-[10px] font-bold bg-white text-slate-600 border border-slate-200 px-2 py-0.5 rounded-full shadow-2xs whitespace-nowrap">
+                🧾 レシート 0枚
+              </span>
+            </div>
+            <div class="grid grid-cols-3 gap-2 pt-0.5">
+              <div>
+                <div class="text-[11px] text-slate-500 font-medium">収入</div>
+                <div id="calSummaryIncome" class="text-base sm:text-lg font-extrabold text-[#58ad00] font-mono tracking-tight">¥0</div>
+              </div>
+              <div>
+                <div class="text-[11px] text-slate-500 font-medium">支出</div>
+                <div id="calSummaryExpense" class="text-base sm:text-lg font-extrabold text-[#ff6b00] font-mono tracking-tight">¥0</div>
+              </div>
+              <div>
+                <div class="text-[11px] text-slate-500 font-medium">収支</div>
+                <div id="calSummaryNet" class="text-base sm:text-lg font-extrabold text-slate-700 font-mono tracking-tight">¥0</div>
+              </div>
+            </div>
+          </div>
+
+          <!-- おしどり風「個人(なおや) / 家族 / すべて」3タブ切替 -->
+          <div class="grid grid-cols-3 text-center text-xs font-bold bg-white border-b border-slate-200">
+            <button type="button" id="calScopeTabPersonal" onclick="setCalendarScopeTab('personal')" class="py-2.5 text-slate-400 hover:text-slate-700 border-b-2 border-transparent transition-all cursor-pointer">
+              個人
+            </button>
+            <button type="button" id="calScopeTabFamily" onclick="setCalendarScopeTab('family')" class="py-2.5 text-[#58ad00] border-b-2 border-[#65c400] transition-all cursor-pointer">
+              家族
+            </button>
+            <button type="button" id="calScopeTabAll" onclick="setCalendarScopeTab('all')" class="py-2.5 text-slate-400 hover:text-slate-700 border-b-2 border-transparent transition-all cursor-pointer">
+              すべて
+            </button>
+          </div>
+
+          <!-- 🗓️ 月間カレンダーグリッド本体 -->
+          <div id="oshidoriCalendarGridWrap" class="bg-white">
+            <!-- 曜日ヘッダー (日〜土) -->
+            <div class="grid grid-cols-7 text-center text-[11px] font-medium text-slate-500 py-2 border-b border-slate-100">
+              <div>日</div>
+              <div>月</div>
+              <div>火</div>
+              <div>水</div>
+              <div>木</div>
+              <div>金</div>
+              <div>土</div>
+            </div>
+            <!-- 日付セルグリッド (JSで動的描画) -->
+            <div id="oshidoriCalendarCells" class="grid grid-cols-7 divide-x divide-slate-50">
+              <!-- JS動的生成 -->
+            </div>
+          </div>
         </section>
 
+        <!-- フィルタバー ＆ 選択日解除バナー -->
+        <section class="bg-white rounded-xl p-2.5 shadow-sm border border-slate-100 flex items-center gap-2 flex-wrap">
+          <select id="historyCategoryFilter" class="bg-slate-50 border border-slate-200 text-xs rounded-lg px-2.5 py-1.5 focus:outline-none flex-1">
+            <option value="all">全カテゴリ</option>
+          </select>
+          <select id="historyPayerFilter" class="bg-slate-50 border border-slate-200 text-xs rounded-lg px-2.5 py-1.5 focus:outline-none">
+            <option value="all">全メンバー</option>
+            <option value="husband" id="filterPayerHusband">メンバー1</option>
+            <option value="wife" id="filterPayerWife">メンバー2</option>
+            <option value="shared">共同</option>
+          </select>
+        </section>
+
+        <!-- 日付またはカテゴリ絞り込み中のクイック解除バナー -->
+        <div id="historyActiveFilterBadgeWrap" class="hidden flex items-center justify-between p-2.5 rounded-xl bg-brand-50 border border-brand-200 text-xs text-brand-900 shadow-2xs">
+          <div class="flex items-center gap-1.5 font-bold">
+            <i data-lucide="filter" class="w-3.5 h-3.5 text-brand-600"></i>
+            <span>「<span id="historyActiveCategoryName">食費</span>」の明細を表示中</span>
+          </div>
+          <button type="button" onclick="clearHistoryCategoryFilter()" class="inline-flex items-center gap-1 text-[11px] font-bold text-brand-700 bg-white hover:bg-brand-100 border border-brand-200 px-2 py-0.5 rounded-lg transition-colors cursor-pointer active:scale-95 shadow-2xs">
+            すべて表示に戻す <i data-lucide="x" class="w-3 h-3"></i>
+          </button>
+        </div>
+
+        <!-- 支出・入出金履歴タイムライン（おしどり風日付グループ対応） -->
+        <section class="bg-white rounded-2xl p-4 shadow-sm border border-slate-100">
+          <div class="flex items-center justify-between mb-3">
+            <h3 id="historyListSectionTitle" class="text-sm font-bold text-slate-800 flex items-center gap-1.5">
+              <i data-lucide="receipt" class="w-4 h-4 text-[#58ad00]"></i> 取引履歴一覧
+            </h3>
+            <span id="historySelectedDateBadge" class="hidden text-[11px] font-bold text-[#58ad00] bg-emerald-50 px-2 py-0.5 rounded-full border border-emerald-200"></span>
+          </div>
+          <div id="fullTransactionsList" class="divide-y divide-slate-100">
+            <!-- JS動的レンダリング -->
+          </div>
+        </section>
+      </div>
+
+      <!-- サブカラム（スマホ下部 / PC左カラム md:col-span-5 md:order-1）: 固定費マスタ ＆ 価格検索 ＆ ふたりの記録帳 -->
+      <div class="space-y-4 md:col-span-5 md:order-1">
         <!-- 固定費マスタ一覧 -->
         <section class="bg-white rounded-2xl p-4 shadow-sm border border-slate-100">
           <div class="flex items-center justify-between mb-3">
@@ -625,6 +761,19 @@
           </div>
         </section>
 
+        <!-- 価格検索（レシート明細から過去の購入価格を調べる） -->
+        <section class="bg-white rounded-2xl p-4 shadow-sm border border-slate-100">
+          <h3 class="text-sm font-bold text-slate-800 mb-2 flex items-center gap-1.5">
+            <i data-lucide="search" class="w-4 h-4 text-brand-500"></i> 過去の価格を調べる
+          </h3>
+          <form id="priceSearchForm" class="flex gap-2">
+            <input type="text" id="priceSearchInput" placeholder="品名 (例: ネギ、豆腐)" maxlength="30"
+                   class="flex-1 bg-slate-50 border border-slate-200 rounded-xl px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-brand-500">
+            <button type="submit" class="bg-slate-800 hover:bg-slate-700 text-white px-4 py-2 rounded-xl text-xs font-bold">検索</button>
+          </form>
+          <div id="priceSearchResult" class="mt-3 hidden"></div>
+        </section>
+
         <!-- 変更履歴（不正・誤操作の確認用） -->
         <section class="bg-white rounded-2xl p-4 shadow-sm border border-slate-100">
           <div class="flex items-center justify-between mb-2">
@@ -635,43 +784,6 @@
           </div>
           <p class="text-[11px] text-slate-400 mb-2">いつ誰が何を変えたかを、お互い確認できます。うっかり修正の見直しにも使えます。</p>
           <div id="auditLogList" class="divide-y divide-slate-100"></div>
-        </section>
-      </div>
-
-      <!-- 右カラム (md:col-span-7): フィルタ ＆ 支出履歴タイムライン -->
-      <div class="space-y-4 md:col-span-7">
-        <!-- フィルタバー -->
-        <section class="bg-white rounded-xl p-2.5 shadow-sm border border-slate-100 flex items-center gap-2">
-          <select id="historyCategoryFilter" class="bg-slate-50 border border-slate-200 text-xs rounded-lg px-2.5 py-1.5 focus:outline-none flex-1">
-            <option value="all">全カテゴリ</option>
-          </select>
-          <select id="historyPayerFilter" class="bg-slate-50 border border-slate-200 text-xs rounded-lg px-2.5 py-1.5 focus:outline-none">
-            <option value="all">全メンバー</option>
-            <option value="husband" id="filterPayerHusband">メンバー1</option>
-            <option value="wife" id="filterPayerWife">メンバー2</option>
-            <option value="shared">共同</option>
-          </select>
-        </section>
-
-        <!-- カテゴリ絞り込み中のクイック解除バナー (v2.12.1新機能) -->
-        <div id="historyActiveFilterBadgeWrap" class="hidden flex items-center justify-between p-2.5 rounded-xl bg-brand-50 border border-brand-200 text-xs text-brand-900 shadow-2xs">
-          <div class="flex items-center gap-1.5 font-bold">
-            <i data-lucide="filter" class="w-3.5 h-3.5 text-brand-600"></i>
-            <span>「<span id="historyActiveCategoryName">食費</span>」の支出を表示中</span>
-          </div>
-          <button type="button" onclick="clearHistoryCategoryFilter()" class="inline-flex items-center gap-1 text-[11px] font-bold text-brand-700 bg-white hover:bg-brand-100 border border-brand-200 px-2 py-0.5 rounded-lg transition-colors cursor-pointer active:scale-95 shadow-2xs">
-            全カテゴリに戻す <i data-lucide="x" class="w-3 h-3"></i>
-          </button>
-        </div>
-
-        <!-- 支出履歴タイムライン -->
-        <section class="bg-white rounded-2xl p-4 shadow-sm border border-slate-100">
-          <h3 class="text-sm font-bold text-slate-800 mb-3 flex items-center gap-1.5">
-            <i data-lucide="receipt" class="w-4 h-4 text-brand-500"></i> 支出一覧
-          </h3>
-          <div id="fullTransactionsList" class="divide-y divide-slate-100">
-            <!-- JS動的レンダリング -->
-          </div>
         </section>
       </div>
       </div>
@@ -1051,7 +1163,7 @@
           <footer class="pt-2 pb-6 text-center text-[10px] text-slate-400 font-mono flex items-center justify-center gap-2 select-none flex-wrap">
             <span class="inline-flex items-center gap-1 bg-slate-100 text-slate-600 px-2 py-0.5 rounded-full">
               <span>Web</span>
-              <b id="frontVersionLabel" class="text-slate-800">v2.15.1</b>
+              <b id="frontVersionLabel" class="text-slate-800">v2.16.0</b>
             </span>
             <span>/</span>
             <span class="inline-flex items-center gap-1 bg-slate-100 text-slate-600 px-2 py-0.5 rounded-full">
@@ -2240,8 +2352,8 @@
   </div>
 
   <!-- アプリ本体スクリプト -->
-  <script src="config.js?v=2.15.1"></script>
-  <script src="app.js?v=2.15.1"></script>
+  <script src="config.js?v=2.16.0"></script>
+  <script src="app.js?v=2.16.0"></script>
 
   <!-- 口座追加・編集モーダル (v2.14.0) -->
   <div id="bankAccountModal" class="hidden fixed inset-0 z-50 bg-black/50 backdrop-blur-xs flex items-center justify-center p-4">
@@ -2317,7 +2429,7 @@
             <h3 class="text-base font-bold text-slate-800 flex items-center gap-1.5">
               <i data-lucide="receipt" class="w-5 h-5 text-sky-600"></i> 明細取込 ＆ おしどり風仕分け
             </h3>
-            <span class="text-[10px] font-bold bg-sky-100 text-sky-700 px-1.5 py-0.5 rounded">v2.15.1</span>
+            <span class="text-[10px] font-bold bg-sky-100 text-sky-700 px-1.5 py-0.5 rounded">v2.16.0</span>
           </div>
           <p class="text-xs text-slate-400">CSVまたはスマホの明細スクショから取り込み「共有 / 私物」を仕分け</p>
         </div>

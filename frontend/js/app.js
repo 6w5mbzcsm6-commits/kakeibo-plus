@@ -9,7 +9,7 @@
  */
 
 const APP_CONFIG = window.PAIRBUDGET_CONFIG || {};
-const FRONTEND_VERSION = 'v2.15.1';
+const FRONTEND_VERSION = 'v2.16.0';
 const MAX_HISTORY_MONTHS = 36;
 const FIELD_LABELS = {
   date: '日付', title: '品名', amount: '金額', category: 'カテゴリ', isShared: '共同',
@@ -2134,6 +2134,27 @@ function renderBudgetSummary() {
     bar.className = `${tone} h-full rounded-full transition-all duration-500`;
   }
 
+  // 今月使ったお金（共同生活費支出合計）＆ レシート枚数カウンター (v2.16.0)
+  const nonExpenseCats = ['口座入金', '収入', 'クレカ引落振替', '振替'];
+  const allMonthTxs = state.transactions || [];
+  const sharedExpenseTxs = allMonthTxs.filter(t => t.isShared && !nonExpenseCats.includes(t.category) && !nonExpenseCats.includes(t.categoryId) && Number(t.amount) > 0);
+  const calcSharedSpent = sharedExpenseTxs.reduce((sum, t) => sum + Number(t.amount || 0), 0);
+  const spentAmount = Number(s.totalExpense || 0) > 0 ? Number(s.totalExpense) : calcSharedSpent;
+
+  // レシート登録枚数（ユニークreceiptId数）と明細件数
+  const receiptIdSet = new Set();
+  allMonthTxs.forEach(t => { if (t.receiptId) receiptIdSet.add(t.receiptId); });
+  (state.receiptItems || []).forEach(r => { if (r.receiptId) receiptIdSet.add(r.receiptId); });
+  const receiptCount = receiptIdSet.size;
+  const totalTxCount = sharedExpenseTxs.length;
+
+  if ($('homeMonthlySpentAmount')) $('homeMonthlySpentAmount').textContent = yen(spentAmount);
+  if ($('homeMonthlySpentSub')) $('homeMonthlySpentSub').textContent = `予算 ${yen(s.budget || 240000)} 中`;
+  if ($('simMonthlySpentAmount')) $('simMonthlySpentAmount').textContent = yen(spentAmount);
+  if ($('homeReceiptCounterBadge')) {
+    $('homeReceiptCounterBadge').textContent = `🧾 レシート ${receiptCount}枚 (明細 ${totalTxCount}件)`;
+  }
+
   // 残金ラベル・金額
   if ($('remainingBudget')) $('remainingBudget').textContent = yen(s.remaining);
 
@@ -2736,29 +2757,251 @@ function renderRecentTransactions() {
   list.forEach(i => c.appendChild(createTransactionRow(i, false)));
 }
 
+function setCalendarScopeTab(tab) {
+  state.calendarScopeTab = tab || 'family';
+  renderHistoryList();
+}
+window.setCalendarScopeTab = setCalendarScopeTab;
+
+function selectCalendarDate(dateStr) {
+  if (!dateStr) return;
+  if (state.selectedCalendarDate === dateStr) {
+    state.selectedCalendarDate = null;
+    showToast('📅 すべての日付の取引を表示します');
+  } else {
+    state.selectedCalendarDate = dateStr;
+    const parts = dateStr.split('-');
+    const disp = parts.length === 3 ? `${Number(parts[1])}月${Number(parts[2])}日` : dateStr;
+    showToast(`📅 ${disp}の取引に絞り込みました（もう一度タップで解除）`);
+  }
+  renderHistoryList();
+}
+window.selectCalendarDate = selectCalendarDate;
+
+function toggleHistoryCalendarViewMode() {
+  const wrap = $('oshidoriCalendarGridWrap');
+  const titleEl = $('historyViewMainTitle');
+  const labelEl = $('toggleHistoryCalendarModeLabel');
+  if (!wrap) return;
+  const isHidden = wrap.classList.contains('hidden');
+  if (isHidden) {
+    wrap.classList.remove('hidden');
+    if (titleEl) titleEl.textContent = 'カレンダー';
+    if (labelEl) labelEl.textContent = '取引履歴';
+  } else {
+    wrap.classList.add('hidden');
+    if (titleEl) titleEl.textContent = '取引履歴';
+    if (labelEl) labelEl.textContent = 'カレンダー';
+  }
+}
+window.toggleHistoryCalendarViewMode = toggleHistoryCalendarViewMode;
+
+function getCalendarScopedTransactions() {
+  const scopeTab = state.calendarScopeTab || 'family';
+  const allTxs = Array.isArray(state.transactions) ? state.transactions : [];
+  if (scopeTab === 'family') {
+    return allTxs.filter(t => t.isShared !== false);
+  }
+  if (scopeTab === 'personal') {
+    const mySlot = state.currentSlot || 'husband';
+    const myName = memberName(mySlot) || state.currentUser;
+    return allTxs.filter(t => !t.isShared || resolvePayerSlot(t.payer) === mySlot || isSameMember(t.payer, myName));
+  }
+  return allTxs;
+}
+
+function renderOshidoriCalendar() {
+  const cellsEl = $('oshidoriCalendarCells');
+  if (!cellsEl) return;
+
+  const ym = state.viewMonth || currentYM();
+  if (state.selectedCalendarDate && !state.selectedCalendarDate.startsWith(ym)) {
+    state.selectedCalendarDate = null;
+  }
+
+  const [yStr, mStr] = ym.split('-');
+  const year = Number(yStr) || new Date().getFullYear();
+  const month = Number(mStr) || (new Date().getMonth() + 1);
+  const daysInMonth = new Date(year, month, 0).getDate();
+  const firstDayOfWeek = new Date(year, month - 1, 1).getDay(); // 0(日)〜6(土)
+
+  if ($('calMonthTitle')) $('calMonthTitle').textContent = `${year}年${month}月`;
+  if ($('calPeriodSub')) $('calPeriodSub').textContent = `集計期間 ${month}/1〜${month}/${daysInMonth}`;
+
+  // 3タブ（なおや / 家族 / すべて）の表示更新
+  const scopeTab = state.calendarScopeTab || 'family';
+  const myName = memberName(state.currentSlot || 'husband') || state.currentUser || '個人';
+  if ($('calScopeTabPersonal')) $('calScopeTabPersonal').textContent = myName;
+
+  const tabMap = {
+    personal: $('calScopeTabPersonal'),
+    family: $('calScopeTabFamily'),
+    all: $('calScopeTabAll'),
+  };
+  Object.entries(tabMap).forEach(([key, btn]) => {
+    if (!btn) return;
+    if (key === scopeTab) {
+      btn.className = 'py-2.5 text-[#58ad00] border-b-2 border-[#65c400] transition-all cursor-pointer font-bold';
+    } else {
+      btn.className = 'py-2.5 text-slate-400 hover:text-slate-700 border-b-2 border-transparent transition-all cursor-pointer font-bold';
+    }
+  });
+
+  // アバター切り替え
+  const avatarHeader = $('calAvatarHeader');
+  if (avatarHeader) {
+    if (scopeTab === 'personal') {
+      avatarHeader.innerHTML = `<span class="w-8 h-8 rounded-full bg-white border-2 border-slate-200 text-base flex items-center justify-center shadow-2xs">${state.currentSlot === 'wife' ? '👧' : '👦'}</span>`;
+    } else {
+      avatarHeader.innerHTML = `<div class="inline-flex items-center -space-x-1.5">
+        <span class="w-8 h-8 rounded-full bg-white border-2 border-slate-200 text-base flex items-center justify-center shadow-2xs">👦</span>
+        <span class="w-8 h-8 rounded-full bg-white border-2 border-slate-200 text-base flex items-center justify-center shadow-2xs">👧</span>
+      </div>`;
+    }
+  }
+
+  const list = getCalendarScopedTransactions();
+  const excludedExpenseCats = ['口座入金', '収入', 'クレカ引落振替', '振替'];
+
+  let incomeTotal = 0;
+  let expenseTotal = 0;
+  let receiptCount = 0;
+  let expenseTxCount = 0;
+  const dailyMap = {}; // { 'YYYY-MM-DD': { inc: 0, exp: 0, count: 0 } }
+
+  list.forEach(t => {
+    const amt = Math.abs(Number(t.amount) || 0);
+    if (amt <= 0) return;
+    const dStr = String(t.date || '').slice(0, 10);
+    if (!dailyMap[dStr]) dailyMap[dStr] = { inc: 0, exp: 0, count: 0 };
+
+    const isIncome = t.category === '口座入金' || t.category === '収入' || t.txType === 'deposit';
+    const isTransfer = t.category === 'クレカ引落振替' || t.category === '振替' || t.txType === 'cc_settlement';
+
+    if (isIncome) {
+      incomeTotal += amt;
+      dailyMap[dStr].inc += amt;
+    } else if (!isTransfer && !excludedExpenseCats.includes(t.category)) {
+      expenseTotal += amt;
+      dailyMap[dStr].exp += amt;
+      dailyMap[dStr].count += 1;
+      expenseTxCount += 1;
+      const isStatement = String(t.memo || '').includes('明細取込') || String(t.source || '').includes('csv');
+      if (!isStatement) receiptCount += 1;
+    }
+  });
+
+  const netTotal = incomeTotal - expenseTotal;
+  if ($('calSummaryIncome')) $('calSummaryIncome').textContent = `¥${incomeTotal.toLocaleString()}`;
+  if ($('calSummaryExpense')) $('calSummaryExpense').textContent = expenseTotal > 0 ? `¥-${expenseTotal.toLocaleString()}` : '¥0';
+  if ($('calSummaryNet')) {
+    $('calSummaryNet').textContent = netTotal >= 0 ? `¥${netTotal.toLocaleString()}` : `¥-${Math.abs(netTotal).toLocaleString()}`;
+  }
+  if ($('calReceiptCountBadge')) {
+    $('calReceiptCountBadge').textContent = `🧾 レシート ${receiptCount}枚（計${expenseTxCount}件）`;
+  }
+
+  // 今日の日付
+  const now = new Date();
+  const todayStr = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`;
+
+  // カレンダーセル生成
+  let cellsHtml = '';
+  // 先頭空白セル
+  for (let i = 0; i < firstDayOfWeek; i++) {
+    cellsHtml += `<div class="min-h-[58px] sm:min-h-[64px] border-b border-slate-100 bg-white"></div>`;
+  }
+
+  for (let day = 1; day <= daysInMonth; day++) {
+    const dateStr = `${year}-${String(month).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
+    const info = dailyMap[dateStr] || { inc: 0, exp: 0, count: 0 };
+    const isSelected = state.selectedCalendarDate === dateStr;
+    const isToday = todayStr === dateStr;
+
+    let dayBadgeClass = 'w-6 h-6 inline-flex items-center justify-center rounded-full text-xs font-bold text-slate-800';
+    if (isSelected) {
+      dayBadgeClass = 'w-6 h-6 inline-flex items-center justify-center rounded-full text-xs font-extrabold bg-[#65c400] text-white shadow-2xs ring-2 ring-[#65c400]/30';
+    } else if (isToday) {
+      dayBadgeClass = 'w-6 h-6 inline-flex items-center justify-center rounded-full text-xs font-extrabold bg-[#65c400] text-white';
+    }
+
+    const cellBg = isSelected ? 'bg-emerald-50/70' : 'bg-white hover:bg-slate-50';
+
+    cellsHtml += `
+      <button type="button" onclick="selectCalendarDate('${dateStr}')" class="min-h-[58px] sm:min-h-[64px] py-1.5 px-0.5 border-b border-slate-100 ${cellBg} flex flex-col items-center justify-start transition-colors cursor-pointer select-none">
+        <span class="${dayBadgeClass}">${day}</span>
+        <div class="mt-0.5 flex flex-col items-center leading-tight space-y-0.5 w-full overflow-hidden">
+          ${info.exp > 0 ? `<span class="text-[9px] sm:text-[10px] font-bold text-[#ff6b00] font-mono tracking-tighter truncate max-w-full">¥-${info.exp.toLocaleString()}</span>` : ''}
+          ${info.inc > 0 ? `<span class="text-[9px] sm:text-[10px] font-bold text-[#58ad00] font-mono tracking-tighter truncate max-w-full">¥${info.inc.toLocaleString()}</span>` : ''}
+        </div>
+      </button>
+    `;
+  }
+
+  // 翌月の日付を薄文字で埋める（おしどり風）
+  const totalFilled = firstDayOfWeek + daysInMonth;
+  const remainingCols = (7 - (totalFilled % 7)) % 7;
+  for (let nextDay = 1; nextDay <= remainingCols; nextDay++) {
+    cellsHtml += `
+      <div class="min-h-[58px] sm:min-h-[64px] py-1.5 px-0.5 border-b border-slate-100 bg-white flex flex-col items-center justify-start">
+        <span class="w-6 h-6 inline-flex items-center justify-center text-xs font-medium text-slate-300">${nextDay}</span>
+      </div>
+    `;
+  }
+
+  cellsEl.innerHTML = cellsHtml;
+}
+
 function renderHistoryList() {
+  renderOshidoriCalendar();
+
   const c = $('fullTransactionsList');
+  if (!c) return;
   c.innerHTML = '';
   const cat = $('historyCategoryFilter')?.value || 'all';
   const payer = $('historyPayerFilter')?.value || 'all';
+  const selDate = state.selectedCalendarDate || null;
 
-  // 絞り込み中バッジの表示制御 (v2.11.0)
+  // 絞り込み中バッジの表示制御 (v2.16.0: カテゴリまたはカレンダー日付選択に対応)
   const badgeWrap = $('historyActiveFilterBadgeWrap');
+  const selDateBadge = $('historySelectedDateBadge');
+  if (selDateBadge) {
+    if (selDate) {
+      const p = selDate.split('-');
+      selDateBadge.textContent = `${Number(p[1])}/${Number(p[2])} 選択中`;
+      selDateBadge.classList.remove('hidden');
+    } else {
+      selDateBadge.classList.add('hidden');
+    }
+  }
+
   if (badgeWrap) {
-    if (cat !== 'all') {
+    if (cat !== 'all' || selDate) {
       badgeWrap.classList.remove('hidden');
-      if ($('historyActiveCategoryName')) $('historyActiveCategoryName').textContent = cat;
+      const labels = [];
+      if (selDate) {
+        const p = selDate.split('-');
+        labels.push(`📅 ${Number(p[1])}月${Number(p[2])}日`);
+      }
+      if (cat !== 'all') labels.push(cat);
+      if ($('historyActiveCategoryName')) $('historyActiveCategoryName').textContent = labels.join(' / ');
     } else {
       badgeWrap.classList.add('hidden');
     }
   }
 
-  const list = scopedTransactions().filter(t => {
+  const baseList = getCalendarScopedTransactions();
+  const list = baseList.filter(t => {
     const catOk = cat === 'all' || t.category === cat;
     const payerOk = payer === 'all' || resolvePayerSlot(t.payer) === payer || t.payer === payer;
-    return catOk && payerOk;
+    const dateOk = !selDate || String(t.date || '').slice(0, 10) === selDate;
+    return catOk && payerOk && dateOk;
   });
-  if (!list.length) { c.innerHTML = '<div class="py-8 text-center text-xs text-slate-400">該当する支出はありません</div>'; return; }
+
+  if (!list.length) {
+    c.innerHTML = '<div class="py-8 text-center text-xs text-slate-400">該当する取引明細はありません</div>';
+    return;
+  }
   list.forEach(i => c.appendChild(createTransactionRow(i, true)));
   lucide.createIcons();
 }
@@ -2796,13 +3039,14 @@ function filterHistoryByCategory(categoryName) {
 window.filterHistoryByCategory = filterHistoryByCategory;
 
 /**
- * カテゴリ絞り込みのワンタップ解除 (v2.11.0新機能)
+ * カテゴリ・日付絞り込みのワンタップ解除 (v2.16.0拡張)
  */
 function clearHistoryCategoryFilter() {
   const filterSelect = $('historyCategoryFilter');
   if (filterSelect) filterSelect.value = 'all';
+  state.selectedCalendarDate = null;
   renderHistoryList();
-  showToast('全カテゴリの支出を表示しました');
+  showToast('すべての取引明細を表示しました');
 }
 window.clearHistoryCategoryFilter = clearHistoryCategoryFilter;
 
