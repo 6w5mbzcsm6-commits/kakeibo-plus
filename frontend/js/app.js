@@ -9,7 +9,7 @@
  */
 
 const APP_CONFIG = window.PAIRBUDGET_CONFIG || {};
-const FRONTEND_VERSION = 'v2.16.0';
+const FRONTEND_VERSION = 'v2.16.1';
 const MAX_HISTORY_MONTHS = 36;
 const FIELD_LABELS = {
   date: '日付', title: '品名', amount: '金額', category: 'カテゴリ', isShared: '共同',
@@ -1773,8 +1773,8 @@ function applyData(data) {
     } catch (_) {}
   }
   if (data.bankAccounts && Array.isArray(data.bankAccounts)) {
-    state.bankAccounts = data.bankAccounts;
-    try { localStorage.setItem('pairbudget_bank_accounts', JSON.stringify(data.bankAccounts)); } catch (_) {}
+    state.bankAccounts = sanitizeAndDedupeClientBankAccounts(data.bankAccounts);
+    try { localStorage.setItem('pairbudget_bank_accounts', JSON.stringify(state.bankAccounts)); } catch (_) {}
   }
   if (data.securitySettings) {
     state.securitySettings = data.securitySettings;
@@ -6168,17 +6168,85 @@ document.addEventListener('DOMContentLoaded', async () => {
 // ==========================================
 
 /**
+ * 口座配列の正規化・重複排除ヘルパー (v2.16.1: バックエンド型落ちバグで増殖した0円口座の自動クリーンアップ)
+ */
+function sanitizeAndDedupeClientBankAccounts(rawAccounts) {
+  if (!Array.isArray(rawAccounts)) return [];
+
+  const initSavings = Number(state.savingsConfig?.initialSavings || 0);
+  const filtered = rawAccounts.filter(a =>
+    a && !((a.id === 'acc_shared_main' && a.name && a.name.includes('三井住友')) ||
+          (a.id === 'acc_shared_card' && a.name && a.name.includes('楽天カード')))
+  );
+
+  const normalized = filtered.map((acc, index) => {
+    const id = acc.id || `acc_${Date.now()}_${index}`;
+    const name = String(acc.name || '口座名未設定').trim();
+    const isSavingsByName = id === 'acc_shared_savings' || name.includes('別口座') || name.includes('繰越') || name.includes('貯金') || name.includes('貯蓄');
+    let type = ['shared_bank', 'shared_savings', 'personal_bank', 'shared_card', 'personal_card'].includes(acc.type)
+      ? acc.type
+      : 'shared_bank';
+    if (isSavingsByName && type === 'shared_bank') {
+      type = 'shared_savings';
+    }
+    let balance = Number(acc.balance) || 0;
+    if (type === 'shared_savings' && balance === 0 && initSavings > 0 && initSavings !== 161421) {
+      balance = initSavings;
+    }
+    return {
+      ...acc,
+      id,
+      name,
+      type,
+      balance
+    };
+  });
+
+  const result = [];
+  const seenKeys = new Map();
+
+  for (const acc of normalized) {
+    let dedupeKey = acc.id;
+    if (acc.type === 'shared_savings' && (acc.id === 'acc_shared_savings' || acc.name.includes('別口座貯金'))) {
+      dedupeKey = '__singleton_shared_savings__';
+    } else if (acc.type === 'shared_bank' && (acc.id === 'acc_shared_pair_bank' || acc.name === 'ふたりの共有口座')) {
+      dedupeKey = '__singleton_shared_pair_bank__';
+    } else if (acc.type === 'shared_card' && (acc.id === 'acc_shared_pair_card' || acc.name === 'ふたりの共有カード')) {
+      dedupeKey = '__singleton_shared_pair_card__';
+    }
+
+    if (seenKeys.has(dedupeKey)) {
+      const existingIdx = seenKeys.get(dedupeKey);
+      const existing = result[existingIdx];
+      if (Math.abs(Number(acc.balance) || 0) > Math.abs(Number(existing.balance) || 0)) {
+        result[existingIdx] = {
+          ...acc,
+          id: dedupeKey === '__singleton_shared_savings__' ? 'acc_shared_savings' : existing.id
+        };
+      }
+    } else {
+      const fixedAcc = dedupeKey === '__singleton_shared_savings__'
+        ? { ...acc, id: 'acc_shared_savings', type: 'shared_savings' }
+        : acc;
+      seenKeys.set(dedupeKey, result.length);
+      result.push(fixedAcc);
+    }
+  }
+
+  return result;
+}
+
+/**
  * 口座残高ボード ＆ 次回引落シミュレーションの描画
  */
 function renderBankAccountsCard() {
   const container = $('bankAccountsList');
   if (!container) return;
 
-  // ユーザーが意図しない初期モック口座（三井住友銀行・楽天カード）を徹底排除 (v2.13.0)
-  state.bankAccounts = (state.bankAccounts || []).filter(a =>
-    a && !((a.id === 'acc_shared_main' && a.name && a.name.includes('三井住友')) ||
-          (a.id === 'acc_shared_card' && a.name && a.name.includes('楽天カード')))
-  );
+  const beforeLen = Array.isArray(state.bankAccounts) ? state.bankAccounts.length : 0;
+  // 重複口座・初期モック口座を徹底クリーンアップ (v2.16.1)
+  state.bankAccounts = sanitizeAndDedupeClientBankAccounts(state.bankAccounts || []);
+  const hadDuplicates = beforeLen > state.bankAccounts.length;
 
   // 口座未登録時、①ふたりの共有口座（通帳残高¥161,421）、②別口座貯金（余り繰越用）、③共有カードを初期化 (v2.14.0)
   if (state.bankAccounts.length === 0) {
@@ -6245,6 +6313,14 @@ function renderBankAccountsCard() {
     try {
       localStorage.setItem('pairbudget_bank_accounts', JSON.stringify(state.bankAccounts));
     } catch (_) {}
+  } else if (hadDuplicates) {
+    // 重複口座をクリーンアップした場合、localStorageおよびサーバーへ保存して再発防止
+    try {
+      localStorage.setItem('pairbudget_bank_accounts', JSON.stringify(state.bankAccounts));
+    } catch (_) {}
+    if (!state.isMockMode) {
+      api('updateBankAccounts', { bankAccounts: state.bankAccounts }).catch(() => {});
+    }
   }
 
   // 1. 自動引落シミュレーション計算 ＆ 複式簿記（借方・貸方）バランス計算

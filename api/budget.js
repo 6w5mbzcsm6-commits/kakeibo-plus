@@ -346,8 +346,26 @@ async function resolveActor(idToken, supabase, requestedPairId = null) {
     .maybeSingle();
 
   if (!user) {
-    // まだ users テーブルに未登録でも、オンボーディング画面の無限ループを防ぐため
-    // 指定されたペア（またはデフォルトペア）でのデータ取得・操作を許可する
+    // すでに対象ペア（DEFAULT_PAIR_ID等）に2名以上の正規LINEメンバーが登録済みの場合は、
+    // 外部の未登録LINEアカウント（友だち追加しただけの第三者）からのデータ閲覧・操作を厳格にブロックする (v2.16.1)
+    const { data: existingMembers } = await supabase
+      .from('users')
+      .select('line_user_id, slot')
+      .eq('pair_id', safePairId);
+
+    const hasBothSlots = (existingMembers || []).some(m => m.slot === 'husband' || m.slot === 'slot1') &&
+                         (existingMembers || []).some(m => m.slot === 'wife' || m.slot === 'slot2');
+
+    if (hasBothSlots || (existingMembers && existingMembers.length >= 2)) {
+      return {
+        allowed: false,
+        verified: false,
+        code: 'UNAUTHORIZED_LINE_USER',
+        error: '🔒 この家計簿はすでにパートナー2名でロックされています。招待コードをお持ちでない第三者のアカウントからは閲覧・操作できません。'
+      };
+    }
+
+    // まだペアの2枠が埋まっていない初期セットアップ中のみオンボーディングを許可
     return {
       allowed: true,
       verified: false,
@@ -627,16 +645,8 @@ async function getConfigData(supabase, pairId) {
       try {
         let accs = JSON.parse(s.value);
         if (Array.isArray(accs)) {
-          // 意図しない初期モック（三井住友銀行、楽天カード）を徹底除外
-          accs = accs.filter(a =>
-            a && !((a.id === 'acc_shared_main' && a.name && a.name.includes('三井住友')) ||
-                  (a.id === 'acc_shared_card' && a.name && a.name.includes('楽天カード')))
-          );
-          if (accs.length === 0) {
-            accs = getDefaultBankAccounts();
-          }
+          config.bankAccounts = sanitizeAndDedupeBankAccounts(accs, config.savingsConfig);
         }
-        config.bankAccounts = accs;
       } catch (_) {}
     }
   });
@@ -1089,7 +1099,7 @@ async function handleGetInitialData(supabase, targetMonth, actor, requestedPairI
 
   return {
     success: true,
-    version: 'v2.16.0',
+    version: 'v2.16.1',
     pair: {
       id: pairId,
       name: config.pairName,
@@ -3669,60 +3679,80 @@ async function processNaturalLanguageMessage(supabase, text, userId) {
     return reply;
   }
 
-  // 11-3. 口座残高照会コマンド (v2.12.0 おしどり連携)
-  // 例:「口座残高」「残高確認」「預金残高」「口座確認」「引落予定」「引き落とし予定」「カード明細」「クレカ明細」「口座」「残高」
-  const balanceCheckRegex = /^(?:口座残高|残高確認|預金残高|口座確認|引落予定|引き落とし予定|カード明細|クレカ明細|口座|残高)$/i;
-  if (balanceCheckRegex.test(text)) {
+    // 11-3. 口座残高照会 ＆ 家計Q&A自然言語応答コマンド (v2.16.1 おしどり連携＆LINE会話質問対応)
+  // 例:「口座残高」「残高教えて」「今月いくら使った？」「レシート何枚？」「カード利用額は？」「別口座貯金いくら？」「今日いくら使える？」
+  const isAccountOrBudgetQuestion =
+    /^(?:口座残高|残高確認|預金残高|口座確認|引落予定|引き落とし予定|カード明細|クレカ明細|口座|残高|貯金|別口座|積立)$/i.test(text) ||
+    /(?:今月.*(?:いくら|どのくらい|何円|使った|支出|利用|残金|残り|予算)|(?:レシート|明細).*(?:何枚|何件|いくつ|枚数)|(?:口座|預金|貯金|積立|カード|クレカ|引落|引き落とし).*(?:いくら|残高|教えて|確認|見せて|どう|状況|合計|累計)|(?:今日|1日|一日).*(?:いくら使える|目安))/.test(text);
+
+  if (isAccountOrBudgetQuestion) {
     const curMonth = getMonthDateRange(getCurrentMonth()).startDate.slice(0, 7);
-    const { startDate, endDate } = getMonthDateRange(curMonth);
+    const initData = await handleGetInitialData(supabase, curMonth, actor, pairId);
+    const s = initData.summary || { budget: 240000, totalExpense: 0, remaining: 240000, dailyAllowance: 0, daysLeft: 0 };
+    const monthTxs = initData.transactions || [];
+    const nonExpenseCats = ['口座入金', '収入', 'クレカ引落振替', '振替'];
 
-    const { data: monthTxs } = await supabase
-      .from('transactions')
-      .select('amount, payment_type, is_shared')
-      .eq('pair_id', pairId)
-      .gte('date', startDate)
-      .lte('date', endDate);
-
-    const bankAccounts = config.bankAccounts || getDefaultBankAccounts();
+    const bankAccounts = sanitizeAndDedupeBankAccounts(config.bankAccounts || getDefaultBankAccounts(), config.savingsConfig);
     const sharedBankTotal = bankAccounts
       .filter(a => a.type === 'shared_bank')
       .reduce((sum, a) => sum + (Number(a.balance) || 0), 0);
+    const sharedSavingsAccBal = bankAccounts
+      .filter(a => a.type === 'shared_savings')
+      .reduce((sum, a) => sum + (Number(a.balance) || 0), 0);
+    const separateSavingsTotal = sharedSavingsAccBal > 0
+      ? sharedSavingsAccBal
+      : Number(config.savingsConfig?.initialSavings || 0);
+    const totalCombinedAssets = sharedBankTotal + separateSavingsTotal;
 
-    const sharedCardUsage = (monthTxs || [])
-      .filter(t => t.is_shared && t.payment_type === 'shared_card')
+    const expenseTxs = monthTxs.filter(t => t.isShared !== false && !nonExpenseCats.includes(t.category) && Number(t.amount) > 0);
+    const sharedCardUsage = expenseTxs
+      .filter(t => t.paymentType === 'shared_card')
+      .reduce((sum, t) => sum + (Number(t.amount) || 0), 0);
+    const sharedTransferUsage = expenseTxs
+      .filter(t => t.paymentType === 'shared_account')
       .reduce((sum, t) => sum + (Number(t.amount) || 0), 0);
 
-    const sharedTransferUsage = (monthTxs || [])
-      .filter(t => t.is_shared && t.payment_type === 'shared_account')
-      .reduce((sum, t) => sum + (Number(t.amount) || 0), 0);
+    // レシート枚数集計
+    const receiptIds = new Set();
+    let manualReceiptCount = 0;
+    expenseTxs.forEach(t => {
+      if (t.receiptId) {
+        receiptIds.add(String(t.receiptId));
+      } else if (!String(t.memo || '').includes('明細取込')) {
+        manualReceiptCount += 1;
+      }
+    });
+    const totalReceiptCount = receiptIds.size + manualReceiptCount;
 
     const nextBillingTotal = sharedCardUsage + sharedTransferUsage;
     const projectedBalance = sharedBankTotal - nextBillingTotal;
 
-    let reply = `🏦【口座預金＆次回引落シミュレーション】\n\n`;
-    reply += `■ 口座残高一覧:\n`;
-    bankAccounts.forEach(acc => {
-      const typeLabel = acc.type === 'shared_bank' ? '共有口座' : (acc.type === 'shared_card' ? '共同カード' : '個人口座');
-      reply += `・${acc.name} (${typeLabel}): ¥${Number(acc.balance || 0).toLocaleString()}\n`;
-    });
-
-    reply += `\n■ 次回引落シミュレーション:\n`;
-    reply += `・共有口座預金合計: ¥${sharedBankTotal.toLocaleString()}\n`;
-    reply += `・今月カード利用額: ¥${sharedCardUsage.toLocaleString()}\n`;
-    reply += `・口座振替（家賃等）: ¥${sharedTransferUsage.toLocaleString()}\n`;
+    let reply = `📊【今月の家計＆口座まとめ (${curMonth})】\n`;
+    reply += `━━━━━━━━━━━━━━\n`;
+    reply += `💸 今月使ったお金: ¥${Number(s.totalExpense || 0).toLocaleString()}\n`;
+    reply += `💰 生活費予算 残金: ¥${Number(s.remaining || 0).toLocaleString()} (予算 ¥${Number(s.budget || 0).toLocaleString()})\n`;
+    reply += `📅 1日あたり目安: ¥${Number(s.dailyAllowance || 0).toLocaleString()}/日 (残り${s.daysLeft || 0}日)\n`;
+    reply += `🧾 レシート登録数: ${totalReceiptCount}枚 (明細 計${expenseTxs.length}件)\n`;
+    reply += `━━━━━━━━━━━━━━\n`;
+    reply += `🏦【共同口座・別口座貯金】\n`;
+    reply += `・合計残高: ¥${totalCombinedAssets.toLocaleString()}\n`;
+    reply += `  ① 普段の生活費口座: ¥${sharedBankTotal.toLocaleString()}\n`;
+    reply += `  ② 別口座貯金(繰越): ¥${separateSavingsTotal.toLocaleString()}\n\n`;
+    reply += `💳【カード・次回引落予定】\n`;
+    reply += `・今月のカード利用累計: ¥${sharedCardUsage.toLocaleString()}\n`;
+    reply += `・口座振替(固定費等): ¥${sharedTransferUsage.toLocaleString()}\n`;
     reply += `・次回引落予定合計: ¥${nextBillingTotal.toLocaleString()}\n`;
-    reply += `──────────────\n`;
-    reply += `💰 引落後予想残高: ¥${projectedBalance.toLocaleString()}\n`;
+    reply += `・引落後予想残高: ¥${projectedBalance.toLocaleString()}\n`;
 
     if (projectedBalance < 0) {
       reply += `\n⚠️【残高不足警告】引落後に ¥${Math.abs(projectedBalance).toLocaleString()} 不足します！早めの口座入金をおすすめします。`;
-    } else if (projectedBalance < 10000) {
+    } else if (projectedBalance < 10000 && nextBillingTotal > 0) {
       reply += `\n⚠️【残高注意】引落後の残高が1万円未満になります。`;
     } else {
       reply += `\n✨ 次回引落も残高十分で安心です！`;
     }
 
-    reply += `\n\n💡 残高の更新は「口座残高 350000」や「残高 35万」と送るだけでいつでも即時反映されます。`;
+    reply += `\n\n💡 残高更新は「口座残高 161421」のように送信すると即時反映されます。`;
     return reply;
   }
 
@@ -3849,15 +3879,18 @@ async function processNaturalLanguageMessage(supabase, text, userId) {
 async function processLineImageMessage(supabase, messageId, userId, lineToken) {
   if (!lineToken) return 'LINE連携トークンが未設定です';
 
-  // 1. ユーザー特定
+  // 1. ユーザー特定（未登録の第三者LINEアカウントからの画像送信は即時ブロック v2.16.1）
   const { data: user } = await supabase.from('users').select('*, pairs(*)').eq('line_user_id', userId).maybeSingle();
-  const pairId = user?.pair_id || DEFAULT_PAIR_ID;
+  if (!user) {
+    return '🔒 このLINEアカウントは「ふたり家計簿」のメンバーとして登録されていません。\n招待コードをお持ちの方のみ、アプリ画面からペアに参加できます。第三者の方が家計簿データを閲覧・登録することはできません。';
+  }
+  const pairId = user.pair_id || DEFAULT_PAIR_ID;
   const actor = {
     allowed: true,
     verified: true,
-    name: user?.display_name || 'LINEメンバー',
+    name: user.display_name || 'LINEメンバー',
     userId,
-    slot: user?.slot || 'husband',
+    slot: user.slot || 'husband',
     pairId
   };
 
@@ -4094,7 +4127,7 @@ async function handleHealthCheck(req) {
 
   return {
     success: true,
-    version: 'v2.16.0',
+    version: 'v2.16.1',
     resolvedUrl: resolvedUrl ? resolvedUrl.replace(/\/\/[^@]+@/, '//***@') : '未設定',
     keyType: keyType,
     env: envCheck,
@@ -4118,22 +4151,90 @@ async function handleHealthCheck(req) {
 // ==========================================
 
 /**
+ * 口座配列の正規化・重複排除ヘルパー (v2.16.1: shared_savings 強制変換バグで増殖した重複口座をクリーンアップ)
+ */
+function sanitizeAndDedupeBankAccounts(rawAccounts, savingsConfig = null) {
+  if (!Array.isArray(rawAccounts)) return getDefaultBankAccounts();
+
+  const initSavings = Number(savingsConfig?.initialSavings || 0);
+  const filtered = rawAccounts.filter(a =>
+    a && !((a.id === 'acc_shared_main' && a.name && a.name.includes('三井住友')) ||
+          (a.id === 'acc_shared_card' && a.name && a.name.includes('楽天カード')))
+  );
+
+  const normalized = filtered.map((acc, index) => {
+    const id = acc.id || `acc_${Date.now()}_${index}`;
+    const name = String(acc.name || '口座名未設定').trim();
+    // 名前やIDから本来 shared_savings だった口座を復元
+    const isSavingsByName = id === 'acc_shared_savings' || name.includes('別口座') || name.includes('繰越') || name.includes('貯金') || name.includes('貯蓄');
+    let type = ['shared_bank', 'shared_savings', 'personal_bank', 'shared_card', 'personal_card'].includes(acc.type)
+      ? acc.type
+      : 'shared_bank';
+    if (isSavingsByName && type === 'shared_bank') {
+      type = 'shared_savings';
+    }
+    let balance = Number(acc.balance) || 0;
+    if (type === 'shared_savings' && balance === 0 && initSavings > 0 && initSavings !== 161421) {
+      balance = initSavings;
+    }
+    return {
+      id,
+      name,
+      type,
+      balance,
+      institution: String(acc.institution || '').trim(),
+      note: String(acc.note || '').trim(),
+      updatedAt: acc.updatedAt || new Date().toISOString()
+    };
+  });
+
+  // 重複排除:
+  // - id が 'acc_shared_savings' または名前が「別口座貯金（余り繰越用）」の重複は残高が最大の1件に統合
+  // - id が 'acc_shared_pair_bank' または名前が「ふたりの共有口座」の重複は残高が最大の1件に統合
+  // - id が 'acc_shared_pair_card' または名前が「ふたりの共有カード」の重複は1件に統合
+  const result = [];
+  const seenKeys = new Map();
+
+  for (const acc of normalized) {
+    let dedupeKey = acc.id;
+    if (acc.type === 'shared_savings' && (acc.id === 'acc_shared_savings' || acc.name.includes('別口座貯金'))) {
+      dedupeKey = '__singleton_shared_savings__';
+    } else if (acc.type === 'shared_bank' && (acc.id === 'acc_shared_pair_bank' || acc.name === 'ふたりの共有口座')) {
+      dedupeKey = '__singleton_shared_pair_bank__';
+    } else if (acc.type === 'shared_card' && (acc.id === 'acc_shared_pair_card' || acc.name === 'ふたりの共有カード')) {
+      dedupeKey = '__singleton_shared_pair_card__';
+    }
+
+    if (seenKeys.has(dedupeKey)) {
+      const existingIdx = seenKeys.get(dedupeKey);
+      const existing = result[existingIdx];
+      // 残高が大きい方（0円ではない方）を優先して残す
+      if (Math.abs(Number(acc.balance) || 0) > Math.abs(Number(existing.balance) || 0)) {
+        result[existingIdx] = {
+          ...acc,
+          id: dedupeKey === '__singleton_shared_savings__' ? 'acc_shared_savings' : existing.id
+        };
+      }
+    } else {
+      const fixedAcc = dedupeKey === '__singleton_shared_savings__'
+        ? { ...acc, id: 'acc_shared_savings', type: 'shared_savings' }
+        : acc;
+      seenKeys.set(dedupeKey, result.length);
+      result.push(fixedAcc);
+    }
+  }
+
+  return result.length > 0 ? result : getDefaultBankAccounts();
+}
+
+/**
  * 口座リスト・残高の更新 (updateBankAccounts)
  */
 async function handleUpdateBankAccounts(supabase, actor, data) {
   const pairId = getTargetPairId(actor, data);
   const accounts = Array.isArray(data.bankAccounts) ? data.bankAccounts : [];
 
-  // 各口座データのサニタイズ
-  const sanitizedAccounts = accounts.map((acc, index) => ({
-    id: acc.id || `acc_${Date.now()}_${index}`,
-    name: String(acc.name || '口座名未設定').trim(),
-    type: ['shared_bank', 'personal_bank', 'shared_card', 'personal_card'].includes(acc.type) ? acc.type : 'shared_bank',
-    balance: Number(acc.balance) || 0,
-    institution: String(acc.institution || '').trim(),
-    note: String(acc.note || '').trim(),
-    updatedAt: acc.updatedAt || new Date().toISOString()
-  }));
+  const sanitizedAccounts = sanitizeAndDedupeBankAccounts(accounts);
 
   await setAppSetting(supabase, pairId, 'bankAccounts', sanitizedAccounts);
   await writeAudit(supabase, actor, pairId, '更新', '口座残高ボード', 'bankAccounts', null, { count: sanitizedAccounts.length });
@@ -4451,7 +4552,7 @@ export default async function handler(req, res) {
         const verifiedActor = await resolveActor(idToken, supabase, requestedPairId);
         if (verifiedActor.allowed) {
           actor = verifiedActor;
-        } else if (!isDemoAllowed()) {
+        } else if (verifiedActor.code === 'UNAUTHORIZED_LINE_USER' || !isDemoAllowed()) {
           return res.status(401).json({
             success: false,
             code: verifiedActor.code || 'AUTH',
@@ -4564,7 +4665,7 @@ export default async function handler(req, res) {
       if (!actor.allowed) {
         return res.status(200).json({
           success: false,
-          version: 'v2.16.0',
+          version: 'v2.16.1',
           code: actor.code,
           error: actor.error,
           userId: actor.userId || '',
