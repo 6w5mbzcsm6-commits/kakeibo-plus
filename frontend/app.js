@@ -9,7 +9,7 @@
  */
 
 const APP_CONFIG = window.PAIRBUDGET_CONFIG || {};
-const FRONTEND_VERSION = 'v2.12.1';
+const FRONTEND_VERSION = 'v2.12.2';
 const MAX_HISTORY_MONTHS = 36;
 const FIELD_LABELS = {
   date: '日付', title: '品名', amount: '金額', category: 'カテゴリ', isShared: '共同',
@@ -105,6 +105,7 @@ const state = {
     algorithm: 'PBKDF2-HMAC-SHA256'
   },
   importedStatementItems: [],
+  importedCsvBalanceInfo: null,
   categoryBudgets: (() => {
     try { return JSON.parse(localStorage.getItem('pairbudget_category_budgets') || '{}'); } catch (_) { return {}; }
   })(),
@@ -6115,10 +6116,11 @@ function normalizeStatementDate(raw) {
 }
 
 /**
- * 汎用CSV・明細パーサー (v2.12.1 全面強化)
- * - 楽天・三井住友(Vpass)・JCB・イオン・エポス・各行通帳CSV・コピペテキストに完全対応
+ * 汎用CSV・明細パーサー (v2.12.2 銀行入出金・残高・メモ完全対応)
+ * - 楽天・三井住友(Vpass)・JCB・イオン・エポス・各行通帳CSV(出金/入金/残高/メモ)・コピペテキストに完全対応
  */
 function parseStatementCsv(csvText) {
+  state.importedCsvBalanceInfo = null;
   if (!csvText) return [];
   // UTF-8 BOM除去
   let cleanText = String(csvText).replace(/^\uFEFF/, '').trim();
@@ -6153,33 +6155,51 @@ function parseStatementCsv(csvText) {
     return line.split(/[\s　]+/).map(c => c.trim().replace(/^"|"$/g, ''));
   }
 
+  // 金額・残高文字列を整数に変換するヘルパー（空や'-'はnull）
+  function parseYenValue(raw) {
+    if (raw === undefined || raw === null) return null;
+    const cleaned = String(raw).replace(/[,，¥￥円\s"']/g, '').trim();
+    if (!cleaned || cleaned === '-' || cleaned === 'ー' || cleaned === '―') return null;
+    if (!/^-?\d+$/.test(cleaned)) return null;
+    return parseInt(cleaned, 10);
+  }
+
   const parsedRows = rawLines.map(parseLine).filter(r => r.length > 0);
   if (parsedRows.length === 0) return [];
 
   // ヘッダー探索
   const dateRegex = /(?:利用日|年月日|取引日|日付|決済日|計上日|取扱日|Date)/i;
-  const titleRegex = /(?:利用先|利用店|店名|商品名|取引内容|お取扱|お取り扱い|摘要|加盟店|利用場所|箇所|入出金内容|内容|詳細|品名|メモ|ショップ|Title|Description)/i;
-  const amountRegex = /(?:利用金額|支払総額|支払金額|支払い金額|お支払金額|請求金額|決済金額|引落金額|お引出し|出金|入出金|利用額|金額|Amount)/i;
-  const depositRegex = /(?:お預入れ|預入れ|入金|受取)/i;
+  const memoRegex = /^(?:メモ|備考|Note|Memo)$/i;
+  const titleRegex = /(?:利用先|利用店|店名|商品名|取引内容|お取扱|お取り扱い|摘要|加盟店|利用場所|箇所|入出金内容|内容|詳細|品名|ショップ|Title|Description)/i;
+  const isDepositHeader = c => /(?:入金金額|お預入れ|預入れ|入金|受取|Deposit)/i.test(c) && !/入出金/.test(c);
+  const isBalanceHeader = c => /(?:残高|差引残高|現在残高|お預り残高|Balance)/i.test(c);
+  const amountRegex = /(?:出金金額|お引出し|出金|引落金額|利用金額|支払総額|支払金額|支払い金額|お支払金額|請求金額|決済金額|入出金|利用額|金額|Amount)/i;
 
   let headerIndex = -1;
   let dateCol = -1;
   let titleCol = -1;
   let amountCol = -1;
   let depositCol = -1;
+  let balanceCol = -1;
+  let memoCol = -1;
 
   for (let i = 0; i < Math.min(parsedRows.length, 15); i++) {
     const row = parsedRows[i];
     const dIdx = row.findIndex(c => dateRegex.test(c));
-    const aIdx = row.findIndex(c => amountRegex.test(c));
-    const tIdx = row.findIndex(c => titleRegex.test(c));
+    const depIdx = row.findIndex(c => isDepositHeader(c));
+    const balIdx = row.findIndex(c => isBalanceHeader(c));
+    const memIdx = row.findIndex(c => memoRegex.test(c));
+    const aIdx = row.findIndex((c, idx) => idx !== depIdx && idx !== balIdx && amountRegex.test(c));
+    const tIdx = row.findIndex((c, idx) => idx !== memIdx && titleRegex.test(c));
 
-    if (dIdx !== -1 && (aIdx !== -1 || tIdx !== -1)) {
+    if (dIdx !== -1 && (aIdx !== -1 || depIdx !== -1 || tIdx !== -1)) {
       headerIndex = i;
       dateCol = dIdx;
       amountCol = aIdx;
-      titleCol = tIdx;
-      depositCol = row.findIndex(c => depositRegex.test(c));
+      depositCol = depIdx;
+      balanceCol = balIdx;
+      memoCol = memIdx;
+      titleCol = tIdx !== -1 ? tIdx : memIdx;
       break;
     }
   }
@@ -6197,46 +6217,84 @@ function parseStatementCsv(csvText) {
   }
 
   const items = [];
+  let detectedBalanceInfo = null;
 
   if (headerIndex !== -1) {
     // ヘッダーがある場合
     if (titleCol === -1) {
-      titleCol = parsedRows[headerIndex].findIndex((_, idx) => idx !== dateCol && idx !== amountCol && idx !== depositCol);
+      titleCol = parsedRows[headerIndex].findIndex((_, idx) =>
+        idx !== dateCol && idx !== amountCol && idx !== depositCol && idx !== balanceCol && idx !== memoCol
+      );
       if (titleCol === -1) titleCol = 1;
     }
+
+    const isBankFormat = depositCol !== -1 || balanceCol !== -1;
 
     for (let i = headerIndex + 1; i < parsedRows.length; i++) {
       const row = parsedRows[i];
       if (row.length === 0) continue;
-
-      // 銀行CSVで出金列が空でお預入れ(入金)のみの場合はスキップ
-      if (depositCol !== -1 && amountCol !== -1) {
-        const outVal = (row[amountCol] || '').replace(/[,，¥円\s]/g, '');
-        const inVal = (row[depositCol] || '').replace(/[,，¥円\s]/g, '');
-        if ((!outVal || outVal === '0' || outVal === '-') && inVal && parseInt(inVal, 10) > 0) {
-          continue;
-        }
-      }
 
       const rawDate = row[dateCol];
       const normDate = normalizeStatementDate(rawDate);
       if (!normDate) continue;
 
       const rawTitle = (row[titleCol] || '').trim();
-      const rawAmountStr = (row[amountCol] || '').replace(/[,，¥円\s]/g, '');
-      const amount = Math.abs(parseInt(rawAmountStr, 10));
+      let rawMemo = (memoCol !== -1 && memoCol !== titleCol) ? (row[memoCol] || '').trim() : '';
+      if (rawMemo === '-' || rawMemo === 'ー' || rawMemo === '―') rawMemo = '';
 
-      if (!rawTitle || isNaN(amount) || amount === 0) continue;
+      const outVal = amountCol !== -1 ? parseYenValue(row[amountCol]) : null;
+      const inVal = depositCol !== -1 ? parseYenValue(row[depositCol]) : null;
+      const balVal = balanceCol !== -1 ? parseYenValue(row[balanceCol]) : null;
 
-      items.push({
-        date: normDate,
-        title: rawTitle,
-        amount: amount,
-        category: guessCategory(rawTitle),
-        payer: '共同カード',
-        paymentType: 'shared_card',
-        isShared: true
-      });
+      // 残高情報の更新（日付が新しい行、または同日なら後続行の残高を採用）
+      if (balVal !== null && balVal >= 0) {
+        if (!detectedBalanceInfo || normDate >= detectedBalanceInfo.date) {
+          detectedBalanceInfo = {
+            balance: balVal,
+            date: normDate,
+            title: rawTitle || '通帳明細',
+            depositAmount: (inVal !== null && inVal > 0) ? inVal : null,
+            applied: false
+          };
+        }
+      }
+
+      // 1. 出金（支出）行の抽出
+      if (outVal !== null && Math.abs(outVal) > 0) {
+        const amount = Math.abs(outVal);
+        const title = rawTitle || '明細支出';
+        items.push({
+          date: normDate,
+          title: title,
+          amount: amount,
+          txType: 'expense',
+          category: guessCategory(title),
+          payer: isBankFormat ? '共同口座' : '共同カード',
+          paymentType: isBankFormat ? 'shared_account' : 'shared_card',
+          isShared: true,
+          balance: balVal,
+          memo: rawMemo
+        });
+        continue;
+      }
+
+      // 2. 入金（お預入れ）行の抽出（スキップせずに入金明細として保持）
+      if (inVal !== null && inVal > 0) {
+        const amount = Math.abs(inVal);
+        const title = rawTitle || '口座入金';
+        items.push({
+          date: normDate,
+          title: title,
+          amount: amount,
+          txType: 'deposit',
+          category: 'その他',
+          payer: '共同口座',
+          paymentType: 'shared_account',
+          isShared: false, // 支出合計に誤算入されないよう初期値はfalse
+          balance: balVal,
+          memo: rawMemo
+        });
+      }
     }
   } else {
     // ヘッダーなしCSV・三井住友カードVpass・1行目からデータ・テキストコピペ
@@ -6288,19 +6346,43 @@ function parseStatementCsv(csvText) {
         date: foundDate,
         title: foundTitle,
         amount: foundAmount,
+        txType: 'expense',
         category: guessCategory(foundTitle),
         payer: '共同カード',
         paymentType: 'shared_card',
-        isShared: true
+        isShared: true,
+        balance: null,
+        memo: ''
       });
     }
   }
 
+  state.importedCsvBalanceInfo = detectedBalanceInfo;
   return items;
 }
 
 /**
- * CSVファイル解析の共通処理 (v2.12.1)
+ * CSV読み取り完了時のトースト通知ヘルパー
+ */
+function notifyCsvImportLoaded(items, isPaste = false) {
+  const prefix = isPaste ? '📋 コピペから ' : '📄 ';
+  const expenseCount = items.filter(i => i.txType !== 'deposit').length;
+  const depositCount = items.filter(i => i.txType === 'deposit').length;
+  const balInfo = state.importedCsvBalanceInfo;
+
+  if (expenseCount === 0 && depositCount > 0 && balInfo) {
+    showToast(`🏦 入金明細${depositCount}件と口座残高（¥${balInfo.balance.toLocaleString()}）を読み込みました！`, 'success');
+  } else if (depositCount > 0 && balInfo) {
+    showToast(`🏦 出金${expenseCount}件・入金${depositCount}件と口座残高（¥${balInfo.balance.toLocaleString()}）を読み込みました！`, 'success');
+  } else if (depositCount > 0) {
+    showToast(`${prefix}出金${expenseCount}件・入金${depositCount}件の明細を読み込みました！`, 'success');
+  } else {
+    showToast(`${prefix}${items.length} 件の明細を読み込みました！`, 'success');
+  }
+}
+
+/**
+ * CSVファイル解析の共通処理 (v2.12.2 Shift_JIS/UTF-8自動判定強化)
  */
 function processCsvFile(file) {
   if (!file) return;
@@ -6310,6 +6392,9 @@ function processCsvFile(file) {
     let text = '';
     try {
       text = new TextDecoder('utf-8', { fatal: true }).decode(buffer);
+      if (text.includes('\uFFFD')) {
+        text = new TextDecoder('shift_jis').decode(buffer);
+      }
     } catch (_) {
       text = new TextDecoder('shift_jis').decode(buffer);
     }
@@ -6320,7 +6405,7 @@ function processCsvFile(file) {
     }
     state.importedStatementItems = items;
     renderImportPreviewTable();
-    showToast(`📄 ${items.length} 件の明細を読み込みました！`, 'success');
+    notifyCsvImportLoaded(items, false);
   };
   reader.readAsArrayBuffer(file);
 }
@@ -6366,7 +6451,7 @@ function handleCsvDrop(event) {
 }
 
 /**
- * コピペテキスト直接読込 (v2.12.1)
+ * コピペテキスト直接読込 (v2.12.2)
  */
 function handleCsvTextPaste() {
   const input = $('statementCsvPasteInput');
@@ -6382,7 +6467,7 @@ function handleCsvTextPaste() {
   }
   state.importedStatementItems = items;
   renderImportPreviewTable();
-  showToast(`📋 コピペから ${items.length} 件の明細を読み込みました！`, 'success');
+  notifyCsvImportLoaded(items, true);
 }
 
 /**
@@ -6456,10 +6541,12 @@ async function handleStatementImageSelected(event) {
 
       // 明細が検出された場合
       if (res.statements && res.statements.length > 0) {
+        state.importedCsvBalanceInfo = null;
         state.importedStatementItems = res.statements.map(s => ({
           date: normalizeStatementDate(s.date) || localDateStr(),
           title: s.title || '明細',
           amount: Math.abs(Number(s.amount) || 0),
+          txType: 'expense',
           category: s.category || '食費',
           payer: '共同カード',
           paymentType: 'shared_card',
@@ -6481,7 +6568,54 @@ async function handleStatementImageSelected(event) {
 }
 
 /**
- * おしどり風仕分けプレビューテーブルの描画
+ * 通帳CSVから検出した口座残高をワンタップで共有口座へ反映する (v2.12.2)
+ */
+async function applyImportedCsvBalance() {
+  const info = state.importedCsvBalanceInfo;
+  if (!info || info.balance === undefined || info.balance === null) return;
+
+  if (!Array.isArray(state.bankAccounts) || state.bankAccounts.length === 0) {
+    renderBankAccountsCard();
+  }
+
+  let target = state.bankAccounts.find(a => a.type === 'shared_bank') || state.bankAccounts[0];
+  if (!target) {
+    target = {
+      id: 'acc_shared_main',
+      name: '共有普通口座',
+      type: 'shared_bank',
+      balance: Number(info.balance),
+      institution: '共有銀行口座',
+      note: '家賃・光熱費・クレカ引落用口座',
+      updatedAt: new Date().toISOString()
+    };
+    state.bankAccounts.push(target);
+  } else {
+    target.balance = Number(info.balance);
+    target.updatedAt = new Date().toISOString();
+  }
+
+  info.applied = true;
+
+  try {
+    localStorage.setItem('pairbudget_bank_accounts', JSON.stringify(state.bankAccounts));
+  } catch (_) {}
+
+  renderBankAccountsCard();
+  renderImportPreviewTable();
+  showToast(`🏦 共有口座の残高を ¥${Number(info.balance).toLocaleString()} に更新しました✨`, 'success');
+
+  if (!state.isMockMode) {
+    try {
+      await api('updateBankAccounts', { bankAccounts: state.bankAccounts });
+    } catch (e) {
+      console.warn('口座残高のバックエンド保存失敗:', e);
+    }
+  }
+}
+
+/**
+ * おしどり風仕分けプレビューテーブルの描画 (v2.12.2 入出金バッジ・口座残高ワンタップ反映バナー対応)
  */
 function renderImportPreviewTable() {
   const container = $('importPreviewContainer');
@@ -6503,6 +6637,45 @@ function renderImportPreviewTable() {
 
   container.classList.remove('hidden');
 
+  // 口座残高検出バナーの描画（コンテナが無ければ自動生成して先頭に挿入）
+  let balanceBanner = $('importCsvBalanceBannerWrap');
+  if (!balanceBanner) {
+    balanceBanner = document.createElement('div');
+    balanceBanner.id = 'importCsvBalanceBannerWrap';
+    container.insertBefore(balanceBanner, container.firstChild);
+  }
+
+  const balInfo = state.importedCsvBalanceInfo;
+  const depositItems = items.filter(i => i.txType === 'deposit');
+  const hasBankColumns = Boolean(balInfo) || depositItems.length > 0;
+
+  if (balInfo && balInfo.balance !== null && balInfo.balance !== undefined) {
+    const formattedBal = Number(balInfo.balance).toLocaleString();
+    const depositSummary = depositItems.length > 0
+      ? `<div class="text-[11px] text-emerald-800 mt-0.5 font-medium">💰 入金明細: ${escapeHtml(depositItems[0].title)} <span class="font-mono font-bold text-emerald-700">+¥${Number(depositItems[0].amount).toLocaleString()}</span>${depositItems.length > 1 ? ` ほか${depositItems.length - 1}件` : ''}</div>`
+      : '';
+
+    balanceBanner.className = 'p-3 rounded-xl bg-gradient-to-r from-emerald-50 via-teal-50 to-sky-50 border border-emerald-200 shadow-2xs space-y-2';
+    balanceBanner.innerHTML = `
+      <div class="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+        <div class="min-w-0">
+          <div class="text-xs font-extrabold text-slate-800 flex items-center gap-1.5 flex-wrap">
+            <span>🏦 通帳CSVから口座残高【<span class="text-emerald-700 font-mono">¥${formattedBal}</span>】（${escapeHtml(balInfo.date)}時点）を検出しました</span>
+          </div>
+          ${depositSummary}
+        </div>
+        <button type="button" onclick="applyImportedCsvBalance()" ${balInfo.applied ? 'disabled' : ''} class="${balInfo.applied ? 'bg-emerald-100 text-emerald-800 border border-emerald-300 cursor-default' : 'bg-emerald-600 hover:bg-emerald-700 text-white shadow-xs cursor-pointer active:scale-95'} text-xs font-bold px-3.5 py-2 rounded-xl transition-all shrink-0 flex items-center justify-center gap-1.5">
+          ${balInfo.applied
+            ? `<span>✅ 共有口座の残高に反映済み (¥${formattedBal})</span>`
+            : `<span>✨ 共有口座の残高を ¥${formattedBal} に更新する</span>`}
+        </button>
+      </div>
+    `;
+  } else {
+    balanceBanner.className = 'hidden';
+    balanceBanner.innerHTML = '';
+  }
+
   let sharedSum = 0;
   let html = '';
 
@@ -6514,18 +6687,53 @@ function renderImportPreviewTable() {
   const wName = memberName('wife');
 
   items.forEach((item, idx) => {
-    if (item.isShared) sharedSum += item.amount;
+    const isDeposit = item.txType === 'deposit';
+    if (item.isShared && !isDeposit) sharedSum += item.amount;
+
+    const txBadge = isDeposit
+      ? '<span class="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-bold bg-emerald-100 text-emerald-800 mr-1 shrink-0">💰 入金</span>'
+      : (hasBankColumns
+        ? '<span class="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-bold bg-sky-100 text-sky-800 mr-1 shrink-0">💸 出金</span>'
+        : '');
+
+    const depositNoteHtml = isDeposit
+      ? '<div class="text-[10px] text-emerald-600 font-normal mt-0.5">💡 入金明細（支出計算から自動除外済み・上のボタンで残高反映可能）</div>'
+      : '';
+
+    const memoHtml = item.memo
+      ? `<div class="text-[10px] text-slate-400 font-normal mt-0.5">📝 メモ: ${escapeHtml(item.memo)}</div>`
+      : '';
+
+    const balanceSubHtml = (item.balance !== null && item.balance !== undefined)
+      ? `<div class="text-[10px] font-normal text-slate-400 font-mono mt-0.5">残高: ¥${Number(item.balance).toLocaleString()}</div>`
+      : '';
+
+    const amountDisplay = isDeposit
+      ? `<span class="text-emerald-600">+¥${Number(item.amount).toLocaleString()}</span>`
+      : `<span class="text-slate-900">¥${Number(item.amount).toLocaleString()}</span>`;
+
+    const rowBgClass = isDeposit
+      ? 'bg-emerald-50/40'
+      : (item.isShared ? 'bg-sky-50/20' : 'opacity-60 bg-slate-50/50');
 
     html += `
-      <tr class="hover:bg-slate-50 transition-colors ${item.isShared ? 'bg-sky-50/20' : 'opacity-60 bg-slate-50/50'}">
+      <tr class="hover:bg-slate-50 transition-colors ${rowBgClass}">
         <td class="p-2 text-center">
-          <input type="checkbox" ${item.isShared ? 'checked' : ''} onchange="updateImportItemShared(${idx}, this.checked)" class="w-4 h-4 text-sky-600 rounded border-slate-300 focus:ring-sky-500 cursor-pointer">
+          <input type="checkbox" ${item.isShared ? 'checked' : ''} onchange="updateImportItemShared(${idx}, this.checked)" class="w-4 h-4 text-sky-600 rounded border-slate-300 focus:ring-sky-500 cursor-pointer" title="${isDeposit ? '入金明細は通常チェック不要です' : '共有支出として登録'}">
         </td>
         <td class="p-2 font-mono text-slate-500 whitespace-nowrap">${item.date}</td>
         <td class="p-2 font-bold text-slate-800">
-          <div class="truncate max-w-[180px] md:max-w-[240px]">${escapeHtml(item.title)}</div>
+          <div class="flex items-center flex-wrap">
+            ${txBadge}
+            <span class="truncate max-w-[160px] md:max-w-[220px]">${escapeHtml(item.title)}</span>
+          </div>
+          ${depositNoteHtml}
+          ${memoHtml}
         </td>
-        <td class="p-2 text-right font-black font-mono text-slate-900 whitespace-nowrap">¥${item.amount.toLocaleString()}</td>
+        <td class="p-2 text-right font-black font-mono whitespace-nowrap">
+          ${amountDisplay}
+          ${balanceSubHtml}
+        </td>
         <td class="p-2">
           <select onchange="updateImportItemCategory(${idx}, this.value)" class="bg-white border border-slate-200 rounded-lg px-2 py-1 text-xs focus:ring-1 focus:ring-sky-400">
             ${categories.map(cat => `<option value="${cat}" ${item.category === cat ? 'selected' : ''}>${cat}</option>`).join('')}
@@ -6548,7 +6756,11 @@ function renderImportPreviewTable() {
   if (submitBtn) {
     const selectedCount = items.filter(i => i.isShared).length;
     submitBtn.disabled = selectedCount === 0;
-    submitBtn.innerHTML = `<i data-lucide="check" class="w-4 h-4"></i> 共有 ${selectedCount} 件を一括登録`;
+    if (selectedCount === 0 && depositItems.length > 0) {
+      submitBtn.innerHTML = `<i data-lucide="check" class="w-4 h-4"></i> 支出登録対象 0 件（入金明細のみ）`;
+    } else {
+      submitBtn.innerHTML = `<i data-lucide="check" class="w-4 h-4"></i> 共有 ${selectedCount} 件を一括登録`;
+    }
   }
   lucide.createIcons();
 }
@@ -6577,9 +6789,20 @@ function updateImportItemPayer(index, payer) {
 }
 
 function toggleAllImportItems(isShared) {
-  (state.importedStatementItems || []).forEach(item => {
-    item.isShared = isShared;
+  const items = state.importedStatementItems || [];
+  let changed = 0;
+  items.forEach(item => {
+    if (isShared && item.txType === 'deposit') {
+      // 入金行は「すべて共有にする」押下時に誤って支出登録されないよう除外
+      item.isShared = false;
+    } else {
+      item.isShared = isShared;
+      changed++;
+    }
   });
+  if (isShared && changed === 0 && items.some(i => i.txType === 'deposit')) {
+    showToast('💡 入金明細は支出に含まれないためチェック対象外です（上のボタンから口座残高を反映できます）', 'info');
+  }
   renderImportPreviewTable();
 }
 
