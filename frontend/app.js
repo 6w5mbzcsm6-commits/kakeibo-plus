@@ -1868,8 +1868,8 @@ function renderAll() {
   renderCategoryDropdown();
   renderTransferCard();
   renderBudgetSummary();
-  renderSavingsCard();
   renderBankAccountsCard();
+  renderSavingsCard();
   renderCategoryBudgets();
   renderCharts();
   renderRecentTransactions();
@@ -2214,29 +2214,37 @@ function renderBudgetSummary() {
 }
 
 /**
- * 共同積立（貯金）の月次収支および残高を正しく算出する共通関数
- * - 未利用の過去月（支出0）を勝手に黒字合算するバグを防止
- * - ユーザーの手動上書き収支（monthlyBalances）を最優先で反映
+ * 共同積立（貯金）および共同口座トータル残高を算出する共通関数 (v2.14.0: 案C口座分け × 案Aスッキリ統合)
+ * - ① 普段の生活費口座 (shared_bank: 例 ¥161,421)
+ * - ② 別口座貯金・余り繰越分 (shared_savings / initialSavings + 手動繰越収支 + 累計利息)
+ * - 合計 (totalBalance) = ① 普段の生活費口座 + ② 別口座貯金・繰越分
+ * - 過去CSV取込月に対して勝手に「予算−支出」の理論値を加算しない設計
  */
 function computeJointSavingsSummary() {
   const currentBankBalance = (state.bankAccounts || [])
     .filter(a => a.type === 'shared_bank')
     .reduce((sum, a) => sum + (Number(a.balance) || 0), 0);
 
-  // 口座預金・クレカ利用明細との整合連動: 初期残高未設定時は口座残高（¥161,421）をベースラインとして自動連動 (v2.13.2)
-  let initialSavings = Number(state.savingsConfig?.initialSavings || 0);
-  if (initialSavings === 0 && currentBankBalance > 0) {
-    initialSavings = currentBankBalance;
+  const sharedSavingsAccountBalance = (state.bankAccounts || [])
+    .filter(a => a.type === 'shared_savings')
+    .reduce((sum, a) => sum + (Number(a.balance) || 0), 0);
+
+  let rawInitialSavings = Number(state.savingsConfig?.initialSavings || 0);
+  // 旧バージョンの自動同期で生活費口座残高と同じ値が initialSavings に入っていた場合の二重計上を防止
+  if (rawInitialSavings > 0 && rawInitialSavings === currentBankBalance && sharedSavingsAccountBalance === 0) {
+    rawInitialSavings = 0;
   }
+
+  // 別口座貯金のベース残高（口座一覧の「別口座貯金」または初期繰越設定額）
+  const initialSavings = sharedSavingsAccountBalance > 0 ? sharedSavingsAccountBalance : rawInitialSavings;
 
   const monthlyInterests = state.savingsConfig?.monthlyInterests || {};
   const monthlyBalances = state.savingsConfig?.monthlyBalances || {};
-  const currentMonth = localMonthStr();
 
   // monthlyTotals を時系列順（古い月→新しい月）にソート
   const totals = (state.monthlyTotals || []).slice().sort((a, b) => (a.month > b.month ? 1 : -1));
 
-  let totalBalance = initialSavings;
+  let separateSavingsBalance = initialSavings;
   let totalInterests = 0;
   let countedMonths = 0;
   const monthRows = [];
@@ -2245,29 +2253,21 @@ function computeJointSavingsSummary() {
     const m = t.month;
     const hasManualBalance = monthlyBalances[m] !== undefined && monthlyBalances[m] !== '' && !isNaN(Number(monthlyBalances[m]));
     const hasInterest = Number(monthlyInterests[m] || 0) > 0;
-    const isPastWithExpense = (m < currentMonth) && Number(t.shared || 0) > 0;
 
-    // 合算対象月かどうかの判定:
-    // 1. 手動で収支が入力されている月
-    // 2. 利息が入力されている月
-    // 3. 過去の月であり、実際に共有支出が存在する月
-    const isCounted = hasManualBalance || hasInterest || isPastWithExpense;
+    // ユーザーが明示的に登録した繰越収支または利息のみを別口座繰越に加算（過去CSV月の架空黒字加算を防止）
+    const isCounted = hasManualBalance || hasInterest;
 
     let balance = 0;
     let isManual = false;
     if (hasManualBalance) {
       balance = Number(monthlyBalances[m]);
       isManual = true;
-    } else if (isPastWithExpense) {
-      const budget = Number(t.budget || 240000);
-      const sharedSpent = Number(t.shared || 0);
-      balance = budget - sharedSpent;
     }
 
     const interest = Number(monthlyInterests[m] || 0);
 
     if (isCounted) {
-      totalBalance += (balance + interest);
+      separateSavingsBalance += (balance + interest);
       totalInterests += interest;
       countedMonths++;
     }
@@ -2283,8 +2283,12 @@ function computeJointSavingsSummary() {
     });
   });
 
+  // ふたりの共同口座・積立 合計 ＝ ① 普段の生活費口座 ＋ ② 別口座貯金（繰越分）
+  const totalBalance = currentBankBalance + separateSavingsBalance;
+
   return {
     totalBalance,
+    separateSavingsBalance,
     initialSavings,
     currentBankBalance,
     totalInterests,
@@ -2294,41 +2298,31 @@ function computeJointSavingsSummary() {
 }
 
 /**
- * 共同積立を現在の口座残高とワンタップで完全同期 (v2.13.2)
+ * 共同積立を現在の口座残高とワンタップで完全同期 (v2.14.0)
  */
 window.syncSavingsWithBankBalance = async function () {
-  const currentBankBalance = (state.bankAccounts || [])
-    .filter(a => a.type === 'shared_bank')
-    .reduce((sum, a) => sum + (Number(a.balance) || 0), 0);
   if (!state.savingsConfig) state.savingsConfig = {};
-  state.savingsConfig.initialSavings = currentBankBalance;
+  state.savingsConfig.initialSavings = 0;
   try { localStorage.setItem('pairbudget_savings_config', JSON.stringify(state.savingsConfig)); } catch (_) {}
+  renderBankAccountsCard();
   renderSavingsCard();
   updateBudgetOverWarningBox();
-  showToast(`🏦 共同積立を口座残高（${yen(currentBankBalance)}）と同期しました✨`, 'success');
-  if (!state.isMockMode) {
-    await writeAndRefresh('updateSavingsConfig', { savingsConfig: state.savingsConfig }, '共同積立を口座残高と同期しました').catch(() => {});
-  }
+  showToast('🏦 口座残高と積立表示を整理・同期しました✨', 'success');
 };
 
 /**
- * 共同積立・貯金カード描画 (ユーザー画像デザイン完全再現)
+ * 共同口座 ＆ 別口座積立 統合ボード描画 (v2.14.0)
  */
 function renderSavingsCard() {
   const card = $('savingsSummaryCard');
   if (!card) return;
-
-  if (state.surplusPolicy !== 'savings') {
-    card.classList.add('hidden');
-    return;
-  }
   card.classList.remove('hidden');
 
   const summary = computeJointSavingsSummary();
 
   const rows = [];
   summary.monthRows.forEach(item => {
-    if (!item.isCounted) return; // 未利用月・未計上月はカードに表示しない
+    if (!item.isCounted) return; // 未計上月は履歴表に表示しない
 
     const [, m] = item.month.split('-');
     const monthLabel = `${Number(m)}月`;
@@ -2345,7 +2339,7 @@ function renderSavingsCard() {
       <tr class="hover:bg-slate-50/80 transition-colors">
         <td class="py-2 px-3 font-bold text-slate-700">
           ${monthLabel}
-          ${item.isManual ? '<span class="text-[9px] text-brand-600 bg-brand-50 rounded px-1 ml-0.5 font-normal">手動</span>' : ''}
+          ${item.isManual ? '<span class="text-[9px] text-brand-600 bg-brand-50 rounded px-1 ml-0.5 font-normal">繰越記録</span>' : ''}
         </td>
         <td class="py-2 px-3 text-right">
           <button type="button" onclick="openSavingsModal('${item.month}')" class="hover:underline cursor-pointer" title="収支・利息を編集">
@@ -2363,13 +2357,18 @@ function renderSavingsCard() {
   });
 
   if ($('totalSavingsBalance')) $('totalSavingsBalance').textContent = yen(summary.totalBalance);
+  if ($('separateSavingsBalanceLabel')) $('separateSavingsBalanceLabel').textContent = yen(summary.separateSavingsBalance);
   if ($('initialSavingsLabel')) $('initialSavingsLabel').textContent = yen(summary.initialSavings);
   if ($('totalInterestsLabel')) $('totalInterestsLabel').textContent = yen(summary.totalInterests);
-  if ($('savingsCountMonths')) $('savingsCountMonths').textContent = `${summary.countedMonths}ヶ月分蓄積`;
+  if ($('savingsCountMonths')) {
+    $('savingsCountMonths').textContent = summary.separateSavingsBalance > 0
+      ? `生活費口座 ＋ 別口座貯金`
+      : `生活費口座と一致`;
+  }
 
   const tbody = $('savingsMonthlyTableBody');
   if (tbody) {
-    tbody.innerHTML = rows.length ? rows.slice(-6).reverse().join('') : '<tr><td colspan="3" class="py-3 text-center text-slate-400">実績データがありません（初期残高 ¥0）</td></tr>';
+    tbody.innerHTML = rows.length ? rows.slice(-6).reverse().join('') : '<tr><td colspan="3" class="py-3 text-center text-slate-400">月別の繰越・利息記録はまだありません（「+ 繰越・利息を入力」から追加可能）</td></tr>';
   }
 
   // 月初に共同口座へ残すお金ガイド (v2.9.0: 共同カードと共同口座直接引落の完全分離)
@@ -4563,7 +4562,8 @@ function hideToast() {
 window.openSavingsModal = function (targetMonth) {
   const modal = $('savingsModal');
   if (!modal) return;
-  if ($('savingsInitialInput')) $('savingsInitialInput').value = state.savingsConfig?.initialSavings || '';
+  const summary = computeJointSavingsSummary();
+  if ($('savingsInitialInput')) $('savingsInitialInput').value = summary.initialSavings || '';
 
   const list = $('savingsInterestsList');
   if (list) {
@@ -4621,17 +4621,22 @@ window.closeSavingsModal = function () {
 };
 
 window.resetSavingsData = async function () {
-  if (!confirm('共同積立の初期残高・月次収支・利息データをすべて0にリセットしますか？')) return;
+  if (!confirm('別口座貯金の初期残高・月次繰越・利息データをすべて0にリセットしますか？')) return;
   state.savingsConfig = {
     initialSavings: 0,
     monthlyInterests: {},
     monthlyBalances: {}
   };
+  if (Array.isArray(state.bankAccounts)) {
+    state.bankAccounts = state.bankAccounts.map(a => a.type === 'shared_savings' ? { ...a, balance: 0, updatedAt: new Date().toISOString() } : a);
+    try { localStorage.setItem('pairbudget_bank_accounts', JSON.stringify(state.bankAccounts)); } catch (_) {}
+  }
   try { localStorage.setItem('pairbudget_savings_config', JSON.stringify(state.savingsConfig)); } catch (_) {}
   closeSavingsModal();
+  renderBankAccountsCard();
   renderSavingsCard();
   updateBudgetOverWarningBox();
-  await writeAndRefresh('updateSavingsConfig', { savingsConfig: state.savingsConfig }, '🗑️ 積立データを0にリセットしました');
+  await writeAndRefresh('updateSavingsConfig', { savingsConfig: state.savingsConfig }, '🗑️ 別口座・積立データを0にリセットしました');
 };
 
 async function handleSaveSavingsModal() {
@@ -4659,12 +4664,43 @@ async function handleSaveSavingsModal() {
     monthlyInterests: interests,
     monthlyBalances: balances
   };
+
+  // 口座一覧側の「別口座貯金 (shared_savings)」とも残高を連動
+  if (Array.isArray(state.bankAccounts)) {
+    const hasSavingsAcc = state.bankAccounts.some(a => a.type === 'shared_savings');
+    if (hasSavingsAcc) {
+      let assigned = false;
+      state.bankAccounts = state.bankAccounts.map(a => {
+        if (a.type === 'shared_savings' && !assigned) {
+          assigned = true;
+          return { ...a, balance: initial, updatedAt: new Date().toISOString() };
+        }
+        return a;
+      });
+    } else {
+      state.bankAccounts.push({
+        id: 'acc_shared_savings',
+        name: '別口座貯金（余り繰越用）',
+        type: 'shared_savings',
+        balance: initial,
+        institution: '貯蓄用別口座',
+        note: '生活費の余り繰越・共同貯金',
+        updatedAt: new Date().toISOString()
+      });
+    }
+    try { localStorage.setItem('pairbudget_bank_accounts', JSON.stringify(state.bankAccounts)); } catch (_) {}
+    if (!state.isMockMode) {
+      api('updateBankAccounts', { bankAccounts: state.bankAccounts }).catch(() => {});
+    }
+  }
+
   try { localStorage.setItem('pairbudget_savings_config', JSON.stringify(state.savingsConfig)); } catch (_) {}
   closeSavingsModal();
+  renderBankAccountsCard();
   renderSavingsCard();
   updateBudgetOverWarningBox();
 
-  await writeAndRefresh('updateSavingsConfig', { savingsConfig: state.savingsConfig }, '✅ 積立・利息データを保存しました', '設定を保存しています…');
+  await writeAndRefresh('updateSavingsConfig', { savingsConfig: state.savingsConfig }, '✅ 別口座・繰越データを保存しました', '設定を保存しています…');
 }
 
 window.copyWebhookUrl = function () {
@@ -5830,11 +5866,13 @@ function renderBankAccountsCard() {
           (a.id === 'acc_shared_card' && a.name && a.name.includes('楽天カード')))
   );
 
-  // 口座未登録時、ふたりの共有口座（通帳残高¥161,421）および共有カードを正の残高で初期化 (v2.13.1)
+  // 口座未登録時、①ふたりの共有口座（通帳残高¥161,421）、②別口座貯金（余り繰越用）、③共有カードを初期化 (v2.14.0)
   if (state.bankAccounts.length === 0) {
     const passbookBal = (state.importedCsvBalanceInfo && state.importedCsvBalanceInfo.balance !== null && state.importedCsvBalanceInfo.balance !== undefined)
       ? Number(state.importedCsvBalanceInfo.balance)
       : 161421;
+    let initSepSavings = Number(state.savingsConfig?.initialSavings || 0);
+    if (initSepSavings === passbookBal) initSepSavings = 0;
     state.bankAccounts = [
       {
         id: 'acc_shared_pair_bank',
@@ -5842,7 +5880,16 @@ function renderBankAccountsCard() {
         type: 'shared_bank',
         balance: passbookBal,
         institution: '共有銀行口座',
-        note: '生活費・引落用共有口座',
+        note: '普段の生活費・引落用口座',
+        updatedAt: new Date().toISOString()
+      },
+      {
+        id: 'acc_shared_savings',
+        name: '別口座貯金（余り繰越用）',
+        type: 'shared_savings',
+        balance: initSepSavings,
+        institution: '貯蓄用別口座',
+        note: '余った分の繰越・共同貯金',
         updatedAt: new Date().toISOString()
       },
       {
@@ -5861,6 +5908,29 @@ function renderBankAccountsCard() {
     if (!state.isMockMode) {
       api('updateBankAccounts', { bankAccounts: state.bankAccounts }).catch(() => {});
     }
+  } else if (!state.bankAccounts.some(a => a.type === 'shared_savings')) {
+    // すでに生活費口座がある環境でも「別口座貯金（余り繰越用）」が未登録なら追加して案Cの2口座構成をわかりやすく表示
+    const livingBal = state.bankAccounts.filter(a => a.type === 'shared_bank').reduce((s, a) => s + (Number(a.balance) || 0), 0);
+    let initSepSavings = Number(state.savingsConfig?.initialSavings || 0);
+    if (initSepSavings === livingBal) initSepSavings = 0;
+    const cardIdx = state.bankAccounts.findIndex(a => a.type === 'shared_card');
+    const newSavingsAcc = {
+      id: 'acc_shared_savings',
+      name: '別口座貯金（余り繰越用）',
+      type: 'shared_savings',
+      balance: initSepSavings,
+      institution: '貯蓄用別口座',
+      note: '余った分の繰越・共同貯金',
+      updatedAt: new Date().toISOString()
+    };
+    if (cardIdx >= 0) {
+      state.bankAccounts.splice(cardIdx, 0, newSavingsAcc);
+    } else {
+      state.bankAccounts.push(newSavingsAcc);
+    }
+    try {
+      localStorage.setItem('pairbudget_bank_accounts', JSON.stringify(state.bankAccounts));
+    } catch (_) {}
   }
 
   // 1. 自動引落シミュレーション計算 ＆ 複式簿記（借方・貸方）バランス計算
@@ -5899,10 +5969,22 @@ function renderBankAccountsCard() {
     const el = $('simProjectedBalance');
     el.textContent = `¥${projectedBalance.toLocaleString()}`;
     if (projectedBalance < 0) {
-      el.className = 'text-sm md:text-base font-black text-rose-300 truncate';
+      el.className = 'font-bold text-rose-300 font-mono';
     } else {
-      el.className = 'text-sm md:text-base font-black text-white truncate';
+      el.className = 'font-bold text-emerald-200 font-mono';
     }
+  }
+
+  // 上部のトータル残高・別口座貯金ラベルも最新口座状態と即時同期
+  const latestSummary = computeJointSavingsSummary();
+  if ($('totalSavingsBalance')) $('totalSavingsBalance').textContent = yen(latestSummary.totalBalance);
+  if ($('separateSavingsBalanceLabel')) $('separateSavingsBalanceLabel').textContent = yen(latestSummary.separateSavingsBalance);
+  if ($('initialSavingsLabel')) $('initialSavingsLabel').textContent = yen(latestSummary.initialSavings);
+  if ($('totalInterestsLabel')) $('totalInterestsLabel').textContent = yen(latestSummary.totalInterests);
+  if ($('savingsCountMonths')) {
+    $('savingsCountMonths').textContent = latestSummary.separateSavingsBalance > 0
+      ? `生活費口座 ＋ 別口座貯金`
+      : `生活費口座と一致`;
   }
 
   // 簿記・貸借整合ステータスの更新
@@ -5934,20 +6016,24 @@ function renderBankAccountsCard() {
   // 2. 口座一覧リストの描画
   let html = '';
   state.bankAccounts.forEach((acc, idx) => {
-    const isShared = acc.type === 'shared_bank' || acc.type === 'shared_card';
     const isCard = acc.type === 'shared_card' || acc.type === 'personal_card';
+    const isSavings = acc.type === 'shared_savings';
 
     const typeBadge = acc.type === 'shared_bank'
-      ? '<span class="px-1.5 py-0.5 rounded text-[10px] font-bold bg-sky-100 text-sky-800">共有普通口座</span>'
-      : (acc.type === 'shared_card'
-        ? '<span class="px-1.5 py-0.5 rounded text-[10px] font-bold bg-indigo-100 text-indigo-800">共同カード</span>'
-        : (acc.type === 'personal_bank'
-          ? '<span class="px-1.5 py-0.5 rounded text-[10px] font-bold bg-slate-100 text-slate-700">個人口座</span>'
-          : '<span class="px-1.5 py-0.5 rounded text-[10px] font-bold bg-purple-100 text-purple-800">個人カード</span>'));
+      ? '<span class="px-1.5 py-0.5 rounded text-[10px] font-bold bg-sky-100 text-sky-800">🏦 生活費口座</span>'
+      : (acc.type === 'shared_savings'
+        ? '<span class="px-1.5 py-0.5 rounded text-[10px] font-bold bg-emerald-100 text-emerald-800">🐷 別口座貯金(繰越)</span>'
+        : (acc.type === 'shared_card'
+          ? '<span class="px-1.5 py-0.5 rounded text-[10px] font-bold bg-indigo-100 text-indigo-800">💳 共同カード</span>'
+          : (acc.type === 'personal_bank'
+            ? '<span class="px-1.5 py-0.5 rounded text-[10px] font-bold bg-slate-100 text-slate-700">個人口座</span>'
+            : '<span class="px-1.5 py-0.5 rounded text-[10px] font-bold bg-purple-100 text-purple-800">個人カード</span>')));
 
     const iconHtml = isCard
       ? '<i data-lucide="credit-card" class="w-4 h-4 text-indigo-500"></i>'
-      : '<i data-lucide="landmark" class="w-4 h-4 text-sky-500"></i>';
+      : (isSavings
+        ? '<i data-lucide="piggy-bank" class="w-4 h-4 text-emerald-500"></i>'
+        : '<i data-lucide="landmark" class="w-4 h-4 text-sky-500"></i>');
 
     const updatedText = acc.updatedAt ? new Date(acc.updatedAt).toLocaleDateString('ja-JP', { month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit' }) : '';
 
@@ -6071,12 +6157,27 @@ async function handleSaveBankAccount() {
     state.bankAccounts.push(newAccount);
   }
 
+  // 別口座貯金（shared_savings）の残高変更時は savingsConfig.initialSavings とも同期
+  if (newAccount.type === 'shared_savings') {
+    const totalSepSavings = state.bankAccounts
+      .filter(a => a.type === 'shared_savings')
+      .reduce((sum, a) => sum + (Number(a.balance) || 0), 0);
+    if (!state.savingsConfig) state.savingsConfig = {};
+    state.savingsConfig.initialSavings = totalSepSavings;
+    try { localStorage.setItem('pairbudget_savings_config', JSON.stringify(state.savingsConfig)); } catch (_) {}
+    if (!state.isMockMode) {
+      api('updateSavingsConfig', { savingsConfig: state.savingsConfig }).catch(() => {});
+    }
+  }
+
   try {
     localStorage.setItem('pairbudget_bank_accounts', JSON.stringify(state.bankAccounts));
   } catch (_) {}
 
   closeBankAccountModal();
   renderBankAccountsCard();
+  renderSavingsCard();
+  updateBudgetOverWarningBox();
   showToast(isEdit ? '口座情報を更新しました' : '口座を追加しました', 'success');
 
   // バックエンドへ保存
@@ -6106,6 +6207,8 @@ async function handleDeleteBankAccount() {
 
   closeBankAccountModal();
   renderBankAccountsCard();
+  renderSavingsCard();
+  updateBudgetOverWarningBox();
   showToast('口座を削除しました', 'info');
 
   if (!state.isMockMode) {
