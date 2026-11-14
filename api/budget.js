@@ -1099,7 +1099,7 @@ async function handleGetInitialData(supabase, targetMonth, actor, requestedPairI
 
   return {
     success: true,
-    version: 'v2.16.1',
+    version: 'v2.17.0',
     pair: {
       id: pairId,
       name: config.pairName,
@@ -3756,6 +3756,39 @@ async function processNaturalLanguageMessage(supabase, text, userId) {
     return reply;
   }
 
+  // 11-4. AI家計分析・データベース抽出ファイル出力コマンド (v2.17.0)
+  // 例:「AI分析」「データ抽出」「AI用データ」「ファイル抽出」「エクスポート」「CSV出力」「無駄遣い分析」
+  const isAiExportRequest =
+    /^(?:AI分析|AI診断|AIデータ|データ抽出|ファイル抽出|データ出力|エクスポート|CSV出力|CSV抽出|DB抽出|データベース抽出|家計分析|無駄遣い分析)$/i.test(text) ||
+    /(?:(?:AI|ChatGPT|Claude|Gemini|データ|データベース|ファイル|CSV|まとめ).*(?:抽出|出力|エクスポート|ダウンロード|渡す|投げる|分析|診断)|(?:無駄遣い|お金の使い方).*(?:分析|診断|チェック))/.test(text);
+
+  if (isAiExportRequest) {
+    const curMonth = getMonthDateRange(getCurrentMonth()).startDate.slice(0, 7);
+    const tokenRec = await createAiExportDownloadToken(supabase, pairId, curMonth);
+    const exportData = await buildAiAnalysisExportData(supabase, pairId, curMonth);
+    const baseUrl = process.env.PUBLIC_APP_URL || 'https://futari-kakeibo.vercel.app';
+    const mdUrl = `${baseUrl}/api/budget?action=downloadAiExport&format=md&pairId=${encodeURIComponent(pairId)}&exportToken=${encodeURIComponent(tokenRec.token)}`;
+    const csvUrl = `${baseUrl}/api/budget?action=downloadAiExport&format=csv&pairId=${encodeURIComponent(pairId)}&exportToken=${encodeURIComponent(tokenRec.token)}`;
+
+    let msg1 = `🤖【AI家計診断・データベース抽出ファイル (${curMonth})】\n`;
+    msg1 += `━━━━━━━━━━━━━━\n`;
+    msg1 += `ChatGPT・Claude・Gemini等のAIにそのまま渡して「無駄遣い診断」や「上手なやりくり分析」ができる専用ファイルを生成しました！✨\n\n`;
+    msg1 += `📥 ① AI分析プロンプト付きまとめファイル (.md)\n`;
+    msg1 += `${mdUrl}\n\n`;
+    msg1 += `📊 ② 全取引明細データ (.csv)\n`;
+    msg1 += `${csvUrl}\n\n`;
+    msg1 += `🔒 ※セキュリティ保護のため、上記ダウンロードURLは【30分間のみ有効】なワンタイムリンクです。\n`;
+    msg1 += `💡 下の2通目のメッセージをそのままコピーしてAIに貼り付けるだけでも、すぐに精密な家計診断が受けられます！`;
+
+    // 2通目: そのままコピーしてAIに貼り付けられる構造化プロンプト＆データ（4800文字以内に収める）
+    const copyablePrompt = exportData.markdown.slice(0, 4800);
+
+    return [
+      { type: 'text', text: msg1 },
+      { type: 'text', text: copyablePrompt }
+    ];
+  }
+
   // 12. 支出入力パーサー
   const parts = text.split(/[\s　]+/);
   if (parts.length < 2) {
@@ -4127,7 +4160,7 @@ async function handleHealthCheck(req) {
 
   return {
     success: true,
-    version: 'v2.16.1',
+    version: 'v2.17.0',
     resolvedUrl: resolvedUrl ? resolvedUrl.replace(/\/\/[^@]+@/, '//***@') : '未設定',
     keyType: keyType,
     env: envCheck,
@@ -4459,7 +4492,201 @@ async function handleVerifySecurityPin(supabase, actor, data) {
   }
 
   const isValid = verifySecretWithSalt(pin, storedHash);
-  return { success: true, isConfigured: true, isValid: isValid };
+  return { success: true, isConfigured: true, isValid };
+}
+
+/**
+ * AI分析用 家計データベース一括抽出ファイル（Markdown / CSV）生成ヘルパー (v2.17.0)
+ * - LINEのワンタイムトークン発行・ダウンロード、およびWeb画面からの即時抽出で共通利用
+ */
+async function buildAiAnalysisExportData(supabase, pairId, targetMonth = null) {
+  const m = sanitizeMonth(targetMonth || currentMonthStr());
+  const config = await getConfigData(supabase, pairId);
+  const initData = await handleGetInitialData(supabase, m, { name: config.husbandName || 'メンバー1', verified: true, pairId }, pairId);
+
+  const s = initData.summary || { budget: 240000, totalExpense: 0, remaining: 240000, dailyAllowance: 0, daysLeft: 0 };
+  const txs = initData.transactions || [];
+  const fixedList = initData.fixedExpenses || [];
+  const monthlyTotals = initData.monthlyTotals || [];
+  const receiptItems = initData.receiptItems || [];
+  const bankAccounts = sanitizeAndDedupeBankAccounts(config.bankAccounts || getDefaultBankAccounts(), config.savingsConfig);
+
+  const nonExpenseCats = ['口座入金', '収入', 'クレカ引落振替', '振替'];
+  const expenseTxs = txs.filter(t => t.isShared !== false && !nonExpenseCats.includes(t.category) && Number(t.amount) > 0);
+  const incomeTxs = txs.filter(t => t.category === '口座入金' || t.category === '収入' || Number(t.amount) < 0);
+
+  // 口座残高集計
+  const livingBankBal = bankAccounts.filter(a => a.type === 'shared_bank').reduce((sum, a) => sum + (Number(a.balance) || 0), 0);
+  const sepSavingsAccBal = bankAccounts.filter(a => a.type === 'shared_savings').reduce((sum, a) => sum + (Number(a.balance) || 0), 0);
+  const separateSavingsBal = sepSavingsAccBal > 0 ? sepSavingsAccBal : Number(config.savingsConfig?.initialSavings || 0);
+  const totalAssets = livingBankBal + separateSavingsBal;
+
+  // レシート枚数集計
+  const receiptIds = new Set();
+  let manualReceipts = 0;
+  expenseTxs.forEach(t => {
+    if (t.receiptId) receiptIds.add(String(t.receiptId));
+    else if (!String(t.memo || '').includes('明細取込')) manualReceipts += 1;
+  });
+  const totalReceiptCount = receiptIds.size + manualReceipts;
+
+  // カテゴリ別集計 ＆ 部門予算対比
+  const catMap = {};
+  expenseTxs.forEach(t => {
+    const c = t.category || '未分類';
+    if (!catMap[c]) catMap[c] = { amount: 0, count: 0 };
+    catMap[c].amount += Number(t.amount || 0);
+    catMap[c].count += 1;
+  });
+  const catBudgets = (config.categoryBudgetsByMonth && config.categoryBudgetsByMonth[m]) || config.categoryBudgets || {};
+  const sortedCats = Object.entries(catMap).sort((a, b) => b[1].amount - a[1].amount);
+
+  // 店舗・支払先別ランキング（上位15件：無駄遣い・高頻度支出の発見用）
+  const storeMap = {};
+  expenseTxs.forEach(t => {
+    const name = String(t.title || '不明').trim();
+    if (!storeMap[name]) storeMap[name] = { amount: 0, count: 0, category: t.category || '未分類' };
+    storeMap[name].amount += Number(t.amount || 0);
+    storeMap[name].count += 1;
+  });
+  const topStores = Object.entries(storeMap).sort((a, b) => b[1].amount - a[1].amount).slice(0, 15);
+
+  // 1. AI（ChatGPT / Claude / Gemini）にそのまま渡せる構造化Markdownレポート
+  let md = `# 📊 ふたり家計簿 AI家計診断・無駄遣い分析用データセット (${m})\n\n`;
+  md += `> **🤖 AIへの分析プロンプト（このままAIに貼り付けるか、ファイルを添付して送信してください）**\n`;
+  md += `> あなたはプロのファイナンシャルプランナー（FP）兼 家計改善アドバイザーです。以下の「ふたり家計簿」のデータベース抽出データをもとに、次の4点を具体的かつ辛口・親切に診断してください。\n`;
+  md += `> 1. **上手にお金を使えている点（褒めるべきポイント・黒字/貯蓄ペースの評価）**\n`;
+  md += `> 2. **無駄遣い・使いすぎの可能性がある要注意ポイント（特定店舗・カテゴリ・頻度・固定費の偏り）**\n`;
+  md += `> 3. **月間予算（¥${Number(s.budget || 0).toLocaleString()}）および口座残高（①生活費口座 / ②別口座貯金）に対するキャッシュフロー健全性**\n`;
+  md += `> 4. **来月から無理なく毎月あと1〜3万円貯蓄を増やせる具体的なアクションプラン3つ**\n\n`;
+
+  md += `---\n\n`;
+  md += `## 1. 当月（${m}）の家計サマリー ＆ 口座残高\n`;
+  md += `- **生活費月間予算**: ¥${Number(s.budget || 0).toLocaleString()}\n`;
+  md += `- **今月使ったお金（共同生活費支出合計）**: ¥${Number(s.totalExpense || 0).toLocaleString()}（予算消化率 ${s.progressRate || 0}%）\n`;
+  md += `- **生活費予算 残金**: ¥${Number(s.remaining || 0).toLocaleString()}（1日あたり使える目安: ¥${Number(s.dailyAllowance || 0).toLocaleString()}/日・残り${s.daysLeft || 0}日）\n`;
+  md += `- **レシート登録枚数**: ${totalReceiptCount}枚（支出明細総数: ${expenseTxs.length}件）\n`;
+  md += `- **共同口座・別口座貯金 合計残高**: ¥${totalAssets.toLocaleString()}\n`;
+  md += `  - ① 普段の生活費口座: ¥${livingBankBal.toLocaleString()}\n`;
+  md += `  - ② 別口座貯金（余り繰越分）: ¥${separateSavingsBal.toLocaleString()}\n`;
+  md += `- **ふたりの基本拠出額設定**: ${config.husbandName || 'メンバー1'} ¥${Number(config.husbandBaseContribution || 60000).toLocaleString()} / ${config.wifeName || 'メンバー2'} ¥${Number(config.wifeBaseContribution || 60000).toLocaleString()}\n\n`;
+
+  md += `## 2. カテゴリ別支出内訳 ＆ 部門予算との比較\n`;
+  md += `| カテゴリ | 支出合計 | 件数 | 構成比 | 部門予算 | 予算比 |\n`;
+  md += `| :--- | ---: | ---: | ---: | ---: | :--- |\n`;
+  sortedCats.forEach(([catName, info]) => {
+    const ratio = s.totalExpense > 0 ? Math.round((info.amount / s.totalExpense) * 100) : 0;
+    const cBudget = Number(catBudgets[catName] || 0);
+    const budgetDiffStr = cBudget > 0
+      ? (info.amount > cBudget ? `⚠️ +¥${(info.amount - cBudget).toLocaleString()} 超過` : `✅ 残¥${(cBudget - info.amount).toLocaleString()}`)
+      : '-';
+    md += `| ${catName} | ¥${info.amount.toLocaleString()} | ${info.count}件 | ${ratio}% | ${cBudget > 0 ? `¥${cBudget.toLocaleString()}` : '未設定'} | ${budgetDiffStr} |\n`;
+  });
+  md += `\n`;
+
+  md += `## 3. 支出先・店舗別ランキング TOP15（頻度・金額分析用）\n`;
+  md += `| 順位 | 店舗・内容 | カテゴリ | 利用回数 | 合計金額 | 1回あたり平均 |\n`;
+  md += `| ---: | :--- | :--- | ---: | ---: | ---: |\n`;
+  topStores.forEach(([storeName, info], idx) => {
+    const avg = info.count > 0 ? Math.round(info.amount / info.count) : 0;
+    md += `| ${idx + 1} | ${storeName} | ${info.category} | ${info.count}回 | ¥${info.amount.toLocaleString()} | ¥${avg.toLocaleString()} |\n`;
+  });
+  md += `\n`;
+
+  md += `## 4. 登録済み固定費マスタ一覧\n`;
+  if (fixedList.length === 0) {
+    md += `- 登録されている固定費はありません\n\n`;
+  } else {
+    md += `| 固定費名 | カテゴリ | 金額 | 引落日 | 支払方法 | 状態 |\n`;
+    md += `| :--- | :--- | ---: | :--- | :--- | :--- |\n`;
+    fixedList.forEach(f => {
+      md += `| ${f.title} | ${f.category} | ¥${Number(f.amount || 0).toLocaleString()} | 毎月${f.billingDay}日 | ${f.paymentType === 'shared_card' ? '共同カード' : '共同口座振替'} | ${f.isActive !== false ? '有効' : '停止中'} |\n`;
+    });
+    md += `\n`;
+  }
+
+  md += `## 5. 過去月別の支出推移（直近12ヶ月）\n`;
+  md += `| 年月 | 共同生活費支出 | 月間予算 | 月次収支（予算−支出） |\n`;
+  md += `| :--- | ---: | ---: | ---: |\n`;
+  monthlyTotals.slice(-12).forEach(mt => {
+    const mBudget = Number(mt.budget || 240000);
+    const mShared = Number(mt.shared || 0);
+    const mDiff = mBudget - mShared;
+    md += `| ${mt.month} | ¥${mShared.toLocaleString()} | ¥${mBudget.toLocaleString()} | ${mDiff >= 0 ? `+¥${mDiff.toLocaleString()}` : `-¥${Math.abs(mDiff).toLocaleString()}`} |\n`;
+  });
+  md += `\n`;
+
+  md += `## 6. 当月（${m}）の全取引明細データ（全${txs.length}件）\n`;
+  md += `| 日付 | 内容・店舗名 | カテゴリ | 金額 | 種別 | 支払方法 | 支払者 | メモ |\n`;
+  md += `| :--- | :--- | :--- | ---: | :--- | :--- | :--- | :--- |\n`;
+  txs.forEach(t => {
+    const scopeStr = t.isShared !== false ? '家族(共有)' : '個人(私物)';
+    const payStr = t.paymentType === 'shared_card' ? '共同カード' : (t.paymentType === 'shared_account' ? '共同口座' : '個人立替');
+    md += `| ${t.date} | ${String(t.title || '').replace(/\|/g, '｜')} | ${t.category || ''} | ¥${Number(t.amount || 0).toLocaleString()} | ${scopeStr} | ${payStr} | ${t.payer || ''} | ${String(t.memo || '').replace(/\|/g, '｜')} |\n`;
+  });
+
+  if (receiptItems.length > 0) {
+    md += `\n## 7. レシート購入品目データ（直近${Math.min(100, receiptItems.length)}品目）\n`;
+    md += `| 品名 | 数量 | 単価 | 金額 |\n`;
+    md += `| :--- | ---: | ---: | ---: |\n`;
+    receiptItems.slice(0, 100).forEach(it => {
+      md += `| ${String(it.name || '').replace(/\|/g, '｜')} | ${it.quantity || 1} | ¥${Number(it.unitPrice || it.price || 0).toLocaleString()} | ¥${Number(it.price || 0).toLocaleString()} |\n`;
+    });
+  }
+
+  // 2. CSV形式（Excel / Python / ChatGPT Advanced Data Analysis 用）
+  const csvRows = [
+    ['日付', '内容・店舗名', 'カテゴリ', '金額', '家族/個人', '支払方法', '支払者', 'レシートID', 'メモ']
+  ];
+  txs.forEach(t => {
+    const scopeStr = t.isShared !== false ? '家族(共有)' : '個人(私物)';
+    const payStr = t.paymentType === 'shared_card' ? '共同カード' : (t.paymentType === 'shared_account' ? '共同口座' : '個人立替');
+    csvRows.push([
+      t.date || '',
+      t.title || '',
+      t.category || '',
+      String(Number(t.amount || 0)),
+      scopeStr,
+      payStr,
+      t.payer || '',
+      t.receiptId || '',
+      t.memo || ''
+    ]);
+  });
+  const csvContent = '\uFEFF' + csvRows.map(row =>
+    row.map(cell => `"${String(cell ?? '').replace(/"/g, '""')}"`).join(',')
+  ).join('\r\n');
+
+  return {
+    month: m,
+    markdown: md,
+    csv: csvContent,
+    summary: {
+      budget: s.budget,
+      totalExpense: s.totalExpense,
+      remaining: s.remaining,
+      totalAssets,
+      livingBankBal,
+      separateSavingsBal,
+      totalReceiptCount,
+      txCount: txs.length
+    }
+  };
+}
+
+/**
+ * LINE等から安全にAI分析用ファイルをダウンロードするためのワンタイムトークン発行 (v2.17.0)
+ */
+async function createAiExportDownloadToken(supabase, pairId, monthStr) {
+  const token = crypto.randomBytes(24).toString('hex');
+  const record = {
+    token,
+    pairId,
+    month: sanitizeMonth(monthStr || currentMonthStr()),
+    expiresAt: Date.now() + 30 * 60 * 1000 // 30分間有効
+  };
+  await setAppSetting(supabase, pairId, `aiExportToken_${token}`, record);
+  return record;
 }
 
 /**
@@ -4535,10 +4762,57 @@ export default async function handler(req, res) {
     return res.status(500).json({ success: false, error: err.message });
   }
 
-  // 1. GET リクエスト（初期データ取得・イベント一覧等）
+  // 1. GET リクエスト（初期データ取得・イベント一覧・AI分析ファイルダウンロード等）
   if (req.method === 'GET') {
     try {
       const action = req.query.action || 'getInitialData';
+
+      // 1-A. LINE経由のワンタイムトークン付きAI分析ファイルダウンロード (v2.17.0)
+      if (action === 'downloadAiExport') {
+        const exportToken = String(req.query.exportToken || '').trim();
+        const format = String(req.query.format || 'md').toLowerCase();
+        const requestedPairIdForExport = sanitizePairId(req.query.pairId || DEFAULT_PAIR_ID);
+
+        let validPairId = null;
+        let targetMonth = req.query.month || currentMonthStr();
+
+        if (exportToken && /^[0-9a-f]{48}$/i.test(exportToken)) {
+          const savedRecord = await getAppSetting(supabase, requestedPairIdForExport, `aiExportToken_${exportToken}`, null);
+          if (savedRecord && savedRecord.token === exportToken && Number(savedRecord.expiresAt) > Date.now()) {
+            validPairId = savedRecord.pairId || requestedPairIdForExport;
+            targetMonth = req.query.month || savedRecord.month || currentMonthStr();
+          }
+        }
+
+        // トークンがない場合は通常のLINE IDトークン検証で許可
+        if (!validPairId) {
+          const qToken = req.query.idToken || req.query.token;
+          if (qToken) {
+            const vActor = await resolveActor(qToken, supabase, requestedPairIdForExport);
+            if (vActor && vActor.allowed && vActor.verified) {
+              validPairId = vActor.pairId;
+            }
+          }
+        }
+
+        if (!validPairId) {
+          res.setHeader('Content-Type', 'text/plain; charset=utf-8');
+          return res.status(403).send('🔒 ダウンロードリンクの有効期限（30分）が切れているか、権限がありません。LINEで再度「AI分析ファイル」と送信して新しいリンクを発行してください。');
+        }
+
+        const exportData = await buildAiAnalysisExportData(supabase, validPairId, targetMonth);
+        if (format === 'csv') {
+          const fileName = `futari-kakeibo-ai-data-${exportData.month}.csv`;
+          res.setHeader('Content-Type', 'text/csv; charset=utf-8');
+          res.setHeader('Content-Disposition', `attachment; filename="${fileName}"`);
+          return res.status(200).send(exportData.csv);
+        } else {
+          const fileName = `futari-kakeibo-ai-analysis-${exportData.month}.md`;
+          res.setHeader('Content-Type', 'text/markdown; charset=utf-8');
+          res.setHeader('Content-Disposition', `attachment; filename="${fileName}"`);
+          return res.status(200).send(exportData.markdown);
+        }
+      }
 
       // 認証ガード: DEMO_MODE が true か、またはクエリ / ヘッダーのトークンを検証
       const queryToken = req.query.idToken || req.query.token;
@@ -4665,7 +4939,7 @@ export default async function handler(req, res) {
       if (!actor.allowed) {
         return res.status(200).json({
           success: false,
-          version: 'v2.16.1',
+          version: 'v2.17.0',
           code: actor.code,
           error: actor.error,
           userId: actor.userId || '',
@@ -4788,6 +5062,10 @@ export default async function handler(req, res) {
           break;
         case 'verifySecurityPin':
           result = await handleVerifySecurityPin(supabase, actor, data);
+          break;
+        case 'exportAiAnalysisData':
+          const expData = await buildAiAnalysisExportData(supabase, requestedPairId || actor.pairId, data.month);
+          result = { success: true, ...expData };
           break;
         case 'testSaltedHash':
           result = await handleTestSaltedHash(data, actor);
