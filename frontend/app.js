@@ -9,7 +9,7 @@
  */
 
 const APP_CONFIG = window.PAIRBUDGET_CONFIG || {};
-const FRONTEND_VERSION = 'v2.13.2';
+const FRONTEND_VERSION = 'v2.15.0';
 const MAX_HISTORY_MONTHS = 36;
 const FIELD_LABELS = {
   date: '日付', title: '品名', amount: '金額', category: 'カテゴリ', isShared: '共同',
@@ -6013,7 +6013,7 @@ function renderBankAccountsCard() {
     }
   }
 
-  // 2. 口座一覧リストの描画
+  // 2. 口座一覧リストの描画（おしどり風デザイン ＆ タップで「口座・カード取引情報」画面を開く v2.15.0）
   let html = '';
   state.bankAccounts.forEach((acc, idx) => {
     const isCard = acc.type === 'shared_card' || acc.type === 'personal_card';
@@ -6024,43 +6024,58 @@ function renderBankAccountsCard() {
       : (acc.type === 'shared_savings'
         ? '<span class="px-1.5 py-0.5 rounded text-[10px] font-bold bg-emerald-100 text-emerald-800">🐷 別口座貯金(繰越)</span>'
         : (acc.type === 'shared_card'
-          ? '<span class="px-1.5 py-0.5 rounded text-[10px] font-bold bg-indigo-100 text-indigo-800">💳 共同カード</span>'
+          ? '<span class="px-1.5 py-0.5 rounded text-[10px] font-bold bg-rose-100 text-rose-800">💳 共同カード</span>'
           : (acc.type === 'personal_bank'
             ? '<span class="px-1.5 py-0.5 rounded text-[10px] font-bold bg-slate-100 text-slate-700">個人口座</span>'
             : '<span class="px-1.5 py-0.5 rounded text-[10px] font-bold bg-purple-100 text-purple-800">個人カード</span>')));
 
+    const circleBg = isCard
+      ? 'bg-rose-400 text-white'
+      : (isSavings ? 'bg-emerald-500 text-white' : 'bg-sky-500 text-white');
+
     const iconHtml = isCard
-      ? '<i data-lucide="credit-card" class="w-4 h-4 text-indigo-500"></i>'
+      ? '<i data-lucide="credit-card" class="w-4 h-4"></i>'
       : (isSavings
-        ? '<i data-lucide="piggy-bank" class="w-4 h-4 text-emerald-500"></i>'
-        : '<i data-lucide="landmark" class="w-4 h-4 text-sky-500"></i>');
+        ? '<i data-lucide="piggy-bank" class="w-4 h-4"></i>'
+        : '<i data-lucide="landmark" class="w-4 h-4"></i>');
 
     const updatedText = acc.updatedAt ? new Date(acc.updatedAt).toLocaleDateString('ja-JP', { month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit' }) : '';
 
+    // クレジットカードの場合は今月のカード利用額（または設定残高）をおしどり風に「¥-23,993」形式で表示
+    const rawCardAmt = acc.type === 'shared_card'
+      ? (sharedCardUsage > 0 ? sharedCardUsage : Math.abs(Number(acc.balance || 0)))
+      : Number(acc.balance || 0);
+    const displayAmountStr = isCard
+      ? (rawCardAmt > 0 ? `¥-${rawCardAmt.toLocaleString()}` : '¥0')
+      : `¥${rawCardAmt.toLocaleString()}`;
+
     html += `
-      <div class="flex items-center justify-between p-3 rounded-xl bg-slate-50 border border-slate-100 hover:border-slate-200 transition-colors">
-        <div class="flex items-center gap-2.5 min-w-0">
-          <div class="p-2 rounded-lg bg-white shadow-2xs shrink-0">
+      <div onclick="openAccountTransactionsModal('${escapeHtml(acc.id)}')" class="flex items-center justify-between p-3.5 rounded-2xl bg-slate-50/90 hover:bg-slate-100/90 border border-slate-100 hover:border-slate-300 transition-all cursor-pointer active:scale-[0.99] group" title="タップして「${escapeHtml(acc.name)}」の取引情報を開く">
+        <div class="flex items-center gap-3 min-w-0">
+          <div class="w-9 h-9 rounded-full ${circleBg} flex items-center justify-center shadow-2xs shrink-0">
             ${iconHtml}
           </div>
           <div class="min-w-0">
             <div class="flex items-center gap-1.5 flex-wrap">
-              <span class="text-xs font-bold text-slate-800 truncate">${escapeHtml(acc.name)}</span>
+              <span class="text-xs font-bold text-slate-800 truncate group-hover:text-[#478c00] transition-colors">${escapeHtml(acc.name)}</span>
               ${typeBadge}
             </div>
             <div class="text-[10px] text-slate-400 truncate flex items-center gap-2 mt-0.5">
               ${acc.institution ? `<span>${escapeHtml(acc.institution)}</span>` : ''}
               ${acc.note ? `<span>${escapeHtml(acc.note)}</span>` : ''}
-              ${updatedText ? `<span>更新: ${updatedText}</span>` : ''}
+              ${updatedText ? `<span>最終取得: ${updatedText}</span>` : ''}
             </div>
           </div>
         </div>
         <div class="flex items-center gap-2 shrink-0 ml-2">
           <div class="text-right">
-            <div class="text-sm font-black text-slate-900 font-mono">¥${Number(acc.balance || 0).toLocaleString()}</div>
-            <div class="text-[9px] text-slate-400">${isCard ? '今月利用額' : '現在預金残高'}</div>
+            <div class="text-base font-black text-slate-900 font-mono">${displayAmountStr}</div>
+            <div class="text-[10px] text-[#58ad00] font-bold flex items-center justify-end gap-0.5">
+              <span>${isCard ? 'カード取引情報' : '口座取引情報'}</span>
+              <i data-lucide="chevron-right" class="w-3 h-3"></i>
+            </div>
           </div>
-          <button type="button" onclick="openBankAccountModal('${acc.id}')" class="p-1.5 rounded-lg text-slate-400 hover:text-slate-600 hover:bg-slate-200/60 transition-colors cursor-pointer">
+          <button type="button" onclick="event.stopPropagation(); openBankAccountModal('${escapeHtml(acc.id)}')" class="p-1.5 rounded-lg text-slate-400 hover:text-slate-600 hover:bg-slate-200/60 transition-colors cursor-pointer" title="口座設定を編集">
             <i data-lucide="edit-2" class="w-3.5 h-3.5"></i>
           </button>
         </div>
@@ -6069,6 +6084,366 @@ function renderBankAccountsCard() {
   });
 
   container.innerHTML = html;
+  lucide.createIcons();
+}
+
+// ==========================================
+// 💳🏦 おしどり風「口座・カード取引情報」専用ビュー (v2.15.0)
+// ==========================================
+
+/**
+ * おしどり風の丸型カテゴリアイコン＆背景色を返すヘルパー
+ */
+function getOshidoriCategoryCircle(category, txType) {
+  const cat = String(category || '');
+  if (txType === 'deposit' || cat === '口座入金' || cat === '収入') {
+    return { bg: 'bg-[#10b981]', icon: 'wallet' };
+  }
+  if (txType === 'card_transfer' || cat === 'クレカ引落振替' || cat === '振替') {
+    return { bg: 'bg-[#8b5cf6]', icon: 'repeat' };
+  }
+  if (cat.includes('食') || cat.includes('外食') || cat.includes('カフェ')) {
+    return { bg: 'bg-[#1cc88a]', icon: 'utensils' };
+  }
+  if (cat.includes('日用') || cat.includes('雑貨') || cat.includes('ドラッグ')) {
+    return { bg: 'bg-[#f6c23e]', icon: 'sparkles' };
+  }
+  if (cat.includes('交通') || cat.includes('ガソリン') || cat.includes('光熱') || cat.includes('水道') || cat.includes('電気') || cat.includes('ガス')) {
+    return { bg: 'bg-[#fdb863]', icon: 'flame' };
+  }
+  if (cat.includes('住') || cat.includes('家賃')) {
+    return { bg: 'bg-[#4e73df]', icon: 'home' };
+  }
+  if (cat.includes('医') || cat.includes('健康')) {
+    return { bg: 'bg-[#36b9cc]', icon: 'heart-pulse' };
+  }
+  if (cat.includes('衣') || cat.includes('美容')) {
+    return { bg: 'bg-[#e83e8c]', icon: 'shirt' };
+  }
+  if (cat.includes('特別') || cat.includes('旅行') || cat.includes('レジャー')) {
+    return { bg: 'bg-[#6f42c1]', icon: 'gift' };
+  }
+  return { bg: 'bg-[#858796]', icon: 'shopping-bag' };
+}
+
+/**
+ * YYYY-MM-DD を おしどり風の「2026/11/8」形式に変換
+ */
+function formatOshidoriDateHeader(dateStr) {
+  if (!dateStr) return '';
+  const m = String(dateStr).match(/^(\d{4})[-/](\d{1,2})[-/](\d{1,2})/);
+  if (m) {
+    return `${m[1]}/${Number(m[2])}/${Number(m[3])}`;
+  }
+  return String(dateStr);
+}
+
+/**
+ * おしどり風の「👦👧 家族」または「👤 個人」バッジHTMLを生成
+ */
+function getOshidoriFamilyBadgeHtml(isShared, payer) {
+  if (isShared) {
+    return `
+      <span class="inline-flex items-center gap-1.5 text-xs text-slate-500 select-none">
+        <span class="inline-flex items-center gap-0.5">
+          <span class="w-4 h-4 rounded-full bg-slate-200 text-slate-600 text-[10px] flex items-center justify-center">👦</span>
+          <span class="w-4 h-4 rounded-full bg-slate-200 text-slate-600 text-[10px] flex items-center justify-center">👧</span>
+        </span>
+        <span class="font-medium text-slate-600">家族</span>
+      </span>
+    `;
+  }
+  const pLabel = (payer && payer !== '共同カード' && payer !== '共同口座') ? payer : '個人';
+  return `
+    <span class="inline-flex items-center gap-1.5 text-xs text-amber-700 font-bold select-none">
+      <span class="w-4 h-4 rounded-full bg-amber-100 text-amber-700 text-[10px] flex items-center justify-center">👤</span>
+      <span>個人 (${escapeHtml(pLabel)})</span>
+    </span>
+  `;
+}
+
+/**
+ * 口座・カード取引情報モーダルを開く
+ */
+window.openAccountTransactionsModal = function (accountIdOrType = null) {
+  const modal = $('accountTransactionsModal');
+  if (!modal) return;
+
+  const accounts = state.bankAccounts || [];
+  let targetAcc = null;
+  if (accountIdOrType) {
+    targetAcc = accounts.find(a => a.id === accountIdOrType) || accounts.find(a => a.type === accountIdOrType);
+  }
+  if (!targetAcc) {
+    targetAcc = accounts.find(a => a.type === 'shared_card') || accounts[0];
+  }
+  state.activeModalAccountId = targetAcc ? targetAcc.id : null;
+  state.openedSlideTxId = null;
+
+  renderAccountTransactionsModal();
+  modal.classList.remove('hidden');
+  lucide.createIcons();
+};
+
+window.closeAccountTransactionsModal = function () {
+  const modal = $('accountTransactionsModal');
+  if (modal) modal.classList.add('hidden');
+};
+
+window.editCurrentModalAccount = function () {
+  const accId = state.activeModalAccountId;
+  closeAccountTransactionsModal();
+  openBankAccountModal(accId);
+};
+
+window.toggleAccountTxSlide = function (txId) {
+  state.openedSlideTxId = (state.openedSlideTxId === txId) ? null : txId;
+  renderAccountTransactionsModal();
+};
+
+/**
+ * 登録済み取引の「家族（共有） ⇄ 個人（私物）」をおしどり風ワンタップで振り分け更新
+ */
+window.toggleSavedTransactionShared = async function (txId, event) {
+  if (event) event.stopPropagation();
+  const tx = (state.transactions || []).find(t => String(t.id) === String(txId));
+  if (!tx) return;
+
+  const newShared = !tx.isShared;
+  tx.isShared = newShared;
+  state.openedSlideTxId = null;
+  renderAccountTransactionsModal();
+
+  showToast(newShared ? '👦👧「家族（共有）」に振り分けました' : '👤「個人（私物）」に振り分けました', 'success');
+
+  if (!state.isMockMode) {
+    try {
+      await api('updateExpense', {
+        id: tx.id,
+        date: tx.date,
+        title: tx.title,
+        amount: tx.amount,
+        category: tx.category,
+        payer: tx.payer,
+        isShared: newShared,
+        paymentType: tx.paymentType,
+        memo: tx.memo || ''
+      });
+      await loadInitialData(state.viewMonth, { skipCache: true });
+      renderAccountTransactionsModal();
+    } catch (e) {
+      console.warn('振り分け保存エラー:', e);
+    }
+  }
+};
+
+/**
+ * 登録済み取引に「＋ メモを追加する」でおしどり風メモを保存
+ */
+window.promptSavedTransactionMemo = async function (txId, event) {
+  if (event) event.stopPropagation();
+  const tx = (state.transactions || []).find(t => String(t.id) === String(txId));
+  if (!tx) return;
+
+  const nextMemo = prompt(`「${tx.title}」のメモを入力してください:`, tx.memo || '');
+  if (nextMemo === null) return;
+
+  tx.memo = nextMemo.trim();
+  renderAccountTransactionsModal();
+  showToast('📝 メモを保存しました', 'success');
+
+  if (!state.isMockMode) {
+    try {
+      await api('updateExpense', {
+        id: tx.id,
+        date: tx.date,
+        title: tx.title,
+        amount: tx.amount,
+        category: tx.category,
+        payer: tx.payer,
+        isShared: tx.isShared,
+        paymentType: tx.paymentType,
+        memo: tx.memo
+      });
+    } catch (e) {
+      console.warn('メモ保存エラー:', e);
+    }
+  }
+};
+
+/**
+ * おしどり風「口座・カード取引情報」モーダルの中身を描画
+ */
+function renderAccountTransactionsModal() {
+  const accounts = state.bankAccounts || [];
+  const acc = accounts.find(a => a.id === state.activeModalAccountId) || accounts[0];
+  if (!acc) return;
+
+  const isCard = acc.type === 'shared_card' || acc.type === 'personal_card';
+  const isSavings = acc.type === 'shared_savings';
+
+  // 1. 口座切替タブの描画
+  const tabsEl = $('accTxModalAccountTabs');
+  if (tabsEl) {
+    tabsEl.innerHTML = accounts.map(a => {
+      const active = a.id === acc.id;
+      const icon = (a.type === 'shared_card' || a.type === 'personal_card') ? '💳' : (a.type === 'shared_savings' ? '🐷' : '🏦');
+      return `
+        <button type="button" onclick="openAccountTransactionsModal('${escapeHtml(a.id)}')" class="px-3 py-1.5 rounded-full font-bold whitespace-nowrap transition-all cursor-pointer flex items-center gap-1 ${active ? 'bg-[#65c400] text-white shadow-2xs' : 'bg-white text-slate-600 border border-slate-200 hover:bg-slate-100'}">
+          <span>${icon}</span>
+          <span>${escapeHtml(a.name)}</span>
+        </button>
+      `;
+    }).join('');
+  }
+
+  // 2. ヘッダータイトルとサマリー情報の更新
+  if ($('accTxModalHeaderTitle')) {
+    $('accTxModalHeaderTitle').textContent = isCard ? 'カード取引情報' : '口座取引情報';
+  }
+  if ($('accTxModalAccountName')) {
+    $('accTxModalAccountName').textContent = acc.name;
+  }
+  const iconCircle = $('accTxModalIconCircle');
+  if (iconCircle) {
+    if (isCard) {
+      iconCircle.className = 'w-8 h-8 rounded-full bg-rose-400 text-white flex items-center justify-center shrink-0 shadow-2xs';
+      iconCircle.innerHTML = '<i data-lucide="credit-card" class="w-4 h-4"></i>';
+    } else if (isSavings) {
+      iconCircle.className = 'w-8 h-8 rounded-full bg-emerald-500 text-white flex items-center justify-center shrink-0 shadow-2xs';
+      iconCircle.innerHTML = '<i data-lucide="piggy-bank" class="w-4 h-4"></i>';
+    } else {
+      iconCircle.className = 'w-8 h-8 rounded-full bg-sky-500 text-white flex items-center justify-center shrink-0 shadow-2xs';
+      iconCircle.innerHTML = '<i data-lucide="landmark" class="w-4 h-4"></i>';
+    }
+  }
+
+  // 3. 対象取引リストの抽出
+  const allTxs = (state.transactions || []).slice();
+  const nonExpenseCats = ['口座入金', '収入', 'クレカ引落振替', '振替'];
+
+  let filteredTxs = [];
+  if (isCard) {
+    filteredTxs = allTxs.filter(t => t.paymentType === 'shared_card' || t.payer === '共同カード' || (!nonExpenseCats.includes(t.category) && t.paymentType !== 'shared_account'));
+  } else if (isSavings) {
+    filteredTxs = allTxs.filter(t => t.category === '口座入金' || t.category === '貯金');
+  } else {
+    // 普段の生活費口座: すべての入出金・引落・支出を時系列表示
+    filteredTxs = allTxs;
+  }
+
+  // 日付降順でソート
+  filteredTxs.sort((a, b) => (String(a.date) < String(b.date) ? 1 : -1));
+
+  // 利用額 / 残高表示の計算
+  if ($('accTxModalAmountLabel') && $('accTxModalAmountValue')) {
+    if (isCard) {
+      const cardSum = filteredTxs
+        .filter(t => !nonExpenseCats.includes(t.category) && Number(t.amount) > 0)
+        .reduce((s, t) => s + Number(t.amount || 0), 0);
+      const dispAmt = cardSum > 0 ? cardSum : Math.abs(Number(acc.balance || 0));
+      $('accTxModalAmountLabel').textContent = '今月の利用額';
+      $('accTxModalAmountValue').textContent = dispAmt > 0 ? `¥-${dispAmt.toLocaleString()}` : '¥0';
+    } else {
+      $('accTxModalAmountLabel').textContent = '現在の預金残高';
+      $('accTxModalAmountValue').textContent = `¥${Number(acc.balance || 0).toLocaleString()}`;
+    }
+  }
+
+  if ($('accTxModalUpdatedLabel')) {
+    const dt = acc.updatedAt ? new Date(acc.updatedAt) : new Date();
+    const fmt = `${dt.getFullYear()}/${String(dt.getMonth() + 1).padStart(2, '0')}/${String(dt.getDate()).padStart(2, '0')} ${String(dt.getHours()).padStart(2, '0')}:${String(dt.getMinutes()).padStart(2, '0')}`;
+    $('accTxModalUpdatedLabel').textContent = `最終取得日 : ${fmt}`;
+  }
+
+  // 4. 日付別グループ化 ＆ おしどり風リストHTMLの構築
+  const listEl = $('accTxModalListContainer');
+  if (!listEl) return;
+
+  if (filteredTxs.length === 0) {
+    listEl.innerHTML = `
+      <div class="py-12 px-4 text-center space-y-3">
+        <div class="w-12 h-12 rounded-full bg-slate-100 text-slate-400 flex items-center justify-center mx-auto">
+          <i data-lucide="receipt" class="w-6 h-6"></i>
+        </div>
+        <p class="text-xs font-bold text-slate-600">この月の取引明細はまだありません</p>
+        <button type="button" onclick="closeAccountTransactionsModal(); openStatementImportModal();" class="bg-[#65c400] hover:bg-[#58ad00] text-white font-bold text-xs px-4 py-2 rounded-full shadow-xs cursor-pointer">
+          ＋ CSV / PDF / スクショから明細を取り込む
+        </button>
+      </div>
+    `;
+    lucide.createIcons();
+    return;
+  }
+
+  const groupedByDate = {};
+  filteredTxs.forEach(t => {
+    const dKey = formatOshidoriDateHeader(t.date || localDateStr());
+    if (!groupedByDate[dKey]) groupedByDate[dKey] = [];
+    groupedByDate[dKey].push(t);
+  });
+
+  let html = '';
+  Object.keys(groupedByDate).forEach(dateLabel => {
+    html += `
+      <div class="bg-slate-100/90 px-4 py-1.5 text-xs font-medium text-slate-700 border-y border-slate-200/60">
+        ${escapeHtml(dateLabel)}
+      </div>
+    `;
+    groupedByDate[dateLabel].forEach(tx => {
+      const isDeposit = tx.category === '口座入金' || tx.category === '収入' || tx.txType === 'deposit';
+      const isTransfer = tx.category === 'クレカ引落振替' || tx.category === '振替' || tx.txType === 'card_transfer';
+      const catStyle = getOshidoriCategoryCircle(tx.category, tx.txType);
+      const amt = Math.abs(Number(tx.amount || 0));
+      const amtHtml = isDeposit
+        ? `<span class="text-xl font-normal text-emerald-600 font-mono whitespace-nowrap">+¥${amt.toLocaleString()}</span>`
+        : `<span class="text-xl font-normal text-slate-800 font-mono whitespace-nowrap">¥-${amt.toLocaleString()}</span>`;
+
+      const isSlideOpen = String(state.openedSlideTxId) === String(tx.id);
+      const slideBtnBg = tx.isShared ? 'bg-[#65c400] hover:bg-[#58ad00]' : 'bg-sky-500 hover:bg-sky-600';
+      const slideBtnLabel = tx.isShared ? '個人に<br>振り分ける' : '家族に<br>振り分ける';
+
+      const memoText = tx.memo ? `📝 ${escapeHtml(tx.memo)}` : '+ メモを追加する';
+      const typeTag = isDeposit
+        ? '<span class="text-[10px] font-bold text-emerald-700 bg-emerald-50 px-1.5 py-0.5 rounded ml-1">口座入金</span>'
+        : (isTransfer ? '<span class="text-[10px] font-bold text-purple-700 bg-purple-50 px-1.5 py-0.5 rounded ml-1">クレカ引落</span>' : '');
+
+      html += `
+        <div onclick="toggleAccountTxSlide('${escapeHtml(tx.id)}')" class="flex items-stretch bg-white hover:bg-slate-50/60 transition-all cursor-pointer select-none overflow-hidden">
+          <!-- おしどり風 左スライド「個人に振り分ける」グリーンボタン -->
+          <button type="button" onclick="toggleSavedTransactionShared('${escapeHtml(tx.id)}', event)" class="${isSlideOpen ? 'w-28 px-2 opacity-100' : 'w-0 px-0 opacity-0 pointer-events-none'} ${slideBtnBg} text-white font-bold text-xs shrink-0 flex items-center justify-center text-center leading-snug transition-all duration-200 cursor-pointer overflow-hidden">
+            <span>${slideBtnLabel}</span>
+          </button>
+
+          <!-- 明細メインコンテンツ -->
+          <div class="flex-1 px-4 py-3.5 min-w-0 space-y-2">
+            <div class="flex items-center justify-between gap-3">
+              <div class="flex items-center gap-2.5 min-w-0">
+                <div class="w-8 h-8 rounded-full ${catStyle.bg} text-white flex items-center justify-center shrink-0 shadow-2xs">
+                  <i data-lucide="${catStyle.icon}" class="w-4 h-4"></i>
+                </div>
+                <div class="min-w-0">
+                  <span class="text-[15px] text-slate-700 font-normal truncate block">${escapeHtml(tx.title || '明細')}${typeTag}</span>
+                </div>
+              </div>
+              ${amtHtml}
+            </div>
+
+            <div class="flex items-center justify-between pl-10">
+              <button type="button" onclick="toggleSavedTransactionShared('${escapeHtml(tx.id)}', event)" class="hover:opacity-80 transition-opacity cursor-pointer" title="タップして家族(共有) / 個人(私物)を切り替え">
+                ${getOshidoriFamilyBadgeHtml(tx.isShared, tx.payer)}
+              </button>
+              <button type="button" onclick="promptSavedTransactionMemo('${escapeHtml(tx.id)}', event)" class="bg-slate-100/90 hover:bg-slate-200/80 text-slate-500 text-[11px] font-medium px-3 py-1 rounded-full transition-colors cursor-pointer max-w-[180px] truncate">
+                ${memoText}
+              </button>
+            </div>
+          </div>
+        </div>
+      `;
+    });
+  });
+
+  listEl.innerHTML = html;
   lucide.createIcons();
 }
 
@@ -7041,97 +7416,126 @@ function renderImportPreviewTable() {
   const hName = memberName('husband');
   const wName = memberName('wife');
 
+  // 日付ごとにグループ化しておしどり風カード取引情報レイアウトで描画 (v2.15.0)
+  const groupedByDate = {};
   items.forEach((item, idx) => {
-    try {
-      const isDeposit = item.txType === 'deposit';
-      const isCardTransfer = item.txType === 'card_transfer' || item.category === 'クレカ引落振替';
-      const safeAmount = Number(item.amount) || 0;
-      if (item.isShared) {
-        if (isDeposit) {
-          sharedDepositSum += safeAmount;
-          sharedDepositCount++;
-        } else if (isCardTransfer) {
-          sharedTransferSum += safeAmount;
-          sharedTransferCount++;
-        } else {
-          sharedExpenseSum += safeAmount;
-          sharedExpenseCount++;
-        }
+    const isDeposit = item.txType === 'deposit';
+    const isCardTransfer = item.txType === 'card_transfer' || item.category === 'クレカ引落振替';
+    const safeAmount = Number(item.amount) || 0;
+    if (item.isShared) {
+      if (isDeposit) {
+        sharedDepositSum += safeAmount;
+        sharedDepositCount++;
+      } else if (isCardTransfer) {
+        sharedTransferSum += safeAmount;
+        sharedTransferCount++;
+      } else {
+        sharedExpenseSum += safeAmount;
+        sharedExpenseCount++;
       }
-
-      const txBadge = isDeposit
-        ? '<span class="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-bold bg-emerald-100 text-emerald-800 mr-1 shrink-0">💰 入金</span>'
-        : (isCardTransfer
-          ? '<span class="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-bold bg-purple-100 text-purple-800 mr-1 shrink-0">💳 簿記振替</span>'
-          : (hasBankColumns
-            ? '<span class="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-bold bg-sky-100 text-sky-800 mr-1 shrink-0">💸 出金</span>'
-            : ''));
-
-      const noteHtml = isDeposit
-        ? '<div class="text-[10px] text-emerald-600 font-normal mt-0.5">💡 入金明細（口座残高に反映・生活費支出から除外）</div>'
-        : (isCardTransfer
-          ? '<div class="text-[10px] text-purple-700 font-normal mt-0.5">💡 クレカ引落振替（借方: 未払金消込 / 貸方: 口座残高減少。カード明細との二重計上を防止）</div>'
-          : '');
-
-      const memoHtml = item.memo
-        ? `<div class="text-[10px] text-slate-400 font-normal mt-0.5">📝 メモ: ${escapeHtml(String(item.memo))}</div>`
-        : '';
-
-      const balanceSubHtml = (item.balance !== null && item.balance !== undefined && !isNaN(Number(item.balance)))
-        ? `<div class="text-[10px] font-normal text-slate-400 font-mono mt-0.5">残高: ¥${Number(item.balance).toLocaleString()}</div>`
-        : '';
-
-      const amountDisplay = isDeposit
-        ? `<span class="text-emerald-600 font-mono font-bold">+¥${safeAmount.toLocaleString()}</span>`
-        : (isCardTransfer
-          ? `<span class="text-purple-700 font-mono font-bold">-¥${safeAmount.toLocaleString()}</span>`
-          : `<span class="text-slate-900 font-mono">¥${safeAmount.toLocaleString()}</span>`);
-
-      const rowBgClass = isDeposit
-        ? (item.isShared ? 'bg-emerald-50/50' : 'opacity-60 bg-slate-50/50')
-        : (isCardTransfer
-          ? (item.isShared ? 'bg-purple-50/40' : 'opacity-60 bg-slate-50/50')
-          : (item.isShared ? 'bg-sky-50/20' : 'opacity-60 bg-slate-50/50'));
-
-      const safeDate = escapeHtml(String(item.date || localDateStr()));
-      const safeTitle = escapeHtml(String(item.title || '明細'));
-
-      html += `
-        <tr class="hover:bg-slate-50 transition-colors ${rowBgClass}">
-          <td class="p-2 text-center">
-            <input type="checkbox" ${item.isShared ? 'checked' : ''} onchange="updateImportItemShared(${idx}, this.checked)" class="w-4 h-4 text-sky-600 rounded border-slate-300 focus:ring-sky-500 cursor-pointer" title="${isDeposit ? '口座入金として登録' : (isCardTransfer ? '簿記振替として登録' : '共有支出として登録')}">
-          </td>
-          <td class="p-2 font-mono text-slate-500 whitespace-nowrap">${safeDate}</td>
-          <td class="p-2 font-bold text-slate-800">
-            <div class="flex items-center flex-wrap">
-              ${txBadge}
-              <span class="truncate max-w-[160px] md:max-w-[220px]">${safeTitle}</span>
-            </div>
-            ${noteHtml}
-            ${memoHtml}
-          </td>
-          <td class="p-2 text-right font-black font-mono whitespace-nowrap">
-            ${amountDisplay}
-            ${balanceSubHtml}
-          </td>
-          <td class="p-2">
-            <select onchange="updateImportItemCategory(${idx}, this.value)" class="bg-white border border-slate-200 rounded-lg px-2 py-1 text-xs focus:ring-1 focus:ring-sky-400">
-              ${categories.map(cat => `<option value="${cat}" ${item.category === cat ? 'selected' : ''}>${cat}</option>`).join('')}
-            </select>
-          </td>
-          <td class="p-2">
-            <select onchange="updateImportItemPayer(${idx}, this.value)" class="bg-white border border-slate-200 rounded-lg px-2 py-1 text-xs focus:ring-1 focus:ring-sky-400">
-              <option value="共同口座" ${item.payer === '共同口座' ? 'selected' : ''}>共同口座</option>
-              <option value="共同カード" ${item.payer === '共同カード' ? 'selected' : ''}>共同カード</option>
-              <option value="${hName}" ${item.payer === hName ? 'selected' : ''}>${hName}</option>
-              <option value="${wName}" ${item.payer === wName ? 'selected' : ''}>${wName}</option>
-            </select>
-          </td>
-        </tr>
-      `;
-    } catch (rowErr) {
-      console.warn('明細行レンダリングエラー:', rowErr, item);
     }
+    const dKey = formatOshidoriDateHeader(item.date || localDateStr());
+    if (!groupedByDate[dKey]) groupedByDate[dKey] = [];
+    groupedByDate[dKey].push({ item, idx });
+  });
+
+  // 上部におしどり風の「今月の利用額 ¥-XX,XXX」サマリーヘッダーを表示
+  const headerTitle = hasBankColumns ? '🏦 銀行口座 取引情報プレビュー' : '💳 カード取引情報プレビュー';
+  const headerTotalVal = hasBankColumns && balInfo && balInfo.balance !== null
+    ? `¥${Number(balInfo.balance).toLocaleString()}`
+    : `¥-${sharedExpenseSum.toLocaleString()}`;
+  const headerTotalLbl = hasBankColumns && balInfo && balInfo.balance !== null ? '最新口座残高' : '今月の利用額(共有計)';
+
+  html += `
+    <div class="bg-white px-4 py-3 border-b border-slate-100 flex items-center justify-between">
+      <div class="flex items-center gap-2">
+        <span class="w-7 h-7 rounded-full ${hasBankColumns ? 'bg-sky-500' : 'bg-rose-400'} text-white flex items-center justify-center text-xs shadow-2xs">
+          <i data-lucide="${hasBankColumns ? 'landmark' : 'credit-card'}" class="w-3.5 h-3.5"></i>
+        </span>
+        <span class="text-xs font-bold text-slate-600">${headerTitle}</span>
+      </div>
+      <div class="flex items-baseline gap-2">
+        <span class="text-[11px] text-slate-400">${headerTotalLbl}</span>
+        <span class="text-xl font-bold text-slate-800 font-mono">${headerTotalVal}</span>
+      </div>
+    </div>
+  `;
+
+  Object.keys(groupedByDate).forEach(dateLabel => {
+    html += `
+      <div class="bg-slate-100/90 px-4 py-1.5 text-xs font-medium text-slate-700 border-y border-slate-200/60">
+        ${escapeHtml(dateLabel)}
+      </div>
+    `;
+    groupedByDate[dateLabel].forEach(({ item, idx }) => {
+      try {
+        const isDeposit = item.txType === 'deposit';
+        const isCardTransfer = item.txType === 'card_transfer' || item.category === 'クレカ引落振替';
+        const safeAmount = Number(item.amount) || 0;
+        const catStyle = getOshidoriCategoryCircle(item.category, item.txType);
+
+        const amountDisplay = isDeposit
+          ? `<span class="text-lg font-bold text-emerald-600 font-mono whitespace-nowrap">+¥${safeAmount.toLocaleString()}</span>`
+          : (isCardTransfer
+            ? `<span class="text-lg font-bold text-purple-700 font-mono whitespace-nowrap">¥-${safeAmount.toLocaleString()}</span>`
+            : `<span class="text-lg font-normal text-slate-800 font-mono whitespace-nowrap">¥-${safeAmount.toLocaleString()}</span>`);
+
+        const isSlideOpen = state.openedImportSlideIdx === idx;
+        const slideBtnBg = item.isShared ? 'bg-[#65c400] hover:bg-[#58ad00]' : 'bg-sky-500 hover:bg-sky-600';
+        const slideBtnLabel = item.isShared ? '個人に<br>振り分ける' : '家族に<br>振り分ける';
+
+        const safeTitle = escapeHtml(String(item.title || '明細'));
+        const memoLabel = item.memo ? `📝 ${escapeHtml(String(item.memo))}` : '+ メモを追加する';
+
+        const txBadge = isDeposit
+          ? '<span class="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-bold bg-emerald-100 text-emerald-800 ml-1 shrink-0">💰 入金</span>'
+          : (isCardTransfer
+            ? '<span class="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-bold bg-purple-100 text-purple-800 ml-1 shrink-0">💳 簿記振替</span>'
+            : '');
+
+        html += `
+          <div onclick="toggleImportRowSlide(${idx})" class="flex items-stretch transition-all cursor-pointer select-none overflow-hidden ${item.isShared ? 'bg-white hover:bg-slate-50/70' : 'bg-slate-50/80 opacity-75'}">
+            <!-- おしどり風 左スライド「個人に振り分ける」グリーンボタン -->
+            <button type="button" onclick="event.stopPropagation(); updateImportItemShared(${idx}, ${!item.isShared})" class="${isSlideOpen ? 'w-28 px-2 opacity-100' : 'w-0 px-0 opacity-0 pointer-events-none'} ${slideBtnBg} text-white font-bold text-xs shrink-0 flex items-center justify-center text-center leading-snug transition-all duration-200 cursor-pointer overflow-hidden">
+              <span>${slideBtnLabel}</span>
+            </button>
+
+            <!-- 明細メイン行 -->
+            <div class="flex-1 px-4 py-3 min-w-0 space-y-2">
+              <div class="flex items-center justify-between gap-2">
+                <div class="flex items-center gap-2.5 min-w-0">
+                  <div class="w-8 h-8 rounded-full ${catStyle.bg} text-white flex items-center justify-center shrink-0 shadow-2xs">
+                    <i data-lucide="${catStyle.icon}" class="w-4 h-4"></i>
+                  </div>
+                  <div class="min-w-0 flex items-center flex-wrap">
+                    <span class="text-sm md:text-[15px] text-slate-700 font-medium truncate max-w-[190px] sm:max-w-[260px]">${safeTitle}</span>
+                    ${txBadge}
+                  </div>
+                </div>
+                ${amountDisplay}
+              </div>
+
+              <!-- 下段: 👦👧家族 / 👤個人 切替 ＆ カテゴリ選択 ＆ ＋メモを追加する -->
+              <div class="flex items-center justify-between gap-2 pl-10 flex-wrap">
+                <div class="flex items-center gap-2">
+                  <button type="button" onclick="event.stopPropagation(); updateImportItemShared(${idx}, ${!item.isShared})" class="hover:opacity-80 transition-opacity cursor-pointer" title="タップして家族(共有) / 個人(私物)を切り替え">
+                    ${getOshidoriFamilyBadgeHtml(item.isShared, item.payer)}
+                  </button>
+                  <select onclick="event.stopPropagation()" onchange="updateImportItemCategory(${idx}, this.value)" class="bg-slate-50 border border-slate-200 text-slate-600 rounded-full px-2 py-0.5 text-[11px] focus:outline-none focus:ring-1 focus:ring-[#65c400] cursor-pointer">
+                    ${categories.map(cat => `<option value="${cat}" ${item.category === cat ? 'selected' : ''}>${cat}</option>`).join('')}
+                  </select>
+                </div>
+                <button type="button" onclick="event.stopPropagation(); promptImportItemMemo(${idx})" class="bg-slate-100/90 hover:bg-slate-200/80 text-slate-500 text-[11px] font-medium px-3 py-1 rounded-full transition-colors cursor-pointer max-w-[170px] truncate">
+                  ${memoLabel}
+                </button>
+              </div>
+            </div>
+          </div>
+        `;
+      } catch (rowErr) {
+        console.warn('明細行レンダリングエラー:', rowErr, item);
+      }
+    });
   });
 
   tbody.innerHTML = html;
@@ -7158,15 +7562,31 @@ function renderImportPreviewTable() {
   lucide.createIcons();
 }
 
+window.toggleImportRowSlide = function (index) {
+  state.openedImportSlideIdx = (state.openedImportSlideIdx === index) ? null : index;
+  renderImportPreviewTable();
+};
+
+window.promptImportItemMemo = function (index) {
+  const item = state.importedStatementItems && state.importedStatementItems[index];
+  if (!item) return;
+  const nextMemo = prompt(`「${item.title || '明細'}」のメモを入力してください:`, item.memo || '');
+  if (nextMemo === null) return;
+  item.memo = nextMemo.trim();
+  renderImportPreviewTable();
+};
+
 function updateImportItemShared(index, isShared) {
   if (!state.importedStatementItems[index]) return;
   state.importedStatementItems[index].isShared = isShared;
+  state.openedImportSlideIdx = null;
   renderImportPreviewTable();
 }
 
 function updateImportItemCategory(index, category) {
   if (!state.importedStatementItems[index]) return;
   state.importedStatementItems[index].category = category;
+  renderImportPreviewTable();
 }
 
 function updateImportItemPayer(index, payer) {

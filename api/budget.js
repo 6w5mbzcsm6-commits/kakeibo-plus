@@ -479,7 +479,16 @@ function getDefaultBankAccounts() {
       type: 'shared_bank',
       balance: 161421,
       institution: '共有銀行口座',
-      note: '生活費・引落用共有口座',
+      note: '普段の生活費・引落用口座',
+      updatedAt: now
+    },
+    {
+      id: 'acc_shared_savings',
+      name: '別口座貯金（余り繰越用）',
+      type: 'shared_savings',
+      balance: 0,
+      institution: '貯蓄用別口座',
+      note: '余った分の繰越・共同貯金',
       updatedAt: now
     },
     {
@@ -1080,7 +1089,7 @@ async function handleGetInitialData(supabase, targetMonth, actor, requestedPairI
 
   return {
     success: true,
-    version: 'v2.13.2',
+    version: 'v2.15.0',
     pair: {
       id: pairId,
       name: config.pairName,
@@ -4085,7 +4094,7 @@ async function handleHealthCheck(req) {
 
   return {
     success: true,
-    version: 'v2.13.2',
+    version: 'v2.15.0',
     resolvedUrl: resolvedUrl ? resolvedUrl.replace(/\/\/[^@]+@/, '//***@') : '未設定',
     keyType: keyType,
     env: envCheck,
@@ -4555,7 +4564,7 @@ export default async function handler(req, res) {
       if (!actor.allowed) {
         return res.status(200).json({
           success: false,
-          version: 'v2.13.2',
+          version: 'v2.15.0',
           code: actor.code,
           error: actor.error,
           userId: actor.userId || '',
