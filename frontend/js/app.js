@@ -9,7 +9,7 @@
  */
 
 const APP_CONFIG = window.PAIRBUDGET_CONFIG || {};
-const FRONTEND_VERSION = 'v2.15.0';
+const FRONTEND_VERSION = 'v2.15.1';
 const MAX_HISTORY_MONTHS = 36;
 const FIELD_LABELS = {
   date: '日付', title: '品名', amount: '金額', category: 'カテゴリ', isShared: '共同',
@@ -2308,6 +2308,76 @@ window.syncSavingsWithBankBalance = async function () {
   renderSavingsCard();
   updateBudgetOverWarningBox();
   showToast('🏦 口座残高と積立表示を整理・同期しました✨', 'success');
+};
+
+/**
+ * ①普段の生活費口座 と ②別口座貯金 の残高が逆（テレコ）になった時にワンタップで入れ替える関数 (v2.15.1)
+ */
+window.swapLivingAndSavingsBalances = async function () {
+  if (!Array.isArray(state.bankAccounts) || state.bankAccounts.length === 0) {
+    renderBankAccountsCard();
+  }
+  const summary = computeJointSavingsSummary();
+  const oldLivingBal = Number(summary.currentBankBalance || 0);
+  const oldSavingsBal = Number(summary.initialSavings || 0);
+
+  // 別口座CSV取込で①生活費口座が上書きされ②別口座が0だった場合は、①を161,421円に戻しつつ②へ別口座残高を移す
+  const nextLivingBal = (oldSavingsBal === 0 && oldLivingBal > 0 && oldLivingBal !== 161421)
+    ? 161421
+    : oldSavingsBal;
+  const nextSavingsBal = oldLivingBal;
+
+  // ①生活費口座 (shared_bank) を更新
+  let updatedLiving = false;
+  state.bankAccounts = (state.bankAccounts || []).map(acc => {
+    if (acc.type === 'shared_bank' && !updatedLiving) {
+      updatedLiving = true;
+      return { ...acc, balance: nextLivingBal, updatedAt: new Date().toISOString() };
+    }
+    return acc;
+  });
+
+  // ②別口座貯金 (shared_savings) および initialSavings を更新
+  let updatedSavings = false;
+  state.bankAccounts = state.bankAccounts.map(acc => {
+    if (acc.type === 'shared_savings' && !updatedSavings) {
+      updatedSavings = true;
+      return { ...acc, balance: nextSavingsBal, updatedAt: new Date().toISOString() };
+    }
+    return acc;
+  });
+  if (!updatedSavings) {
+    state.bankAccounts.push({
+      id: 'acc_shared_savings',
+      name: '別口座貯金（余り繰越用）',
+      type: 'shared_savings',
+      balance: nextSavingsBal,
+      institution: '貯蓄用別口座',
+      note: '余った分の繰越・共同貯金',
+      updatedAt: new Date().toISOString()
+    });
+  }
+
+  if (!state.savingsConfig) state.savingsConfig = {};
+  state.savingsConfig.initialSavings = nextSavingsBal;
+
+  try {
+    localStorage.setItem('pairbudget_bank_accounts', JSON.stringify(state.bankAccounts));
+    localStorage.setItem('pairbudget_savings_config', JSON.stringify(state.savingsConfig));
+  } catch (_) {}
+
+  renderBankAccountsCard();
+  renderSavingsCard();
+  updateBudgetOverWarningBox();
+
+  showToast(`🔄 ①生活費口座（${yen(nextLivingBal)}）⇄ ②別口座貯金（${yen(nextSavingsBal)}）に入れ替えました✨`, 'success');
+
+  if (!state.isMockMode) {
+    Promise.all([
+      api('updateBankAccounts', { bankAccounts: state.bankAccounts }).catch(() => {}),
+      api('updateSavingsConfig', { savingsConfig: state.savingsConfig }).catch(() => {})
+    ]);
+  }
 };
 
 /**
@@ -7288,41 +7358,83 @@ async function handleStatementImageSelected(event) {
 /**
  * 通帳CSVから検出した口座残高をワンタップで共有口座へ反映する (v2.12.2)
  */
-async function applyImportedCsvBalance() {
+/**
+ * 通帳CSVから検出した口座残高を選択口座（①生活費口座 または ②別口座貯金）へワンタップ反映する (v2.15.1 テレコ防止対応)
+ */
+async function applyImportedCsvBalance(explicitTargetType = null) {
   const info = state.importedCsvBalanceInfo;
   if (!info || info.balance === undefined || info.balance === null) return;
+
+  const targetSelect = $('importTargetAccountSelect');
+  const targetType = explicitTargetType || (targetSelect ? targetSelect.value : null) || state.importTargetAccountType || 'shared_bank';
+  if (targetSelect && explicitTargetType) {
+    targetSelect.value = explicitTargetType;
+  }
+  state.importTargetAccountType = targetType;
 
   state.bankAccounts = (state.bankAccounts || []).filter(a =>
     a && !((a.id === 'acc_shared_main' && a.name && a.name.includes('三井住友')) ||
           (a.id === 'acc_shared_card' && a.name && a.name.includes('楽天カード')))
   );
 
-  let target = state.bankAccounts.find(a => a.type === 'shared_bank') || state.bankAccounts[0];
-  if (!target) {
-    target = {
-      id: `acc_bank_${Date.now()}`,
-      name: '共有口座',
-      type: 'shared_bank',
-      balance: Number(info.balance),
-      institution: '共有銀行口座',
-      note: '通帳CSV取込より反映',
-      updatedAt: new Date().toISOString()
-    };
-    state.bankAccounts.push(target);
+  const newBal = Number(info.balance);
+
+  if (targetType === 'shared_savings') {
+    // 🐷 ② 別口座貯金（貯蓄・繰越用口座）へ反映
+    let target = state.bankAccounts.find(a => a.type === 'shared_savings');
+    if (!target) {
+      target = {
+        id: 'acc_shared_savings',
+        name: '別口座貯金（余り繰越用）',
+        type: 'shared_savings',
+        balance: newBal,
+        institution: '貯蓄用別口座',
+        note: '通帳CSV取込より反映',
+        updatedAt: new Date().toISOString()
+      };
+      state.bankAccounts.push(target);
+    } else {
+      target.balance = newBal;
+      target.updatedAt = new Date().toISOString();
+    }
+    if (!state.savingsConfig) state.savingsConfig = {};
+    state.savingsConfig.initialSavings = newBal;
+    try { localStorage.setItem('pairbudget_savings_config', JSON.stringify(state.savingsConfig)); } catch (_) {}
+    if (!state.isMockMode) {
+      api('updateSavingsConfig', { savingsConfig: state.savingsConfig }).catch(() => {});
+    }
   } else {
-    target.balance = Number(info.balance);
-    target.updatedAt = new Date().toISOString();
+    // 🏦 ① 普段の生活費口座（ふたりの共有口座）へ反映
+    let target = state.bankAccounts.find(a => a.type === 'shared_bank') || state.bankAccounts[0];
+    if (!target) {
+      target = {
+        id: 'acc_shared_pair_bank',
+        name: 'ふたりの共有口座',
+        type: 'shared_bank',
+        balance: newBal,
+        institution: '共有銀行口座',
+        note: '通帳CSV取込より反映',
+        updatedAt: new Date().toISOString()
+      };
+      state.bankAccounts.push(target);
+    } else {
+      target.balance = newBal;
+      target.updatedAt = new Date().toISOString();
+    }
   }
 
   info.applied = true;
+  info.appliedTo = targetType;
 
   try {
     localStorage.setItem('pairbudget_bank_accounts', JSON.stringify(state.bankAccounts));
   } catch (_) {}
 
   renderBankAccountsCard();
+  renderSavingsCard();
   renderImportPreviewTable();
-  showToast(`🏦 共有口座の残高を ¥${Number(info.balance).toLocaleString()} に更新しました✨`, 'success');
+  const labelName = targetType === 'shared_savings' ? '🐷 ②別口座貯金' : '🏦 ①普段の生活費口座';
+  showToast(`${labelName}の残高を ¥${newBal.toLocaleString()} に更新しました✨`, 'success');
 
   if (!state.isMockMode) {
     try {
@@ -7332,6 +7444,28 @@ async function applyImportedCsvBalance() {
     }
   }
 }
+
+window.handleImportTargetAccountChange = function (targetType) {
+  state.importTargetAccountType = targetType;
+  const items = state.importedStatementItems || [];
+  items.forEach(item => {
+    if (targetType === 'shared_card') {
+      item.payer = '共同カード';
+      item.paymentType = 'shared_card';
+    } else if (targetType === 'shared_savings') {
+      item.payer = '共同口座';
+      item.paymentType = 'shared_savings';
+      // 貯蓄用別口座の明細は日常の生活費予算を圧迫しないようデフォルトで口座入金/貯蓄扱いに調整可能
+    } else {
+      item.payer = '共同口座';
+      item.paymentType = 'shared_account';
+    }
+  });
+  if (state.importedCsvBalanceInfo) {
+    state.importedCsvBalanceInfo.applied = false;
+  }
+  renderImportPreviewTable();
+};
 
 /**
  * おしどり風仕分けプレビューテーブルの描画 (v2.12.2 入出金バッジ・口座残高ワンタップ反映バナー対応)
@@ -7374,20 +7508,25 @@ function renderImportPreviewTable() {
       ? `<div class="text-[11px] text-emerald-800 mt-0.5 font-medium">💰 入金明細: ${escapeHtml(depositItems[0].title)} <span class="font-mono font-bold text-emerald-700">+¥${Number(depositItems[0].amount).toLocaleString()}</span>${depositItems.length > 1 ? ` ほか${depositItems.length - 1}件` : ''}</div>`
       : '';
 
+    const appliedToLabel = balInfo.appliedTo === 'shared_savings' ? '②別口座貯金' : '①普段の生活費口座';
+
     balanceBanner.className = 'p-3 rounded-xl bg-gradient-to-r from-emerald-50 via-teal-50 to-sky-50 border border-emerald-200 shadow-2xs space-y-2';
     balanceBanner.innerHTML = `
-      <div class="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+      <div class="flex flex-col gap-2">
         <div class="min-w-0">
           <div class="text-xs font-extrabold text-slate-800 flex items-center gap-1.5 flex-wrap">
-            <span>🏦 通帳CSVから口座残高【<span class="text-emerald-700 font-mono">¥${formattedBal}</span>】（${escapeHtml(balInfo.date)}時点）を検出しました</span>
+            <span>🏦 通帳CSVから最新残高【<span class="text-emerald-700 font-mono">¥${formattedBal}</span>】（${escapeHtml(balInfo.date)}時点）を検出しました</span>
           </div>
           ${depositSummary}
         </div>
-        <button type="button" onclick="applyImportedCsvBalance()" ${balInfo.applied ? 'disabled' : ''} class="${balInfo.applied ? 'bg-emerald-100 text-emerald-800 border border-emerald-300 cursor-default' : 'bg-emerald-600 hover:bg-emerald-700 text-white shadow-xs cursor-pointer active:scale-95'} text-xs font-bold px-3.5 py-2 rounded-xl transition-all shrink-0 flex items-center justify-center gap-1.5">
-          ${balInfo.applied
-            ? `<span>✅ 共有口座の残高に反映済み (¥${formattedBal})</span>`
-            : `<span>✨ 共有口座の残高を ¥${formattedBal} に更新する</span>`}
-        </button>
+        <div class="grid grid-cols-1 sm:grid-cols-2 gap-1.5">
+          <button type="button" onclick="applyImportedCsvBalance('shared_bank')" class="${balInfo.applied && balInfo.appliedTo === 'shared_bank' ? 'bg-sky-100 text-sky-900 border border-sky-300' : 'bg-sky-600 hover:bg-sky-700 text-white shadow-xs'} text-xs font-bold px-3 py-2 rounded-xl transition-all cursor-pointer active:scale-95 flex items-center justify-center gap-1">
+            <span>${balInfo.applied && balInfo.appliedTo === 'shared_bank' ? `✅ ①生活費口座に反映済 (¥${formattedBal})` : `🏦 ①普段の生活費口座を ¥${formattedBal} に更新`}</span>
+          </button>
+          <button type="button" onclick="applyImportedCsvBalance('shared_savings')" class="${balInfo.applied && balInfo.appliedTo === 'shared_savings' ? 'bg-emerald-100 text-emerald-900 border border-emerald-300' : 'bg-emerald-600 hover:bg-emerald-700 text-white shadow-xs'} text-xs font-bold px-3 py-2 rounded-xl transition-all cursor-pointer active:scale-95 flex items-center justify-center gap-1">
+            <span>${balInfo.applied && balInfo.appliedTo === 'shared_savings' ? `✅ ②別口座貯金に反映済 (¥${formattedBal})` : `🐷 ②別口座貯金(繰越)を ¥${formattedBal} に更新`}</span>
+          </button>
+        </div>
       </div>
     `;
   } else {

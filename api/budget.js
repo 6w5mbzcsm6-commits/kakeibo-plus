@@ -1089,7 +1089,7 @@ async function handleGetInitialData(supabase, targetMonth, actor, requestedPairI
 
   return {
     success: true,
-    version: 'v2.15.0',
+    version: 'v2.15.1',
     pair: {
       id: pairId,
       name: config.pairName,
@@ -4094,7 +4094,7 @@ async function handleHealthCheck(req) {
 
   return {
     success: true,
-    version: 'v2.15.0',
+    version: 'v2.15.1',
     resolvedUrl: resolvedUrl ? resolvedUrl.replace(/\/\/[^@]+@/, '//***@') : '未設定',
     keyType: keyType,
     env: envCheck,
@@ -4564,7 +4564,7 @@ export default async function handler(req, res) {
       if (!actor.allowed) {
         return res.status(200).json({
           success: false,
-          version: 'v2.15.0',
+          version: 'v2.15.1',
           code: actor.code,
           error: actor.error,
           userId: actor.userId || '',
