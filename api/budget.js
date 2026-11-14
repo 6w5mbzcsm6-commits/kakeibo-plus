@@ -648,7 +648,7 @@ async function getConfigData(supabase, pairId) {
     }
   });
 
-  // 招待コードが未発行の場合は自動発行して pairs / app_settings に永続化 (v2.17.2)
+  // 招待コードが未発行の場合は自動発行して pairs / app_settings に永続化 (v2.17.3)
   if (!config.inviteCode) {
     const newCode = generateInviteCode();
     config.inviteCode = newCode;
@@ -1107,7 +1107,7 @@ async function handleGetInitialData(supabase, targetMonth, actor, requestedPairI
 
   return {
     success: true,
-    version: 'v2.17.2',
+    version: 'v2.17.3',
     pair: {
       id: pairId,
       name: config.pairName,
@@ -3111,7 +3111,7 @@ async function generateMonthlyReportMessage(supabase, actor, pairId, config) {
 }
 
 /**
- * v2.17.1で誤って自動紐付けされた未検証のusersレコードを自動クリーンアップ (v2.17.2)
+ * v2.17.1で誤って自動紐付けされた未検証のusersレコードを自動クリーンアップ (v2.17.3)
  */
 async function purgeUnverifiedAutoLinkedUsers(supabase) {
   try {
@@ -3147,7 +3147,7 @@ async function purgeUnverifiedAutoLinkedUsers(supabase) {
 }
 
 /**
- * 招待コードから対象ペアIDを検索するヘルパー (v2.17.2)
+ * 招待コードから対象ペアIDを検索するヘルパー (v2.17.3)
  */
 async function findPairByInviteCode(supabase, rawCode) {
   const code = String(rawCode || '').trim().toUpperCase();
@@ -3176,7 +3176,198 @@ async function findPairByInviteCode(supabase, rawCode) {
   return null;
 }
 
-async function processNaturalLanguageMessage(supabase, text, userId, source = null) {
+/**
+ * グループLINE / 複数人トークの参加確認済みユーザーIDリストを永続化・更新するヘルパー (v2.17.3)
+ */
+async function recordObservedGroupMembers(supabase, chatGroupId, addUserIds = [], removeUserIds = []) {
+  if (!chatGroupId) return [];
+  const settingKey = `groupObservedMembers_${chatGroupId}`;
+  const current = await getAppSetting(supabase, DEFAULT_PAIR_ID, settingKey, { userIds: [] });
+  const set = new Set(Array.isArray(current?.userIds) ? current.userIds.filter(Boolean) : []);
+  for (const id of addUserIds) {
+    if (id) set.add(id);
+  }
+  for (const id of removeUserIds) {
+    if (id) set.delete(id);
+  }
+  const updatedList = Array.from(set);
+  await setAppSetting(supabase, DEFAULT_PAIR_ID, settingKey, {
+    userIds: updatedList,
+    updatedAt: new Date().toISOString()
+  });
+  return updatedList;
+}
+
+/**
+ * LINE Messaging APIからグループ/ルームの参加人数（/members/count）およびメンバーID一覧（/members/ids）を取得 (v2.17.3)
+ */
+async function fetchLineGroupMemberInfo(chatGroupId, sourceType, lineToken) {
+  const result = { memberCount: null, memberIds: null };
+  if (!chatGroupId || !lineToken) return result;
+  const endpointType = sourceType === 'room' ? 'room' : 'group';
+
+  try {
+    const countRes = await fetch(`https://api.line.me/v2/bot/${endpointType}/${chatGroupId}/members/count`, {
+      method: 'GET',
+      headers: { Authorization: `Bearer ${lineToken}` }
+    });
+    if (countRes.ok) {
+      const countJson = await countRes.json();
+      if (typeof countJson?.count === 'number') {
+        result.memberCount = countJson.count;
+      }
+    }
+  } catch (err) {
+    console.warn('LINE group member count fetch error:', err);
+  }
+
+  try {
+    const idsRes = await fetch(`https://api.line.me/v2/bot/${endpointType}/${chatGroupId}/members/ids`, {
+      method: 'GET',
+      headers: { Authorization: `Bearer ${lineToken}` }
+    });
+    if (idsRes.ok) {
+      const idsJson = await idsRes.json();
+      if (Array.isArray(idsJson?.memberIds)) {
+        result.memberIds = idsJson.memberIds;
+      }
+    }
+  } catch (err) {
+    console.warn('LINE group member ids fetch error:', err);
+  }
+
+  return result;
+}
+
+/**
+ * 「招待されていないアカウントがいます」エラーメッセージ生成ヘルパー (v2.17.3)
+ */
+function buildUninvitedGroupMemberErrorMessage(opts = {}) {
+  const {
+    memberCount = null,
+    registeredCount = 0,
+    verifiedInGroupCount = 0,
+    needsPartnerConfirm = false
+  } = opts;
+
+  const countDetail = typeof memberCount === 'number'
+    ? `\n（現在のグループ人数: ${memberCount}名 / 家計簿の招待済み確認メンバー: ${verifiedInGroupCount}名）`
+    : '';
+
+  const partnerHint = needsPartnerConfirm
+    ? `\n\n💡 グループ内のもう1名の方も今回の家計簿メンバーである場合は、その方ご自身のLINEからこのグループ内で\n「連携 招待コード 名前」\n（すでに1対1トークで連携済みの場合は「メンバー確認」など一言メッセージ）を送信して、グループ全員が招待済みメンバーであることを認証してください。`
+    : `\n\n💡 グループLINEで家計簿を利用するには：\n1️⃣ グループ内の全員が「連携 招待コード 名前」で今回の家計簿メンバーに登録されていること\n2️⃣「グループ連携 招待コード」でグループ連携されていること\nが必要です（招待されていない第三者が1人でも含まれるグループでは閲覧できません）。`;
+
+  return `🚫 エラー：招待されていないアカウントがいます。${countDetail}\n\n` +
+    `このグループ内に今回の家計簿に入っていない（招待されていない）アカウントが1人でもいる場合、セキュリティ保護のため家計簿の残高やデータは一切表示できません。` +
+    `${partnerHint}\n🌐 Webアプリ: ${PUBLIC_WEB_APP_URL}`;
+}
+
+/**
+ * グループLINE内の全メンバーが対象家計簿（targetPairId）の招待済みメンバーか厳格検査する (v2.17.3)
+ * - 1人でも家計簿に入っていないアカウントがいれば allowed: false を返す
+ */
+async function verifyGroupMembersStrict(supabase, chatGroupId, sourceType, targetPairId, senderUserId, lineToken) {
+  const observedUserIds = await recordObservedGroupMembers(
+    supabase,
+    chatGroupId,
+    senderUserId ? [senderUserId] : [],
+    []
+  );
+
+  const { data: pairUsers } = await supabase
+    .from('users')
+    .select('line_user_id, display_name, slot')
+    .eq('pair_id', targetPairId);
+
+  const registeredUserIds = new Set((pairUsers || []).map(u => u.line_user_id).filter(Boolean));
+  const { memberCount, memberIds } = await fetchLineGroupMemberInfo(chatGroupId, sourceType, lineToken);
+  const verifiedMembersInGroup = observedUserIds.filter(id => registeredUserIds.has(id));
+
+  // 1. 発言者自身がこの家計簿に招待・登録されていない場合
+  if (!senderUserId || !registeredUserIds.has(senderUserId)) {
+    return {
+      allowed: false,
+      reason: 'UNINVITED_SENDER',
+      message: buildUninvitedGroupMemberErrorMessage({
+        memberCount,
+        registeredCount: registeredUserIds.size,
+        verifiedInGroupCount: verifiedMembersInGroup.length
+      })
+    };
+  }
+
+  // 2. LINE API (/members/ids) で取得したグループ内全メンバーに未招待アカウントが1人でもいる場合
+  if (Array.isArray(memberIds) && memberIds.length > 0) {
+    const hasUninvitedApiMember = memberIds.some(id => !registeredUserIds.has(id));
+    if (hasUninvitedApiMember) {
+      return {
+        allowed: false,
+        reason: 'UNINVITED_API_MEMBER',
+        message: buildUninvitedGroupMemberErrorMessage({
+          memberCount: memberIds.length,
+          registeredCount: registeredUserIds.size,
+          verifiedInGroupCount: memberIds.filter(id => registeredUserIds.has(id)).length
+        })
+      };
+    }
+  }
+
+  // 3. グループ内で過去に発言または参加イベントがあったメンバーに未招待アカウントが1人でもいる場合
+  const hasUninvitedObservedMember = observedUserIds.some(id => !registeredUserIds.has(id));
+  if (hasUninvitedObservedMember) {
+    return {
+      allowed: false,
+      reason: 'UNINVITED_OBSERVED_MEMBER',
+      message: buildUninvitedGroupMemberErrorMessage({
+        memberCount,
+        registeredCount: registeredUserIds.size,
+        verifiedInGroupCount: verifiedMembersInGroup.length
+      })
+    };
+  }
+
+  // 4. LINE API (/members/count) のグループ参加人数が、家計簿の登録済みメンバー数（または上限2名）を超えている場合
+  //    （例：家計簿に1名しかLINE連携していないのにグループに2名以上いる場合、またはグループに3名以上いる場合）
+  if (typeof memberCount === 'number' && memberCount > 0) {
+    if (memberCount > registeredUserIds.size || memberCount > 2) {
+      return {
+        allowed: false,
+        reason: 'GROUP_COUNT_EXCEEDS_REGISTERED',
+        message: buildUninvitedGroupMemberErrorMessage({
+          memberCount,
+          registeredCount: registeredUserIds.size,
+          verifiedInGroupCount: verifiedMembersInGroup.length,
+          needsPartnerConfirm: memberCount <= 2 && registeredUserIds.size < memberCount
+        })
+      };
+    }
+
+    // 5. グループ参加人数（例: 2名）に対して、このグループ内で招待済みと確認できた人数が満たない場合
+    //    （無言の第三者がグループに潜んでいるケースを100%遮断）
+    if (!Array.isArray(memberIds) && memberCount > verifiedMembersInGroup.length) {
+      return {
+        allowed: false,
+        reason: 'UNVERIFIED_MEMBER_IN_GROUP',
+        message: buildUninvitedGroupMemberErrorMessage({
+          memberCount,
+          registeredCount: registeredUserIds.size,
+          verifiedInGroupCount: verifiedMembersInGroup.length,
+          needsPartnerConfirm: true
+        })
+      };
+    }
+  }
+
+  return {
+    allowed: true,
+    memberCount,
+    registeredCount: registeredUserIds.size,
+    verifiedInGroupCount: verifiedMembersInGroup.length
+  };
+}
+
+async function processNaturalLanguageMessage(supabase, text, userId, source = null, lineToken = process.env.LINE_CHANNEL_ACCESS_TOKEN) {
   await purgeUnverifiedAutoLinkedUsers(supabase);
 
   const sourceType = source?.type || 'user';
@@ -3184,51 +3375,118 @@ async function processNaturalLanguageMessage(supabase, text, userId, source = nu
   const chatGroupId = source?.groupId || source?.roomId || null;
 
   // =========================================================================
-  // 【最優先セキュリティゲート A】グループLINE / 複数人トークルームの厳格分離 (v2.17.2)
-  // - グループLINEにBotを入れただけでは（たとえ登録済み本人が発言しても）個人の家計簿データは絶対に返さない！
-  // - 明示的に「グループ連携 <招待コード>」で紐付けられたグループのみ、そのペアのデータにアクセス可能
+  // 【最優先セキュリティゲート A】グループLINE / 複数人トークルームの全員招待チェック & 指定連携 (v2.17.3)
+  // - グループ内に今回の家計簿に入っていない人が1人でもいたら「招待されていないアカウントがいます」エラーで完全遮断！
+  // - 指定の方法（「グループ連携 招待コード」）で連携され、かつ全員が招待済みメンバーのグループのみ返答を許可
   // =========================================================================
   if (isGroupOrRoom && chatGroupId) {
+    await recordObservedGroupMembers(supabase, chatGroupId, userId ? [userId] : [], []);
+
     // 1) グループ連携解除コマンド
-    if (/^(?:グループ解除|グループ連携解除|連携解除)$/i.test(text)) {
+    if (/^(?:グループ解除|グループ連携解除)$/i.test(text)) {
       await setAppSetting(supabase, DEFAULT_PAIR_ID, `linkedLineGroup_${chatGroupId}`, null);
       return `🔓 このグループLINEの家計簿連携を解除しました。\nこれ以降、このグループ内で残高や家計簿データは一切表示されません。`;
     }
 
-    // 2) グループ連携コマンド（「グループ連携 招待コード」）
-    const groupLinkMatch = text.match(/^(?:グループ連携|グループ登録)\s+([A-Za-z0-9_-]{4,20})$/i);
-    if (groupLinkMatch) {
-      const inputCode = groupLinkMatch[1].trim();
+    // 2) グループ内での個人アカウント連携（「連携 招待コード 名前」）またはグループ連携（「グループ連携 招待コード [名前]」）
+    const groupCmdMatch = text.match(/^(?:グループ連携|グループ登録)\s+([A-Za-z0-9_-]{4,20})(?:\s+(.{1,15}))?$/i);
+    const memberLinkInGroupMatch =
+      text.match(/^(?:連携|参加|ペア連携|アカウント連携)\s+([A-Za-z0-9_-]{4,20})(?:\s+(.{1,15}))?$/i) ||
+      text.match(/^(.{1,15})として登録(?:\s+([A-Za-z0-9_-]{4,20}))$/);
+
+    if (groupCmdMatch || memberLinkInGroupMatch) {
+      const isRegFormat = !groupCmdMatch && /として登録/.test(text);
+      const inputCode = (groupCmdMatch ? groupCmdMatch[1] : (isRegFormat ? memberLinkInGroupMatch[2] : memberLinkInGroupMatch[1]) || '').trim();
+      const rawNameArg = (groupCmdMatch ? (groupCmdMatch[2] || '') : (isRegFormat ? memberLinkInGroupMatch[1] : memberLinkInGroupMatch[2] || '')).trim();
+
       const matchedPair = await findPairByInviteCode(supabase, inputCode);
       if (!matchedPair) {
         return `❌ 招待コード「${inputCode}」が見つかりません。\nWebアプリ左上の「🏷️世帯ペア」に表示されている招待コードをご確認のうえ、「グループ連携 招待コード」と送信してください。\n🌐 Webアプリ: ${PUBLIC_WEB_APP_URL}`;
       }
+
+      const targetPairId = matchedPair.id;
+      const targetConfig = await getConfigData(supabase, targetPairId);
+
+      // 発言者がまだ users テーブルに未登録であれば、招待コード提示者としてメンバー枠（最大2名）に登録
+      if (userId) {
+        const { data: pairUsers } = await supabase.from('users').select('*').eq('pair_id', targetPairId);
+        const existingSelf = (pairUsers || []).find(u => u.line_user_id === userId);
+        if (!existingSelf || rawNameArg) {
+          const hasHusband = (pairUsers || []).some(u => (u.slot === 'husband' || u.slot === 'slot1') && u.line_user_id !== userId);
+          const hasWife = (pairUsers || []).some(u => (u.slot === 'wife' || u.slot === 'slot2') && u.line_user_id !== userId);
+          const slot = existingSelf?.slot || (!hasHusband ? 'husband' : (!hasWife ? 'wife' : ''));
+          if (!slot) {
+            return `🚫 エラー：招待されていないアカウントがいます。\nこの家計簿ペア（${matchedPair.name}）は既に2名分のメンバー枠が埋まっているため、3人目以降のアカウントは登録・閲覧できません。`;
+          }
+          const customName = rawNameArg || existingSelf?.display_name || (slot === 'husband' ? (targetConfig.husbandName || 'メンバー1') : (targetConfig.wifeName || 'メンバー2'));
+          await supabase.from('users').upsert({
+            line_user_id: userId,
+            pair_id: targetPairId,
+            slot,
+            display_name: customName,
+            updated_at: new Date().toISOString()
+          }, { onConflict: 'line_user_id' });
+          if (rawNameArg) {
+            await supabase.from('app_settings').upsert({
+              pair_id: targetPairId,
+              key: slot === 'husband' ? 'husbandName' : 'wifeName',
+              value: customName
+            }, { onConflict: 'pair_id, key' });
+          }
+          await writeAudit(supabase, { name: customName }, targetPairId, '登録', 'メンバー', customName, null, { slot, role: customName });
+        }
+      }
+
+      // グループ連携設定を保存
       await setAppSetting(supabase, DEFAULT_PAIR_ID, `linkedLineGroup_${chatGroupId}`, {
-        pairId: matchedPair.id,
+        pairId: targetPairId,
         pairName: matchedPair.name,
         linkedBy: userId,
         linkedAt: new Date().toISOString()
       });
-      await writeAudit(supabase, { name: 'グループ連携' }, matchedPair.id, '登録', 'LINEグループ連携', chatGroupId, null, { pairId: matchedPair.id });
-      return `✅ このグループLINEを「${matchedPair.name}」の専用グループとして連携しました！\n（※解除したい場合はいつでも「グループ解除」と送信してください）`;
+      await writeAudit(supabase, { name: 'グループ連携' }, targetPairId, '登録', 'LINEグループ連携', chatGroupId, null, { pairId: targetPairId });
+
+      // 直ちにグループ内全メンバーが招待済みか検査
+      const verifyAfterLink = await verifyGroupMembersStrict(supabase, chatGroupId, sourceType, targetPairId, userId, lineToken);
+      if (!verifyAfterLink.allowed) {
+        return `🔐 グループ連携コードを受け付けましたが、現在このグループでは家計簿データを表示できません。\n\n${verifyAfterLink.message}`;
+      }
+
+      return `✅ このグループLINEを「${matchedPair.name}」の専用グループとして連携し、グループ内全員が招待済みメンバーであることを確認しました！\nこれよりグループ内で「残高」「今月いくら使った？」「AI分析」などの返答が可能です✨\n（※解除したい場合はいつでも「グループ解除」と送信してください）`;
     }
 
-    // 3) グループが連携済みか確認
+    // 3) グループ内で「メンバー確認」または通常の質問・操作が行われた場合
     const groupBinding = await getAppSetting(supabase, DEFAULT_PAIR_ID, `linkedLineGroup_${chatGroupId}`, null);
+    const { data: senderUser } = userId
+      ? await supabase.from('users').select('*').eq('line_user_id', userId).maybeSingle()
+      : { data: null };
+
+    // 検査対象のペアID（グループ連携済みならそのペア、未連携でも発言者のペアまたはデフォルトペアで未招待メンバー有無を厳格検査）
+    const checkPairId = groupBinding?.pairId || senderUser?.pair_id || DEFAULT_PAIR_ID;
+    const strictCheck = await verifyGroupMembersStrict(supabase, chatGroupId, sourceType, checkPairId, userId, lineToken);
+
+    // グループ内に今回の家計簿に入っていない人が1人でもいたら、必ず「招待されていないアカウントがいます」エラーを出して遮断！
+    if (!strictCheck.allowed) {
+      return strictCheck.message;
+    }
+
+    // グループ内全員が招待済みメンバーであっても、指定の方法（「グループ連携 招待コード」）がまだ実行されていなければ案内
     if (!groupBinding || !groupBinding.pairId) {
-      return `🔒【グループLINE セキュリティ保護】\n` +
-        `このグループトークには家計簿アカウントが紐付けられていません。\n` +
-        `（個人の口座残高や家計データがグループ内の第三者に漏洩するのを防ぐため、未連携のグループLINEでは、たとえご本人の発言であっても残高や明細を一切表示しない保護仕様です）\n\n` +
-        `💡 公式LINEとの「1対1トーク」でご利用いただくか、このグループをふたり専用の家計簿グループとして使う場合のみ、Webアプリ左上の「🏷️世帯ペア」にある招待コードを使って\n` +
+      return `🔒【グループLINE 連携案内】\n` +
+        `グループ内のメンバー確認は完了していますが、このグループでの返答を有効にするには、指定の方法でグループ連携を行う必要があります。\n\n` +
+        `👇 Webアプリ左上の「🏷️世帯ペア」にある招待コードを使い、\n` +
         `「グループ連携 招待コード」\n` +
         `と送信してください。\n` +
         `🌐 Webアプリ: ${PUBLIC_WEB_APP_URL}`;
     }
 
-    // グループ連携済みの場合は、そのグループに紐付いた pairId を使用
+    if (/^(?:メンバー確認|参加確認|認証確認)$/i.test(text)) {
+      return `✅ グループ内の全メンバー（${strictCheck.verifiedInGroupCount}名）が招待済みアカウントであることを確認しました！\nこのグループ内で「残高」「今月いくら使った？」「AI分析」などがご利用いただけます。`;
+    }
+
+    // 全員が招待済みメンバー ＆ 指定のグループ連携済みの場合のみ返答を実行
     const groupPairId = groupBinding.pairId;
     const groupConfig = await getConfigData(supabase, groupPairId);
-    const { data: senderUser } = await supabase.from('users').select('*').eq('line_user_id', userId).maybeSingle();
     const groupActor = {
       allowed: true,
       verified: true,
@@ -3241,7 +3499,7 @@ async function processNaturalLanguageMessage(supabase, text, userId, source = nu
   }
 
   // =========================================================================
-  // 【最優先セキュリティゲート B】1対1個人トークのアカウント紐付け検証 (v2.17.2)
+  // 【最優先セキュリティゲート B】1対1個人トークのアカウント紐付け検証 (v2.17.3)
   // - DEFAULT_PAIR_ID への無条件フォールバックや自動登録は一切行わない！
   // - users テーブルに登録されていない LINE アカウントからの照会・操作は 100% 遮断する
   // =========================================================================
@@ -3360,7 +3618,7 @@ async function processNaturalLanguageMessage(supabase, text, userId, source = nu
 }
 
 /**
- * 認証・紐付け検証を通過したアカウントまたは連携済みグループ専用のコマンド実行部 (v2.17.2)
+ * 認証・紐付け検証を通過したアカウントまたは連携済みグループ専用のコマンド実行部 (v2.17.3)
  */
 async function executeVerifiedLineCommand(supabase, text, userId, pairId, config, actor) {
 
@@ -4152,13 +4410,21 @@ async function processLineImageMessage(supabase, messageId, userId, lineToken, s
   let actor = null;
 
   if (isGroupOrRoom && chatGroupId) {
+    await recordObservedGroupMembers(supabase, chatGroupId, userId ? [userId] : [], []);
     const groupBinding = await getAppSetting(supabase, DEFAULT_PAIR_ID, `linkedLineGroup_${chatGroupId}`, null);
+    const { data: senderUser } = userId
+      ? await supabase.from('users').select('*').eq('line_user_id', userId).maybeSingle()
+      : { data: null };
+    const checkPairId = groupBinding?.pairId || senderUser?.pair_id || DEFAULT_PAIR_ID;
+    const strictCheck = await verifyGroupMembersStrict(supabase, chatGroupId, sourceType, checkPairId, userId, lineToken);
+    if (!strictCheck.allowed) {
+      return strictCheck.message;
+    }
     if (!groupBinding || !groupBinding.pairId) {
-      return `🔒【グループLINE セキュリティ保護】\nこのグループトークには家計簿アカウントが紐付けられていないため、レシート画像の登録はできません。\nふたり専用のグループとして使う場合は「グループ連携 招待コード」と送信して連携してください。\n🌐 Webアプリ: ${PUBLIC_WEB_APP_URL}`;
+      return `🔒【グループLINE 連携案内】\nこのグループでレシート登録を利用するには、指定の方法（「グループ連携 招待コード」と送信）でグループ連携を行ってください。\n🌐 Webアプリ: ${PUBLIC_WEB_APP_URL}`;
     }
     pairId = groupBinding.pairId;
     const groupConfig = await getConfigData(supabase, pairId);
-    const { data: senderUser } = await supabase.from('users').select('*').eq('line_user_id', userId).maybeSingle();
     actor = {
       allowed: true,
       verified: true,
@@ -4168,7 +4434,7 @@ async function processLineImageMessage(supabase, messageId, userId, lineToken, s
       pairId
     };
   } else {
-    // 1. 1対1トーク: アカウント紐付け厳格検証（DEFAULT_PAIR_IDへの自動フォールバック・自動登録は一切禁止 v2.17.2）
+    // 1. 1対1トーク: アカウント紐付け厳格検証（DEFAULT_PAIR_IDへの自動フォールバック・自動登録は一切禁止 v2.17.3）
     const { data: user } = await supabase.from('users').select('*, pairs(*)').eq('line_user_id', userId).maybeSingle();
     if (!user || !user.pair_id) {
       return `🔒【未連携アカウント・セキュリティ保護】\nこのLINEアカウントはまだどの家計簿にも紐付けられていません。\nWebアプリ左上の「🏷️世帯ペア」にある招待コードを確認し、「連携 招待コード あなたの名前」と送信して紐付けてください。\n🌐 Webアプリ: ${PUBLIC_WEB_APP_URL}`;
@@ -4418,7 +4684,7 @@ async function handleHealthCheck(req) {
 
   return {
     success: true,
-    version: 'v2.17.2',
+    version: 'v2.17.3',
     resolvedUrl: resolvedUrl ? resolvedUrl.replace(/\/\/[^@]+@/, '//***@') : '未設定',
     keyType: keyType,
     env: envCheck,
@@ -5197,9 +5463,39 @@ export default async function handler(req, res) {
         }
 
         for (const ev of body.events) {
-          if (ev.type === 'message' && ev.message?.type === 'text') {
+          const evChatGroupId = ev.source?.groupId || ev.source?.roomId || null;
+          if (ev.type === 'memberJoined' && evChatGroupId) {
             try {
-              const reply = await processNaturalLanguageMessage(supabase, ev.message.text.trim(), ev.source?.userId, ev.source);
+              const joinedIds = (ev.joined?.members || []).map(m => m.userId).filter(Boolean);
+              await recordObservedGroupMembers(supabase, evChatGroupId, joinedIds, []);
+              const groupBinding = await getAppSetting(supabase, DEFAULT_PAIR_ID, `linkedLineGroup_${evChatGroupId}`, null);
+              if (groupBinding?.pairId && joinedIds.length > 0) {
+                const { data: pairUsers } = await supabase.from('users').select('line_user_id').eq('pair_id', groupBinding.pairId);
+                const regSet = new Set((pairUsers || []).map(u => u.line_user_id).filter(Boolean));
+                if (joinedIds.some(id => !regSet.has(id))) {
+                  await sendLineReply(
+                    ev.replyToken,
+                    buildUninvitedGroupMemberErrorMessage({
+                      registeredCount: regSet.size,
+                      verifiedInGroupCount: regSet.size
+                    }),
+                    lineToken
+                  );
+                }
+              }
+            } catch (err) {
+              console.error('memberJoined処理エラー:', err);
+            }
+          } else if (ev.type === 'memberLeft' && evChatGroupId) {
+            try {
+              const leftIds = (ev.left?.members || []).map(m => m.userId).filter(Boolean);
+              await recordObservedGroupMembers(supabase, evChatGroupId, [], leftIds);
+            } catch (err) {
+              console.error('memberLeft処理エラー:', err);
+            }
+          } else if (ev.type === 'message' && ev.message?.type === 'text') {
+            try {
+              const reply = await processNaturalLanguageMessage(supabase, ev.message.text.trim(), ev.source?.userId, ev.source, lineToken);
               await sendLineReply(ev.replyToken, reply, lineToken);
             } catch (err) {
               console.error('LINEイベント処理エラー:', err);
@@ -5246,7 +5542,7 @@ export default async function handler(req, res) {
       if (!actor.allowed) {
         return res.status(200).json({
           success: false,
-          version: 'v2.17.2',
+          version: 'v2.17.3',
           code: actor.code,
           error: actor.error,
           userId: actor.userId || '',
