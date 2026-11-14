@@ -9,7 +9,7 @@
  */
 
 const APP_CONFIG = window.PAIRBUDGET_CONFIG || {};
-const FRONTEND_VERSION = 'v2.12.2';
+const FRONTEND_VERSION = 'v2.12.3';
 const MAX_HISTORY_MONTHS = 36;
 const FIELD_LABELS = {
   date: '日付', title: '品名', amount: '金額', category: 'カテゴリ', isShared: '共同',
@@ -6204,6 +6204,47 @@ function parseStatementCsv(csvText) {
     }
   }
 
+  // 文字化けヘッダーやヘッダーなし銀行通帳CSV（日付, 内容, 出金, 入金, 残高, メモ）の統計的自動判定 (v2.12.3)
+  if (headerIndex === -1 && parsedRows.length > 0) {
+    // 先頭行が日付でなく、列数が5〜6列の場合、またはデータ行から統計判定
+    const sampleRows = parsedRows.slice(0, Math.min(parsedRows.length, 20));
+    const colCount = Math.max(...sampleRows.map(r => r.length));
+    if (colCount >= 4) {
+      // 各列の日付率と数値率を算出
+      const dateRates = [];
+      const numRates = [];
+      for (let c = 0; c < colCount; c++) {
+        let dateHits = 0;
+        let numHits = 0;
+        let total = 0;
+        sampleRows.forEach(r => {
+          if (r.length > c) {
+            total++;
+            if (normalizeStatementDate(r[c])) dateHits++;
+            else if (parseYenValue(r[c]) !== null) numHits++;
+          }
+        });
+        dateRates.push(total > 0 ? dateHits / total : 0);
+        numRates.push(total > 0 ? numHits / total : 0);
+      }
+
+      // 銀行通帳パターン: 列0が日付(高確率)、列1が文字列(数値率低)、列2が出金、列3が入金、列4が残高(高数値率)
+      if (dateRates[0] > 0.4 && numRates[1] < 0.3) {
+        if (colCount >= 5 && (numRates[2] > 0.05 || numRates[3] > 0.05) && numRates[4] > 0.3) {
+          // 典型的な日本の銀行通帳CSV（日付, 内容, 出金, 入金, 残高, [メモ]）
+          const hasHeaderRow = !normalizeStatementDate(parsedRows[0][0]);
+          headerIndex = hasHeaderRow ? 0 : -2; // -2は「ヘッダーなしだが通帳固定列形式」
+          dateCol = 0;
+          titleCol = 1;
+          amountCol = 2;
+          depositCol = 3;
+          balanceCol = 4;
+          memoCol = colCount >= 6 ? 5 : -1;
+        }
+      }
+    }
+  }
+
   // カテゴリ自動推測ヘルパー
   function guessCategory(title) {
     if (/(?:電気|ガス|水道|東京電力|東京ガス|水道局|通信|docomo|au|softbank|wifi|NHK|インターネット)/i.test(title)) return '光熱費';
@@ -6220,17 +6261,19 @@ function parseStatementCsv(csvText) {
   let detectedBalanceInfo = null;
 
   if (headerIndex !== -1) {
-    // ヘッダーがある場合
+    // ヘッダーがある場合、または統計推定による銀行通帳形式の場合
     if (titleCol === -1) {
-      titleCol = parsedRows[headerIndex].findIndex((_, idx) =>
+      const hRow = headerIndex >= 0 ? parsedRows[headerIndex] : parsedRows[0];
+      titleCol = hRow.findIndex((_, idx) =>
         idx !== dateCol && idx !== amountCol && idx !== depositCol && idx !== balanceCol && idx !== memoCol
       );
       if (titleCol === -1) titleCol = 1;
     }
 
     const isBankFormat = depositCol !== -1 || balanceCol !== -1;
+    const startRowIdx = headerIndex >= 0 ? headerIndex + 1 : 0;
 
-    for (let i = headerIndex + 1; i < parsedRows.length; i++) {
+    for (let i = startRowIdx; i < parsedRows.length; i++) {
       const row = parsedRows[i];
       if (row.length === 0) continue;
 
