@@ -6439,7 +6439,15 @@ function processCsvFile(file) {
         text = new TextDecoder('shift_jis').decode(buffer);
       }
     } catch (_) {
-      text = new TextDecoder('shift_jis').decode(buffer);
+      try {
+        text = new TextDecoder('shift_jis').decode(buffer);
+      } catch (_2) {
+        try {
+          text = new TextDecoder('windows-31j').decode(buffer);
+        } catch (_3) {
+          text = new TextDecoder('utf-8').decode(buffer);
+        }
+      }
     }
     const items = parseStatementCsv(text);
     if (items.length === 0) {
@@ -6449,6 +6457,12 @@ function processCsvFile(file) {
     state.importedStatementItems = items;
     renderImportPreviewTable();
     notifyCsvImportLoaded(items, false);
+
+    // 読み込み完了後にプレビューエリアへ自動スクロール
+    setTimeout(() => {
+      const container = $('importPreviewContainer');
+      if (container) container.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    }, 100);
   };
   reader.readAsArrayBuffer(file);
 }
@@ -6511,6 +6525,12 @@ function handleCsvTextPaste() {
   state.importedStatementItems = items;
   renderImportPreviewTable();
   notifyCsvImportLoaded(items, true);
+
+  // コピペ完了後にプレビューエリアへ自動スクロール
+  setTimeout(() => {
+    const container = $('importPreviewContainer');
+    if (container) container.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  }, 100);
 }
 
 /**
