@@ -468,30 +468,10 @@ function verifySecretWithSalt(secret, storedHashRecord) {
 }
 
 /**
- * デフォルト口座構成の生成ヘルパー (v2.12.0)
+ * デフォルト口座構成の生成ヘルパー (v2.13.0: 未登録時は空配列を返却し不要なモック口座を自動生成しない)
  */
 function getDefaultBankAccounts() {
-  const now = new Date().toISOString();
-  return [
-    {
-      id: 'acc_shared_main',
-      name: '三井住友銀行（共有普通口座）',
-      type: 'shared_bank',
-      balance: 300000,
-      institution: '三井住友銀行',
-      note: '家賃・光熱費・クレカ引落用口座',
-      updatedAt: now
-    },
-    {
-      id: 'acc_shared_card',
-      name: '楽天カード（共同利用）',
-      type: 'shared_card',
-      balance: 0,
-      institution: '楽天カード',
-      note: '日常の食費・日用品決済用',
-      updatedAt: now
-    }
-  ];
+  return [];
 }
 
 async function writeAudit(supabase, actor, pairId, action, targetType, targetId, before, after) {
@@ -614,6 +594,19 @@ async function getConfigData(supabase, pairId) {
         config.members = JSON.parse(s.value);
       } catch (_) {}
     }
+    if (s.key === 'bankAccounts') {
+      try {
+        let accs = JSON.parse(s.value);
+        if (Array.isArray(accs)) {
+          // 意図しない初期モック（三井住友銀行、楽天カード）を徹底除外
+          accs = accs.filter(a =>
+            a && !((a.id === 'acc_shared_main' && a.name && a.name.includes('三井住友')) ||
+                  (a.id === 'acc_shared_card' && a.name && a.name.includes('楽天カード')))
+          );
+        }
+        config.bankAccounts = accs;
+      } catch (_) {}
+    }
   });
 
   (usersRes.data || []).forEach(u => {
@@ -680,7 +673,10 @@ function calculateTransfers(monthStr, txs, config, monthlyBudget) {
 
 function calculateMonthlySummary(monthStr, txs, budgetAmount) {
   const isCurrentMonth = monthStr === currentMonthStr();
-  const totalExpense = txs.filter(t => t.isShared).reduce((s, t) => s + t.amount, 0);
+  // 口座入金・収入・マイナス金額は生活費の支出合計から除外 (v2.13.0)
+  const totalExpense = txs
+    .filter(t => t.isShared && t.category_id !== '口座入金' && t.category_id !== '収入' && t.category !== '口座入金' && t.category !== '収入' && Number(t.amount) > 0)
+    .reduce((s, t) => s + Number(t.amount), 0);
   const remaining = budgetAmount - totalExpense;
 
   const [year, month] = monthStr.split('-').map(Number);
@@ -1057,7 +1053,7 @@ async function handleGetInitialData(supabase, targetMonth, actor, requestedPairI
 
   return {
     success: true,
-    version: 'v2.12.6',
+    version: 'v2.13.0',
     pair: {
       id: pairId,
       name: config.pairName,
@@ -4062,7 +4058,7 @@ async function handleHealthCheck(req) {
 
   return {
     success: true,
-    version: 'v2.12.6',
+    version: 'v2.13.0',
     resolvedUrl: resolvedUrl ? resolvedUrl.replace(/\/\/[^@]+@/, '//***@') : '未設定',
     keyType: keyType,
     env: envCheck,
@@ -4134,18 +4130,21 @@ async function handleImportCardStatements(supabase, actor, data) {
         validDate = rawDate.slice(0, 10);
       }
 
+      const isDeposit = item.txType === 'deposit' || item.category === '口座入金' || item.category === '収入';
       const amt = Math.abs(parseInt(String(item.amount).replace(/[,¥円\s]/g, ''), 10));
-      const cleanTitle = String(item.title || '明細インポート').trim().slice(0, 50) || '明細';
-      const cleanCat = String(item.category || '食費').trim().slice(0, 20) || 'その他';
-      const cleanMemo = String(item.memo || 'クレカ/明細取込').trim().slice(0, 100);
+      const cleanTitle = String(item.title || (isDeposit ? '口座入金' : '明細インポート')).trim().slice(0, 50) || '明細';
+      const cleanCat = isDeposit ? '口座入金' : (String(item.category || '食費').trim().slice(0, 20) || 'その他');
+      const cleanMemo = String(item.memo || (isDeposit ? '銀行通帳入金' : 'クレカ/明細取込')).trim().slice(0, 100);
 
-      const pType = ['shared_card', 'shared_account', 'advanced_by_user'].includes(item.paymentType)
-        ? item.paymentType
-        : 'shared_card';
+      const pType = isDeposit
+        ? 'shared_account'
+        : (['shared_card', 'shared_account', 'advanced_by_user'].includes(item.paymentType)
+          ? item.paymentType
+          : 'shared_card');
 
       let payer = String(item.payer || '').trim();
       if (!payer) {
-        payer = pType === 'shared_card' ? '共同カード' : (pType === 'shared_account' ? '共同口座' : defaultPayer);
+        payer = isDeposit ? '共同口座' : (pType === 'shared_card' ? '共同カード' : (pType === 'shared_account' ? '共同口座' : defaultPayer));
       }
 
       return {
@@ -4527,7 +4526,7 @@ export default async function handler(req, res) {
       if (!actor.allowed) {
         return res.status(200).json({
           success: false,
-          version: 'v2.12.6',
+          version: 'v2.13.0',
           code: actor.code,
           error: actor.error,
           userId: actor.userId || '',
