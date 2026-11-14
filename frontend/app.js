@@ -9,7 +9,7 @@
  */
 
 const APP_CONFIG = window.PAIRBUDGET_CONFIG || {};
-const FRONTEND_VERSION = 'v2.12.5';
+const FRONTEND_VERSION = 'v2.12.6';
 const MAX_HISTORY_MONTHS = 36;
 const FIELD_LABELS = {
   date: '日付', title: '品名', amount: '金額', category: 'カテゴリ', isShared: '共同',
@@ -1288,6 +1288,16 @@ async function callGas(action, data, extra = {}) {
 
 // API通信関数のエイリアス (v2.12.0 互換性確保)
 const callApi = (...args) => api(...args);
+
+function escapeHtml(str) {
+  if (str === null || str === undefined) return '';
+  return String(str)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#039;');
+}
 
 async function api(action, data = {}, extra = {}) {
   if (state.isMockMode) {
