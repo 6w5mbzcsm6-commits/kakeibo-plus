@@ -9,7 +9,7 @@
  */
 
 const APP_CONFIG = window.PAIRBUDGET_CONFIG || {};
-const FRONTEND_VERSION = 'v2.17.0';
+const FRONTEND_VERSION = 'v2.17.1';
 const MAX_HISTORY_MONTHS = 36;
 const FIELD_LABELS = {
   date: '日付', title: '品名', amount: '金額', category: 'カテゴリ', isShared: '共同',
@@ -1705,10 +1705,10 @@ async function loadInitialData(month, opts = {}) {
     if (state.viewMonth !== targetMonth) return; // 月送り連打時の古いレスポンスを破棄
 
     if (!res || !res.success) {
-      if (res && (res.code === 'UNREGISTERED' || res.code === 'AUTH' || res.code === 'SETUP_REQUIRED')) {
+      if (res && (res.code === 'UNREGISTERED' || res.code === 'AUTH' || res.code === 'SETUP_REQUIRED' || res.code === 'UNAUTHORIZED_LINE_USER')) {
         // バックエンド自体は正常稼働中（未登録または認証案内）なのでデモモードには落とさない
         state.isMockMode = false;
-        state.backendVersion = res.version || 'v2.2.0';
+        state.backendVersion = res.version || 'v2.17.1';
         handleApiError(res);
         renderAll();
         hideMainSkeleton();
@@ -1749,6 +1749,9 @@ function applyData(data) {
   if (!data) return;
   state.viewMonth = data.month || state.viewMonth || localMonthStr();
   state.transactions = data.transactions || [];
+  state.allTransactions = (Array.isArray(data.allTransactions) && data.allTransactions.length > 0)
+    ? data.allTransactions
+    : (data.transactions || []);
   state.receiptItems = data.receiptItems || [];
   state.shoppingList = data.shoppingList || [];
   state.fixedExpenses = data.fixedExpenses || [];
@@ -6168,11 +6171,14 @@ document.addEventListener('DOMContentLoaded', async () => {
 // ==========================================
 
 /**
- * 口座配列の正規化・重複排除ヘルパー (v2.16.1: バックエンド型落ちバグで増殖した0円口座の自動クリーンアップ)
+ * 口座配列の正規化・重複排除・生活費口座の確実な復元ヘルパー (v2.17.1)
  */
 function sanitizeAndDedupeClientBankAccounts(rawAccounts) {
   if (!Array.isArray(rawAccounts)) return [];
 
+  const passbookBal = (state.importedCsvBalanceInfo && state.importedCsvBalanceInfo.balance !== null && state.importedCsvBalanceInfo.balance !== undefined)
+    ? Number(state.importedCsvBalanceInfo.balance)
+    : 161421;
   const initSavings = Number(state.savingsConfig?.initialSavings || 0);
   const filtered = rawAccounts.filter(a =>
     a && !((a.id === 'acc_shared_main' && a.name && a.name.includes('三井住友')) ||
@@ -6182,15 +6188,19 @@ function sanitizeAndDedupeClientBankAccounts(rawAccounts) {
   const normalized = filtered.map((acc, index) => {
     const id = acc.id || `acc_${Date.now()}_${index}`;
     const name = String(acc.name || '口座名未設定').trim();
-    const isSavingsByName = id === 'acc_shared_savings' || name.includes('別口座') || name.includes('繰越') || name.includes('貯金') || name.includes('貯蓄');
+    const isSavingsByName = id === 'acc_shared_savings' || name.includes('別口座') || name.includes('余り繰越');
     let type = ['shared_bank', 'shared_savings', 'personal_bank', 'shared_card', 'personal_card'].includes(acc.type)
       ? acc.type
       : 'shared_bank';
     if (isSavingsByName && type === 'shared_bank') {
       type = 'shared_savings';
     }
+    // 「ふたりの共有口座」や「生活費」口座が誤って shared_savings になっていた場合は shared_bank に復元
+    if ((id === 'acc_shared_pair_bank' || name === 'ふたりの共有口座' || name.includes('生活費') || name.includes('生活口座')) && type === 'shared_savings') {
+      type = 'shared_bank';
+    }
     let balance = Number(acc.balance) || 0;
-    if (type === 'shared_savings' && balance === 0 && initSavings > 0 && initSavings !== 161421) {
+    if (type === 'shared_savings' && balance === 0 && initSavings > 0 && initSavings !== passbookBal) {
       balance = initSavings;
     }
     return {
@@ -6207,7 +6217,7 @@ function sanitizeAndDedupeClientBankAccounts(rawAccounts) {
 
   for (const acc of normalized) {
     let dedupeKey = acc.id;
-    if (acc.type === 'shared_savings' && (acc.id === 'acc_shared_savings' || acc.name.includes('別口座貯金'))) {
+    if (acc.type === 'shared_savings' && (acc.id === 'acc_shared_savings' || acc.name.includes('別口座'))) {
       dedupeKey = '__singleton_shared_savings__';
     } else if (acc.type === 'shared_bank' && (acc.id === 'acc_shared_pair_bank' || acc.name === 'ふたりの共有口座')) {
       dedupeKey = '__singleton_shared_pair_bank__';
@@ -6227,9 +6237,29 @@ function sanitizeAndDedupeClientBankAccounts(rawAccounts) {
     } else {
       const fixedAcc = dedupeKey === '__singleton_shared_savings__'
         ? { ...acc, id: 'acc_shared_savings', type: 'shared_savings' }
-        : acc;
+        : (dedupeKey === '__singleton_shared_pair_bank__'
+          ? { ...acc, id: 'acc_shared_pair_bank', type: 'shared_bank' }
+          : acc);
       seenKeys.set(dedupeKey, result.length);
       result.push(fixedAcc);
+    }
+  }
+
+  // ★重要保証 (v2.17.1): ①普段の生活費口座 (shared_bank) が消えていた場合は必ず先頭に復元する
+  if (result.length > 0 && !result.some(a => a.type === 'shared_bank')) {
+    result.unshift({
+      id: 'acc_shared_pair_bank',
+      name: 'ふたりの共有口座',
+      type: 'shared_bank',
+      balance: passbookBal,
+      institution: '共有銀行口座',
+      note: '普段の生活費・引落用口座',
+      updatedAt: new Date().toISOString()
+    });
+  } else {
+    const bankList = result.filter(a => a.type === 'shared_bank');
+    if (bankList.length === 1 && Number(bankList[0].balance || 0) === 0) {
+      bankList[0].balance = passbookBal;
     }
   }
 
@@ -6596,11 +6626,14 @@ window.toggleAccountTxSlide = function (txId) {
  */
 window.toggleSavedTransactionShared = async function (txId, event) {
   if (event) event.stopPropagation();
-  const tx = (state.transactions || []).find(t => String(t.id) === String(txId));
+  const tx = (state.transactions || []).find(t => String(t.id) === String(txId))
+    || (state.allTransactions || []).find(t => String(t.id) === String(txId));
   if (!tx) return;
 
   const newShared = !tx.isShared;
   tx.isShared = newShared;
+  const alsoInAll = (state.allTransactions || []).find(t => String(t.id) === String(txId));
+  if (alsoInAll) alsoInAll.isShared = newShared;
   state.openedSlideTxId = null;
   renderAccountTransactionsModal();
 
@@ -6632,13 +6665,16 @@ window.toggleSavedTransactionShared = async function (txId, event) {
  */
 window.promptSavedTransactionMemo = async function (txId, event) {
   if (event) event.stopPropagation();
-  const tx = (state.transactions || []).find(t => String(t.id) === String(txId));
+  const tx = (state.transactions || []).find(t => String(t.id) === String(txId))
+    || (state.allTransactions || []).find(t => String(t.id) === String(txId));
   if (!tx) return;
 
   const nextMemo = prompt(`「${tx.title}」のメモを入力してください:`, tx.memo || '');
   if (nextMemo === null) return;
 
   tx.memo = nextMemo.trim();
+  const alsoInAll = (state.allTransactions || []).find(t => String(t.id) === String(txId));
+  if (alsoInAll) alsoInAll.memo = tx.memo;
   renderAccountTransactionsModal();
   showToast('📝 メモを保存しました', 'success');
 
@@ -6708,17 +6744,29 @@ function renderAccountTransactionsModal() {
     }
   }
 
-  // 3. 対象取引リストの抽出
-  const allTxs = (state.transactions || []).slice();
+  // 3. 対象取引リストの抽出（v2.17.1: 当月だけでなく過去月に登録・CSV取込した生活費口座の全明細も統合表示して消失を防止）
+  const curMonthTxs = (state.transactions || []).slice();
+  const allMonthsMap = new Map();
+  curMonthTxs.forEach(t => { if (t && t.id) allMonthsMap.set(String(t.id), t); });
+  (state.allTransactions || []).forEach(t => {
+    if (t && t.id && !allMonthsMap.has(String(t.id))) {
+      allMonthsMap.set(String(t.id), t);
+    }
+  });
+  const allTxs = Array.from(allMonthsMap.values());
   const nonExpenseCats = ['口座入金', '収入', 'クレカ引落振替', '振替'];
 
   let filteredTxs = [];
   if (isCard) {
-    filteredTxs = allTxs.filter(t => t.paymentType === 'shared_card' || t.payer === '共同カード' || (!nonExpenseCats.includes(t.category) && t.paymentType !== 'shared_account'));
+    // 共有カード: 当月のカード明細を優先し、当月0件なら全期間のカード明細を表示
+    const curCardTxs = curMonthTxs.filter(t => t.paymentType === 'shared_card' || t.payer === '共同カード' || (!nonExpenseCats.includes(t.category) && t.paymentType !== 'shared_account'));
+    filteredTxs = curCardTxs.length > 0
+      ? curCardTxs
+      : allTxs.filter(t => t.paymentType === 'shared_card' || t.payer === '共同カード' || (!nonExpenseCats.includes(t.category) && t.paymentType !== 'shared_account'));
   } else if (isSavings) {
     filteredTxs = allTxs.filter(t => t.category === '口座入金' || t.category === '貯金');
   } else {
-    // 普段の生活費口座: すべての入出金・引落・支出を時系列表示
+    // ① 普段の生活費口座: 過去月・当月すべての通帳CSV取込明細・口座引落・入出金・支出を時系列表示
     filteredTxs = allTxs;
   }
 
@@ -8296,10 +8344,11 @@ function buildLocalAiExportPayload() {
   });
   md += `\n`;
 
-  md += `## 6. 当月（${m}）の全取引明細データ（全${txs.length}件）\n`;
+  const exportTxs = (Array.isArray(state.allTransactions) && state.allTransactions.length > 0) ? state.allTransactions : txs;
+  md += `## 6. データベース全取引明細データ（全${exportTxs.length}件・直近月〜過去履歴）\n`;
   md += `| 日付 | 内容・店舗名 | カテゴリ | 金額 | 種別 | 支払方法 | 支払者 | メモ |\n`;
   md += `| :--- | :--- | :--- | ---: | :--- | :--- | :--- | :--- |\n`;
-  txs.forEach(t => {
+  exportTxs.forEach(t => {
     const scopeStr = t.isShared !== false ? '家族(共有)' : '個人(私物)';
     const payStr = t.paymentType === 'shared_card' ? '共同カード' : (t.paymentType === 'shared_account' ? '共同口座' : '個人立替');
     md += `| ${t.date} | ${String(t.title || '').replace(/\|/g, '｜')} | ${t.category || ''} | ¥${Number(t.amount || 0).toLocaleString()} | ${scopeStr} | ${payStr} | ${t.payer || ''} | ${String(t.memo || '').replace(/\|/g, '｜')} |\n`;
@@ -8317,7 +8366,7 @@ function buildLocalAiExportPayload() {
   const csvRows = [
     ['日付', '内容・店舗名', 'カテゴリ', '金額', '家族/個人', '支払方法', '支払者', 'レシートID', 'メモ']
   ];
-  txs.forEach(t => {
+  exportTxs.forEach(t => {
     const scopeStr = t.isShared !== false ? '家族(共有)' : '個人(私物)';
     const payStr = t.paymentType === 'shared_card' ? '共同カード' : (t.paymentType === 'shared_account' ? '共同口座' : '個人立替');
     csvRows.push([

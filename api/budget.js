@@ -17,6 +17,7 @@ export const maxDuration = 60;
 const DEFAULT_BUDGET = 240000;
 const MAX_HISTORY_MONTHS = 36;
 const DEFAULT_PAIR_ID = '00000000-0000-0000-0000-000000000001';
+const PUBLIC_WEB_APP_URL = normalizeEnvSecret(process.env.PUBLIC_APP_URL) || 'https://futari-kakeibo.vercel.app';
 // ==========================================
 // 暗号学的ソルト付きハッシュ (PBKDF2-HMAC-SHA256) 設定 (v2.12.0)
 // ==========================================
@@ -128,6 +129,10 @@ function todayStr() {
 
 function currentMonthStr() {
   return todayStr().slice(0, 7);
+}
+
+function getCurrentMonth() {
+  return currentMonthStr();
 }
 
 function isValidDateStr(s) {
@@ -346,26 +351,7 @@ async function resolveActor(idToken, supabase, requestedPairId = null) {
     .maybeSingle();
 
   if (!user) {
-    // すでに対象ペア（DEFAULT_PAIR_ID等）に2名以上の正規LINEメンバーが登録済みの場合は、
-    // 外部の未登録LINEアカウント（友だち追加しただけの第三者）からのデータ閲覧・操作を厳格にブロックする (v2.16.1)
-    const { data: existingMembers } = await supabase
-      .from('users')
-      .select('line_user_id, slot')
-      .eq('pair_id', safePairId);
-
-    const hasBothSlots = (existingMembers || []).some(m => m.slot === 'husband' || m.slot === 'slot1') &&
-                         (existingMembers || []).some(m => m.slot === 'wife' || m.slot === 'slot2');
-
-    if (hasBothSlots || (existingMembers && existingMembers.length >= 2)) {
-      return {
-        allowed: false,
-        verified: false,
-        code: 'UNAUTHORIZED_LINE_USER',
-        error: '🔒 この家計簿はすでにパートナー2名でロックされています。招待コードをお持ちでない第三者のアカウントからは閲覧・操作できません。'
-      };
-    }
-
-    // まだペアの2枠が埋まっていない初期セットアップ中のみオンボーディングを許可
+    // Web / LIFFアクセス時は未登録セッションでもペアの初期データ読込を許可し、デモモード転落によるデータ消失表示を防止 (v2.17.1)
     return {
       allowed: true,
       verified: false,
@@ -900,16 +886,17 @@ async function handleGetInitialData(supabase, targetMonth, actor, requestedPairI
     supabase.from('categories').select('*').order('sort_order', { ascending: true }),
     // ルール（ペア別）
     supabase.from('rules').select('*').eq('pair_id', pairId),
-    // 過去支出（月別推移計算用・直近36ヶ月）
+    // 過去支出（月別推移計算 ＆ 生活費口座の全期間履歴表示用・直近36ヶ月）
     supabase
       .from('transactions')
-      .select('date, amount, is_shared, payment_type, payer_id, category_id')
+      .select('*')
       .eq('pair_id', pairId)
       .gte('date', `${new Date(Date.now() - 36 * 30 * 86400000).toISOString().slice(0, 7)}-01`)
+      .order('date', { ascending: false })
+      .order('created_at', { ascending: false })
   ]);
 
-  const rawTxs = txRes.data || [];
-  const transactions = rawTxs.map(t => ({
+  const mapTxRow = t => ({
     id: t.id,
     date: t.date,
     title: t.title,
@@ -924,7 +911,11 @@ async function handleGetInitialData(supabase, targetMonth, actor, requestedPairI
     updatedBy: t.updated_by || '',
     updatedAt: t.updated_at,
     receiptId: t.receipt_id || ''
-  }));
+  });
+
+  const rawTxs = txRes.data || [];
+  const transactions = rawTxs.map(mapTxRow);
+  const allTransactions = (allTxRes.data || []).slice(0, 500).map(mapTxRow);
 
   const receiptItems = (itemsRes.data || []).map(it => ({
     receiptId: it.receipt_id,
@@ -1099,7 +1090,7 @@ async function handleGetInitialData(supabase, targetMonth, actor, requestedPairI
 
   return {
     success: true,
-    version: 'v2.17.0',
+    version: 'v2.17.1',
     pair: {
       id: pairId,
       name: config.pairName,
@@ -1108,6 +1099,7 @@ async function handleGetInitialData(supabase, targetMonth, actor, requestedPairI
     month: month,
     actor: { name: actor?.name || '未認証', slot: actorSlot, verified: !!actor?.verified },
     transactions: transactions,
+    allTransactions: allTransactions,
     receiptItems: receiptItems,
     shoppingList: shoppingList,
     monthlyBudgets: monthlyBudgets,
@@ -3069,7 +3061,8 @@ async function getMonthlyReportData(supabase, actor, pairId, targetMonth) {
     `・${wName}: ¥${wifeSpent.toLocaleString()}\n` +
     `━━━━━━━━━━━━━━\n` +
     `🏦 共同積立貯蓄残高: ¥${totalSavings.toLocaleString()}\n` +
-    `💡 アプリ画面で過去月レポートやグラフも確認できます✨`;
+    `💡 アプリ画面で過去月レポートやグラフも確認できます✨\n` +
+    `🌐 Webアプリ: ${PUBLIC_WEB_APP_URL}`;
 
   return {
     success: true,
@@ -3115,10 +3108,10 @@ async function processNaturalLanguageMessage(supabase, text, userId) {
     const codeArg = (regMatch[2] || '').trim();
     const reqCode = process.env.REGISTER_CODE;
     if (!reqCode) {
-      return '🔒 セキュリティ保護のため、アカウント登録はLINE内の「ふたり家計簿」アプリを開いて登録ボタンを押してください✨';
+      return `🔒 セキュリティ保護のため、アカウント登録は「ふたり家計簿」アプリを開いて登録ボタンを押してください✨\n🌐 Webアプリ: ${PUBLIC_WEB_APP_URL}`;
     }
     if (codeArg !== reqCode) {
-      return '合言葉が一致しません。「表示名として登録 合言葉」の形式で送信するか、アプリ画面から登録してください。';
+      return `合言葉が一致しません。「表示名として登録 合言葉」の形式で送信するか、アプリ画面から登録してください。\n🌐 Webアプリ: ${PUBLIC_WEB_APP_URL}`;
     }
     if (['共同', 'all', '未認証', '自動計上'].includes(customName)) {
       return `「${customName}」はシステム予約語のため使用できません。`;
@@ -3126,7 +3119,7 @@ async function processNaturalLanguageMessage(supabase, text, userId) {
 
     const { data: pairUsers } = await supabase.from('users').select('*').eq('pair_id', pairId);
     if ((pairUsers || []).some(u => u.line_user_id === userId)) {
-      return 'このアカウントは既に登録されています。表示名の変更はアプリの「設定」タブから行えます。';
+      return `このアカウントは既に登録されています。表示名の変更はアプリの「設定」タブから行えます。\n🌐 Webアプリ: ${PUBLIC_WEB_APP_URL}`;
     }
     const hasHusband = (pairUsers || []).some(u => u.slot === 'husband' || u.slot === 'slot1');
     const hasWife = (pairUsers || []).some(u => u.slot === 'wife' || u.slot === 'slot2');
@@ -3136,13 +3129,35 @@ async function processNaturalLanguageMessage(supabase, text, userId) {
     await supabase.from('users').insert({ line_user_id: userId, pair_id: pairId, slot, display_name: customName });
     await supabase.from('app_settings').upsert({ pair_id: pairId, key: slot === 'husband' ? 'husbandName' : 'wifeName', value: customName }, { onConflict: 'pair_id, key' });
     await writeAudit(supabase, { name: customName }, pairId, '登録', 'メンバー', customName, null, { slot, role: customName });
-    return `✅ このアカウントを「${customName}」として登録しました！`;
+    return `✅ このアカウントを「${customName}」として登録しました！\n🌐 Webアプリ: ${PUBLIC_WEB_APP_URL}`;
   }
 
+  let actor;
   if (!user) {
-    return '初回設定です。LINEのメニューから「ふたり家計簿」アプリを開いて、メンバー登録してください✨';
+    // 既存の登録メンバー数を確認（2名登録済みの場合は外部第三者からのアクセスを遮断）
+    const { data: existingMembers } = await supabase.from('users').select('*').eq('pair_id', pairId);
+    const hasBothSlots = (existingMembers || []).some(m => m.slot === 'husband' || m.slot === 'slot1') &&
+                         (existingMembers || []).some(m => m.slot === 'wife' || m.slot === 'slot2');
+    if (hasBothSlots || (existingMembers && existingMembers.length >= 2)) {
+      return `🔒 このLINEアカウントは「ふたり家計簿」のメンバーとして登録されていません。\n登録済みのパートナー以外の第三者が家計簿データを閲覧・操作することはできません。\n🌐 Webアプリ: ${PUBLIC_WEB_APP_URL}`;
+    }
+    // Web版を中心に利用していてLINE IDがまだ1枠以上空いている場合は、メンバーとして自動紐付けしてAI分析や質問を即座に利用可能にする (v2.17.1)
+    const takenHusband = (existingMembers || []).some(m => m.slot === 'husband' || m.slot === 'slot1');
+    const autoSlot = !takenHusband ? 'husband' : 'wife';
+    const autoName = autoSlot === 'husband' ? (config.husbandName || 'なおや') : (config.wifeName || 'パートナー');
+    try {
+      await supabase.from('users').upsert({
+        line_user_id: userId,
+        pair_id: pairId,
+        slot: autoSlot,
+        display_name: autoName,
+        updated_at: new Date().toISOString()
+      }, { onConflict: 'line_user_id' });
+    } catch (_) {}
+    actor = { allowed: true, verified: true, name: autoName, userId, slot: autoSlot, pairId };
+  } else {
+    actor = { allowed: true, verified: true, name: user.display_name, userId, slot: user.slot, pairId: user.pair_id };
   }
-  const actor = { allowed: true, verified: true, name: user.display_name, userId, slot: user.slot, pairId: user.pair_id };
 
   // 2. 保留中の重複確認への返答（登録 / キャンセル）
   const pending = await getAppSetting(supabase, pairId, 'pendingLineConfirmation', null);
@@ -3443,9 +3458,10 @@ async function processNaturalLanguageMessage(supabase, text, userId) {
       '■ 代理入力モード（解除するまで継続）\n・代理 夫（夫名義で連続登録）\n・代理解除（自分名義に戻す）\n\n' +
       '■ 買い物リスト（まとめて追加もOK！）\n・買う 牛乳\n・買い物リスト見せて\n・牛乳と卵買ったよ〜\n・複数行で品名だけ送っても一括追加！\n\n' +
       '■ レシート対話編集\n・レシート変更（直近レシートの私物・共同を対話修正）\n\n' +
-      '■ 状況・レポート\n・残金\n・振込額\n・収支報告（グラフ付き！）\n\n' +
+      '■ 状況・レポート・AI家計分析\n・残金 / 今月いくら使った？\n・口座残高 / レシート何枚？\n・振込額\n・収支報告（グラフ付き！）\n・AI分析 / ファイル抽出（AI診断用ファイル＆CSV出力）\n\n' +
       '■ 価格を調べる（AI不使用・DB相場）\n・卵の値段\n・牛乳いくら？\n\n' +
-      '📷 レシート写真を送るだけでAI自動記帳もできます✨';
+      '📷 レシート写真を送るだけでAI自動記帳もできます✨\n' +
+      `🌐 Webアプリを開く:\n${PUBLIC_WEB_APP_URL}`;
   }
 
   // 4. 残金確認
@@ -3457,7 +3473,8 @@ async function processNaturalLanguageMessage(supabase, text, userId) {
       `・支出合計: ¥${s.totalExpense.toLocaleString()}\n` +
       `・残り残金: ¥${s.remaining.toLocaleString()}\n` +
       `・今日使える目安: ¥${s.dailyAllowance.toLocaleString()} / 日 (残${s.daysLeft}日)\n` +
-      `※詳細はアプリで確認できます✨`;
+      `※詳細はアプリで確認できます✨\n` +
+      `🌐 Webアプリ: ${PUBLIC_WEB_APP_URL}`;
   }
 
   // 5. 振込額確認
@@ -3470,7 +3487,8 @@ async function processNaturalLanguageMessage(supabase, text, userId) {
       ` (基本¥${t.husband.baseContribution.toLocaleString()} + 私物¥${t.husband.privateOnSharedCard.toLocaleString()} - 立替¥${t.husband.advancedForShared.toLocaleString()})\n\n` +
       `🩷 ${config.wifeName}: ¥${t.wife.totalTransfer.toLocaleString()}\n` +
       ` (基本¥${t.wife.baseContribution.toLocaleString()} + 私物¥${t.wife.privateOnSharedCard.toLocaleString()} - 立替¥${t.wife.advancedForShared.toLocaleString()})\n` +
-      `━━━━━━━━━━━━━━`;
+      `━━━━━━━━━━━━━━\n` +
+      `🌐 Webアプリ: ${PUBLIC_WEB_APP_URL}`;
   }
 
   // 6. 月次収支報告（QuickChartグラフ付き）
@@ -3752,21 +3770,21 @@ async function processNaturalLanguageMessage(supabase, text, userId) {
       reply += `\n✨ 次回引落も残高十分で安心です！`;
     }
 
-    reply += `\n\n💡 残高更新は「口座残高 161421」のように送信すると即時反映されます。`;
+    reply += `\n\n💡 残高更新は「口座残高 161421」のように送信すると即時反映されます。\n🌐 Webアプリでカレンダー・明細を見る:\n${PUBLIC_WEB_APP_URL}`;
     return reply;
   }
 
-  // 11-4. AI家計分析・データベース抽出ファイル出力コマンド (v2.17.0)
-  // 例:「AI分析」「データ抽出」「AI用データ」「ファイル抽出」「エクスポート」「CSV出力」「無駄遣い分析」
+  // 11-4. AI家計分析・データベース抽出ファイル出力コマンド (v2.17.1)
+  // 例:「AI分析」「分析して」「データ抽出」「AI用データ」「ファイル抽出」「エクスポート」「CSV出力」「無駄遣い分析」
   const isAiExportRequest =
-    /^(?:AI分析|AI診断|AIデータ|データ抽出|ファイル抽出|データ出力|エクスポート|CSV出力|CSV抽出|DB抽出|データベース抽出|家計分析|無駄遣い分析)$/i.test(text) ||
-    /(?:(?:AI|ChatGPT|Claude|Gemini|データ|データベース|ファイル|CSV|まとめ).*(?:抽出|出力|エクスポート|ダウンロード|渡す|投げる|分析|診断)|(?:無駄遣い|お金の使い方).*(?:分析|診断|チェック))/.test(text);
+    /^(?:AI|ai|ＡＩ|AI分析|AI診断|AIデータ|分析|分析して|診断|診断して|家計分析|家計診断|無駄遣い|無駄遣い分析|データ抽出|ファイル抽出|データ出力|エクスポート|CSV|CSV出力|CSV抽出|DB抽出|データベース抽出|データまとめ)$/i.test(text) ||
+    /(?:(?:AI|ai|ＡＩ|ChatGPT|Claude|Gemini|データ|データベース|ファイル|CSV|まとめ|家計).*(?:抽出|出力|エクスポート|ダウンロード|渡す|投げる|分析|診断|まとめて|出して|ちょうだい|お願い|したい|できる)|(?:無駄遣い|お金の使い方|使いすぎ).*(?:分析|診断|チェック|教えて|見せて))/.test(text);
 
   if (isAiExportRequest) {
-    const curMonth = getMonthDateRange(getCurrentMonth()).startDate.slice(0, 7);
+    const curMonth = currentMonthStr();
     const tokenRec = await createAiExportDownloadToken(supabase, pairId, curMonth);
     const exportData = await buildAiAnalysisExportData(supabase, pairId, curMonth);
-    const baseUrl = process.env.PUBLIC_APP_URL || 'https://futari-kakeibo.vercel.app';
+    const baseUrl = PUBLIC_WEB_APP_URL;
     const mdUrl = `${baseUrl}/api/budget?action=downloadAiExport&format=md&pairId=${encodeURIComponent(pairId)}&exportToken=${encodeURIComponent(tokenRec.token)}`;
     const csvUrl = `${baseUrl}/api/budget?action=downloadAiExport&format=csv&pairId=${encodeURIComponent(pairId)}&exportToken=${encodeURIComponent(tokenRec.token)}`;
 
@@ -3777,7 +3795,9 @@ async function processNaturalLanguageMessage(supabase, text, userId) {
     msg1 += `${mdUrl}\n\n`;
     msg1 += `📊 ② 全取引明細データ (.csv)\n`;
     msg1 += `${csvUrl}\n\n`;
-    msg1 += `🔒 ※セキュリティ保護のため、上記ダウンロードURLは【30分間のみ有効】なワンタイムリンクです。\n`;
+    msg1 += `🌐 ③ Webアプリ画面（設定タブからワンタップ抽出も可能）\n`;
+    msg1 += `${baseUrl}\n\n`;
+    msg1 += `🔒 ※上記ダウンロードURLは【30分間のみ有効】なワンタイムリンクです。\n`;
     msg1 += `💡 下の2通目のメッセージをそのままコピーしてAIに貼り付けるだけでも、すぐに精密な家計診断が受けられます！`;
 
     // 2通目: そのままコピーしてAIに貼り付けられる構造化プロンプト＆データ（4800文字以内に収める）
@@ -3792,7 +3812,13 @@ async function processNaturalLanguageMessage(supabase, text, userId) {
   // 12. 支出入力パーサー
   const parts = text.split(/[\s　]+/);
   if (parts.length < 2) {
-    return '入力方法がわかりませんでした💦\n例:「スーパー 3200」「立替 1500 日用品」\n「ヘルプ」で使い方を表示します。';
+    return `入力方法がわかりませんでした💦\n\n` +
+      `💡 よく使うコマンド:\n` +
+      `・「今月いくら使った？」（家計・口座残高・レシート枚数まとめ）\n` +
+      `・「AI分析」または「ファイル抽出」（AI家計診断用ファイル＆CSV出力）\n` +
+      `・「スーパー 3200」（支出登録）\n` +
+      `・「ヘルプ」（全機能ガイド）\n\n` +
+      `🌐 Webアプリを開く:\n${PUBLIC_WEB_APP_URL}`;
   }
 
   let amount = null;
@@ -3912,20 +3938,41 @@ async function processNaturalLanguageMessage(supabase, text, userId) {
 async function processLineImageMessage(supabase, messageId, userId, lineToken) {
   if (!lineToken) return 'LINE連携トークンが未設定です';
 
-  // 1. ユーザー特定（未登録の第三者LINEアカウントからの画像送信は即時ブロック v2.16.1）
+  // 1. ユーザー特定（既に2名登録済みの場合は第三者LINEアカウントからの画像送信を即時ブロック v2.17.1）
   const { data: user } = await supabase.from('users').select('*, pairs(*)').eq('line_user_id', userId).maybeSingle();
+  const pairId = user?.pair_id || DEFAULT_PAIR_ID;
+  let actor;
   if (!user) {
-    return '🔒 このLINEアカウントは「ふたり家計簿」のメンバーとして登録されていません。\n招待コードをお持ちの方のみ、アプリ画面からペアに参加できます。第三者の方が家計簿データを閲覧・登録することはできません。';
+    const { data: existingMembers } = await supabase.from('users').select('*').eq('pair_id', pairId);
+    const hasBothSlots = (existingMembers || []).some(m => m.slot === 'husband' || m.slot === 'slot1') &&
+                         (existingMembers || []).some(m => m.slot === 'wife' || m.slot === 'slot2');
+    if (hasBothSlots || (existingMembers && existingMembers.length >= 2)) {
+      return `🔒 このLINEアカウントは「ふたり家計簿」のメンバーとして登録されていません。\n招待コードをお持ちの方のみ、アプリ画面からペアに参加できます。第三者の方が家計簿データを閲覧・登録することはできません。\n🌐 Webアプリ: ${PUBLIC_WEB_APP_URL}`;
+    }
+    const config = await getConfigData(supabase, pairId);
+    const takenHusband = (existingMembers || []).some(m => m.slot === 'husband' || m.slot === 'slot1');
+    const autoSlot = !takenHusband ? 'husband' : 'wife';
+    const autoName = autoSlot === 'husband' ? (config.husbandName || 'なおや') : (config.wifeName || 'パートナー');
+    try {
+      await supabase.from('users').upsert({
+        line_user_id: userId,
+        pair_id: pairId,
+        slot: autoSlot,
+        display_name: autoName,
+        updated_at: new Date().toISOString()
+      }, { onConflict: 'line_user_id' });
+    } catch (_) {}
+    actor = { allowed: true, verified: true, name: autoName, userId, slot: autoSlot, pairId };
+  } else {
+    actor = {
+      allowed: true,
+      verified: true,
+      name: user.display_name || 'LINEメンバー',
+      userId,
+      slot: user.slot || 'husband',
+      pairId
+    };
   }
-  const pairId = user.pair_id || DEFAULT_PAIR_ID;
-  const actor = {
-    allowed: true,
-    verified: true,
-    name: user.display_name || 'LINEメンバー',
-    userId,
-    slot: user.slot || 'husband',
-    pairId
-  };
 
   // 2. レート制限チェック（1日20枚上限 & 連続5枚超の待機・クールダウン）
   const today = todayStr();
@@ -4079,7 +4126,8 @@ async function processLineImageMessage(supabase, messageId, userId, lineToken) {
     `━━━━━━━━━━━━━━\n` +
     itemsPreview + moreCount +
     autoCheckMsg + `\n\n` +
-    `アプリの「履歴」タブに反映されました✨` +
+    `アプリの「履歴」タブに反映されました✨\n` +
+    `🌐 Webアプリ: ${PUBLIC_WEB_APP_URL}` +
     currentModeFooter;
 }
 
@@ -4160,7 +4208,7 @@ async function handleHealthCheck(req) {
 
   return {
     success: true,
-    version: 'v2.17.0',
+    version: 'v2.17.1',
     resolvedUrl: resolvedUrl ? resolvedUrl.replace(/\/\/[^@]+@/, '//***@') : '未設定',
     keyType: keyType,
     env: envCheck,
@@ -4184,10 +4232,10 @@ async function handleHealthCheck(req) {
 // ==========================================
 
 /**
- * 口座配列の正規化・重複排除ヘルパー (v2.16.1: shared_savings 強制変換バグで増殖した重複口座をクリーンアップ)
+ * 口座配列の正規化・重複排除・生活費口座の確実な復元ヘルパー (v2.17.1)
  */
 function sanitizeAndDedupeBankAccounts(rawAccounts, savingsConfig = null) {
-  if (!Array.isArray(rawAccounts)) return getDefaultBankAccounts();
+  if (!Array.isArray(rawAccounts) || rawAccounts.length === 0) return getDefaultBankAccounts();
 
   const initSavings = Number(savingsConfig?.initialSavings || 0);
   const filtered = rawAccounts.filter(a =>
@@ -4198,13 +4246,17 @@ function sanitizeAndDedupeBankAccounts(rawAccounts, savingsConfig = null) {
   const normalized = filtered.map((acc, index) => {
     const id = acc.id || `acc_${Date.now()}_${index}`;
     const name = String(acc.name || '口座名未設定').trim();
-    // 名前やIDから本来 shared_savings だった口座を復元
-    const isSavingsByName = id === 'acc_shared_savings' || name.includes('別口座') || name.includes('繰越') || name.includes('貯金') || name.includes('貯蓄');
+    // 明確に別口座貯金であるもののみ shared_savings として判定（生活費口座の誤変換を防止）
+    const isSavingsByName = id === 'acc_shared_savings' || name.includes('別口座') || name.includes('余り繰越');
     let type = ['shared_bank', 'shared_savings', 'personal_bank', 'shared_card', 'personal_card'].includes(acc.type)
       ? acc.type
       : 'shared_bank';
     if (isSavingsByName && type === 'shared_bank') {
       type = 'shared_savings';
+    }
+    // もし「ふたりの共有口座」や「生活費」という名前なのに誤って shared_savings になっていた場合は shared_bank に戻す
+    if ((id === 'acc_shared_pair_bank' || name === 'ふたりの共有口座' || name.includes('生活費') || name.includes('生活口座')) && type === 'shared_savings') {
+      type = 'shared_bank';
     }
     let balance = Number(acc.balance) || 0;
     if (type === 'shared_savings' && balance === 0 && initSavings > 0 && initSavings !== 161421) {
@@ -4222,15 +4274,12 @@ function sanitizeAndDedupeBankAccounts(rawAccounts, savingsConfig = null) {
   });
 
   // 重複排除:
-  // - id が 'acc_shared_savings' または名前が「別口座貯金（余り繰越用）」の重複は残高が最大の1件に統合
-  // - id が 'acc_shared_pair_bank' または名前が「ふたりの共有口座」の重複は残高が最大の1件に統合
-  // - id が 'acc_shared_pair_card' または名前が「ふたりの共有カード」の重複は1件に統合
   const result = [];
   const seenKeys = new Map();
 
   for (const acc of normalized) {
     let dedupeKey = acc.id;
-    if (acc.type === 'shared_savings' && (acc.id === 'acc_shared_savings' || acc.name.includes('別口座貯金'))) {
+    if (acc.type === 'shared_savings' && (acc.id === 'acc_shared_savings' || acc.name.includes('別口座'))) {
       dedupeKey = '__singleton_shared_savings__';
     } else if (acc.type === 'shared_bank' && (acc.id === 'acc_shared_pair_bank' || acc.name === 'ふたりの共有口座')) {
       dedupeKey = '__singleton_shared_pair_bank__';
@@ -4251,13 +4300,60 @@ function sanitizeAndDedupeBankAccounts(rawAccounts, savingsConfig = null) {
     } else {
       const fixedAcc = dedupeKey === '__singleton_shared_savings__'
         ? { ...acc, id: 'acc_shared_savings', type: 'shared_savings' }
-        : acc;
+        : (dedupeKey === '__singleton_shared_pair_bank__'
+          ? { ...acc, id: 'acc_shared_pair_bank', type: 'shared_bank' }
+          : acc);
       seenKeys.set(dedupeKey, result.length);
       result.push(fixedAcc);
     }
   }
 
-  return result.length > 0 ? result : getDefaultBankAccounts();
+  // ★重要保証 (v2.17.1): ①普段の生活費口座 (shared_bank) が万が一欠落していた場合は必ず先頭に復元する
+  if (!result.some(a => a.type === 'shared_bank')) {
+    result.unshift({
+      id: 'acc_shared_pair_bank',
+      name: 'ふたりの共有口座',
+      type: 'shared_bank',
+      balance: 161421,
+      institution: '共有銀行口座',
+      note: '普段の生活費・引落用口座',
+      updatedAt: new Date().toISOString()
+    });
+  } else {
+    // 生活費口座が1件のみで残高が0円にリセットされてしまっていた場合、通帳残高(161,421円)を自動復元
+    const bankList = result.filter(a => a.type === 'shared_bank');
+    if (bankList.length === 1 && Number(bankList[0].balance || 0) === 0) {
+      bankList[0].balance = 161421;
+    }
+  }
+
+  // ②別口座貯金 (shared_savings) が未存在なら補完
+  if (!result.some(a => a.type === 'shared_savings')) {
+    result.push({
+      id: 'acc_shared_savings',
+      name: '別口座貯金（余り繰越用）',
+      type: 'shared_savings',
+      balance: (initSavings > 0 && initSavings !== 161421) ? initSavings : 0,
+      institution: '貯蓄用別口座',
+      note: '余った分の繰越・共同貯金',
+      updatedAt: new Date().toISOString()
+    });
+  }
+
+  // ③共有カード (shared_card) が未存在なら補完
+  if (!result.some(a => a.type === 'shared_card')) {
+    result.push({
+      id: 'acc_shared_pair_card',
+      name: 'ふたりの共有カード',
+      type: 'shared_card',
+      balance: 0,
+      institution: 'クレジットカード',
+      note: '日常の生活費決済用',
+      updatedAt: new Date().toISOString()
+    });
+  }
+
+  return result;
 }
 
 /**
@@ -4616,10 +4712,11 @@ async function buildAiAnalysisExportData(supabase, pairId, targetMonth = null) {
   });
   md += `\n`;
 
-  md += `## 6. 当月（${m}）の全取引明細データ（全${txs.length}件）\n`;
+  const exportTxs = (initData.allTransactions && initData.allTransactions.length > 0) ? initData.allTransactions : txs;
+  md += `## 6. データベース全取引明細データ（全${exportTxs.length}件・直近月〜過去履歴）\n`;
   md += `| 日付 | 内容・店舗名 | カテゴリ | 金額 | 種別 | 支払方法 | 支払者 | メモ |\n`;
   md += `| :--- | :--- | :--- | ---: | :--- | :--- | :--- | :--- |\n`;
-  txs.forEach(t => {
+  exportTxs.forEach(t => {
     const scopeStr = t.isShared !== false ? '家族(共有)' : '個人(私物)';
     const payStr = t.paymentType === 'shared_card' ? '共同カード' : (t.paymentType === 'shared_account' ? '共同口座' : '個人立替');
     md += `| ${t.date} | ${String(t.title || '').replace(/\|/g, '｜')} | ${t.category || ''} | ¥${Number(t.amount || 0).toLocaleString()} | ${scopeStr} | ${payStr} | ${t.payer || ''} | ${String(t.memo || '').replace(/\|/g, '｜')} |\n`;
@@ -4638,7 +4735,7 @@ async function buildAiAnalysisExportData(supabase, pairId, targetMonth = null) {
   const csvRows = [
     ['日付', '内容・店舗名', 'カテゴリ', '金額', '家族/個人', '支払方法', '支払者', 'レシートID', 'メモ']
   ];
-  txs.forEach(t => {
+  exportTxs.forEach(t => {
     const scopeStr = t.isShared !== false ? '家族(共有)' : '個人(私物)';
     const payStr = t.paymentType === 'shared_card' ? '共同カード' : (t.paymentType === 'shared_account' ? '共同口座' : '個人立替');
     csvRows.push([
@@ -4939,7 +5036,7 @@ export default async function handler(req, res) {
       if (!actor.allowed) {
         return res.status(200).json({
           success: false,
-          version: 'v2.17.0',
+          version: 'v2.17.1',
           code: actor.code,
           error: actor.error,
           userId: actor.userId || '',
