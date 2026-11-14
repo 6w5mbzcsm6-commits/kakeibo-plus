@@ -83,7 +83,7 @@
         <div>
           <div class="flex items-center gap-1.5">
             <h1 class="text-base font-bold text-slate-900 leading-tight">ふたり家計簿</h1>
-            <span id="headerVersionBadge" onclick="forceHardReload()" title="タップして最新版に更新" class="bg-brand-50 text-brand-700 hover:bg-brand-100 text-[10px] font-bold px-1.5 py-0.5 rounded-full border border-brand-200 cursor-pointer transition-colors active:scale-95 select-none">v2.13.1</span>
+            <span id="headerVersionBadge" onclick="forceHardReload()" title="タップして最新版に更新" class="bg-brand-50 text-brand-700 hover:bg-brand-100 text-[10px] font-bold px-1.5 py-0.5 rounded-full border border-brand-200 cursor-pointer transition-colors active:scale-95 select-none">v2.13.2</span>
           </div>
           <!-- 月ナビゲーション（爆速クイック月選択対応 v2.10.0） -->
           <div class="flex items-center gap-1 mt-0.5">
@@ -325,7 +325,10 @@
               </div>
               <div class="text-2xl font-black tracking-tight" id="totalSavingsBalance">¥0</div>
               <div class="text-[10px] text-emerald-100 flex items-center justify-between pt-1 border-t border-white/15">
-                <span>初期繰越: <b id="initialSavingsLabel" class="text-white">¥0</b></span>
+                <span class="flex items-center gap-1.5">
+                  <span>初期繰越: <b id="initialSavingsLabel" class="text-white">¥0</b></span>
+                  <button type="button" onclick="syncSavingsWithBankBalance()" class="text-[10px] bg-white/25 hover:bg-white/35 text-white font-bold px-1.5 py-0.5 rounded transition-all cursor-pointer" title="口座預金残高と同期">口座と同期</button>
+                </span>
                 <span>累計利息: <b id="totalInterestsLabel" class="text-white">¥0</b></span>
               </div>
             </div>
@@ -1036,7 +1039,7 @@
           <footer class="pt-2 pb-6 text-center text-[10px] text-slate-400 font-mono flex items-center justify-center gap-2 select-none flex-wrap">
             <span class="inline-flex items-center gap-1 bg-slate-100 text-slate-600 px-2 py-0.5 rounded-full">
               <span>Web</span>
-              <b id="frontVersionLabel" class="text-slate-800">v2.13.1</b>
+              <b id="frontVersionLabel" class="text-slate-800">v2.13.2</b>
             </span>
             <span>/</span>
             <span class="inline-flex items-center gap-1 bg-slate-100 text-slate-600 px-2 py-0.5 rounded-full">
@@ -2226,7 +2229,7 @@
 
   <!-- アプリ本体スクリプト -->
   <script src="config.js?v=2.12.1"></script>
-  <script src="app.js?v=2.13.1"></script>
+  <script src="app.js?v=2.13.2"></script>
 
   <!-- 口座追加・編集モーダル (v2.12.1) -->
   <div id="bankAccountModal" class="hidden fixed inset-0 z-50 bg-black/50 backdrop-blur-xs flex items-center justify-center p-4">
@@ -2301,7 +2304,7 @@
             <h3 class="text-base font-bold text-slate-800 flex items-center gap-1.5">
               <i data-lucide="receipt" class="w-5 h-5 text-sky-600"></i> 明細取込 ＆ おしどり風仕分け
             </h3>
-            <span class="text-[10px] font-bold bg-sky-100 text-sky-700 px-1.5 py-0.5 rounded">v2.13.1</span>
+            <span class="text-[10px] font-bold bg-sky-100 text-sky-700 px-1.5 py-0.5 rounded">v2.13.2</span>
           </div>
           <p class="text-xs text-slate-400">CSVまたはスマホの明細スクショから取り込み「共有 / 私物」を仕分け</p>
         </div>
@@ -2315,24 +2318,24 @@
         </div>
       </div>
 
-      <!-- 取込方式選択 (CSV or スクショ画像) -->
+      <!-- 取込方式選択 (CSV/PDF or スクショ画像) -->
       <div class="grid grid-cols-2 gap-2 bg-slate-100 p-1 rounded-xl shrink-0 text-xs font-bold">
         <button type="button" id="importTabCsvBtn" onclick="switchImportTab('csv')" class="py-2 rounded-lg bg-white text-sky-700 shadow-xs flex items-center justify-center gap-1.5 transition-all">
-          <i data-lucide="file-spreadsheet" class="w-4 h-4"></i> ① クレカ/銀行CSV取込
+          <i data-lucide="file-spreadsheet" class="w-4 h-4"></i> ① クレカ/銀行CSV・PDF取込
         </button>
         <button type="button" id="importTabImageBtn" onclick="switchImportTab('image')" class="py-2 rounded-lg text-slate-600 hover:text-slate-900 flex items-center justify-center gap-1.5 transition-all">
           <i data-lucide="camera" class="w-4 h-4"></i> ② 明細/残高スクショAI
         </button>
       </div>
 
-      <!-- CSV取込エリア -->
+      <!-- CSV/PDF取込エリア -->
       <div id="importAreaCsv" class="space-y-3 shrink-0">
-        <!-- ファイル選択 / D&D ドロップゾーン (ネイティブラベル化: 無限再帰バグ完全解消) -->
+        <!-- ファイル選択 / D&D ドロップゾーン -->
         <label for="statementCsvFileInput" id="csvDropZone" ondragover="handleCsvDragOver(event)" ondragleave="handleCsvDragLeave(event)" ondrop="handleCsvDrop(event)" class="block border-2 border-dashed border-sky-200 hover:border-sky-400 bg-sky-50/50 rounded-xl p-4 text-center cursor-pointer transition-all active:scale-[0.99]">
-          <input type="file" id="statementCsvFileInput" accept=".csv,.tsv,.txt,text/csv,text/plain,text/comma-separated-values,application/csv,application/vnd.ms-excel,application/octet-stream,*/*" class="sr-only" onchange="handleCsvFileSelected(event)">
+          <input type="file" id="statementCsvFileInput" accept=".csv,.CSV,.tsv,.pdf,.PDF,text/csv,application/pdf,*/*" class="sr-only" onchange="handleCsvFileSelected(event)">
           <i data-lucide="upload-cloud" class="w-8 h-8 text-sky-500 mx-auto mb-1"></i>
-          <p class="text-xs font-bold text-slate-700">CSVファイルを選択 または ここにドラッグ＆ドロップ</p>
-          <p class="text-[11px] text-slate-400 mt-1">楽天カード・三井住友(Vpass)・JCB・イオン・エポス・各行通帳CSVに自動対応 (Shift_JIS/UTF-8)</p>
+          <p class="text-xs font-bold text-slate-700">CSVまたはPDFファイルを選択（ドラッグ＆ドロップ対応）</p>
+          <p class="text-[11px] text-slate-400 mt-1">楽天・三井住友・JCB・イオン・各行通帳CSV ＆ 各種PDF利用明細に対応 (PDF/CSV/Shift_JIS)</p>
         </label>
 
         <!-- 📋 CSV・明細テキスト直接貼り付け (コピペ入力) ＆ サンプル (v2.12.1) -->

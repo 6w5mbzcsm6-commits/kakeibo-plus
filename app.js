@@ -9,7 +9,7 @@
  */
 
 const APP_CONFIG = window.PAIRBUDGET_CONFIG || {};
-const FRONTEND_VERSION = 'v2.13.1';
+const FRONTEND_VERSION = 'v2.13.2';
 const MAX_HISTORY_MONTHS = 36;
 const FIELD_LABELS = {
   date: '日付', title: '品名', amount: '金額', category: 'カテゴリ', isShared: '共同',
@@ -2219,7 +2219,16 @@ function renderBudgetSummary() {
  * - ユーザーの手動上書き収支（monthlyBalances）を最優先で反映
  */
 function computeJointSavingsSummary() {
-  const initialSavings = Number(state.savingsConfig?.initialSavings || 0);
+  const currentBankBalance = (state.bankAccounts || [])
+    .filter(a => a.type === 'shared_bank')
+    .reduce((sum, a) => sum + (Number(a.balance) || 0), 0);
+
+  // 口座預金・クレカ利用明細との整合連動: 初期残高未設定時は口座残高（¥161,421）をベースラインとして自動連動 (v2.13.2)
+  let initialSavings = Number(state.savingsConfig?.initialSavings || 0);
+  if (initialSavings === 0 && currentBankBalance > 0) {
+    initialSavings = currentBankBalance;
+  }
+
   const monthlyInterests = state.savingsConfig?.monthlyInterests || {};
   const monthlyBalances = state.savingsConfig?.monthlyBalances || {};
   const currentMonth = localMonthStr();
@@ -2277,11 +2286,30 @@ function computeJointSavingsSummary() {
   return {
     totalBalance,
     initialSavings,
+    currentBankBalance,
     totalInterests,
     countedMonths,
     monthRows
   };
 }
+
+/**
+ * 共同積立を現在の口座残高とワンタップで完全同期 (v2.13.2)
+ */
+window.syncSavingsWithBankBalance = async function () {
+  const currentBankBalance = (state.bankAccounts || [])
+    .filter(a => a.type === 'shared_bank')
+    .reduce((sum, a) => sum + (Number(a.balance) || 0), 0);
+  if (!state.savingsConfig) state.savingsConfig = {};
+  state.savingsConfig.initialSavings = currentBankBalance;
+  try { localStorage.setItem('pairbudget_savings_config', JSON.stringify(state.savingsConfig)); } catch (_) {}
+  renderSavingsCard();
+  updateBudgetOverWarningBox();
+  showToast(`🏦 共同積立を口座残高（${yen(currentBankBalance)}）と同期しました✨`, 'success');
+  if (!state.isMockMode) {
+    await writeAndRefresh('updateSavingsConfig', { savingsConfig: state.savingsConfig }, '共同積立を口座残高と同期しました').catch(() => {});
+  }
+};
 
 /**
  * 共同積立・貯金カード描画 (ユーザー画像デザイン完全再現)
@@ -6494,10 +6522,90 @@ function notifyCsvImportLoaded(items, isPaste = false) {
 }
 
 /**
- * CSVファイル解析の共通処理 (v2.12.2 Shift_JIS/UTF-8自動判定強化)
+ * PDF利用明細ファイルのAI高精度解析 (v2.13.2)
+ */
+async function processPdfStatementFile(file) {
+  if (!file) return;
+
+  const spinner = $('importLoadingSpinner');
+  const spinnerText = $('importLoadingText');
+  const preview = $('importPreviewContainer');
+
+  if (spinner) spinner.classList.remove('hidden');
+  if (spinnerText) spinnerText.textContent = 'AIがPDF利用明細書を解析中...';
+  if (preview) preview.classList.add('hidden');
+
+  try {
+    const reader = new FileReader();
+    reader.onload = async (e) => {
+      const dataUrl = e.target.result;
+      const base64 = dataUrl.split(',')[1] || '';
+
+      const res = await api('scanStatementOrBalance', { mimeType: 'application/pdf', imageBase64: base64 });
+      if (spinner) spinner.classList.add('hidden');
+
+      if (!res || !res.success) {
+        showToast(res?.error || 'PDFの解析に失敗しました', 'error');
+        return;
+      }
+
+      if (res.balanceInfo && res.balanceInfo.balance !== null && res.balanceInfo.balance !== undefined) {
+        state.importedCsvBalanceInfo = {
+          balance: Number(res.balanceInfo.balance),
+          date: res.balanceInfo.date || localDateStr(),
+          title: res.balanceInfo.institution || 'PDF通帳明細',
+          applied: false
+        };
+      }
+
+      const rawStatements = Array.isArray(res.statements) ? res.statements : [];
+      if (rawStatements.length > 0) {
+        state.importedStatementItems = rawStatements.map(s => {
+          const isDeposit = s.txType === 'deposit' || s.category === '口座入金' || s.category === '収入';
+          const isTransfer = s.txType === 'card_transfer' || s.category === 'クレカ引落振替';
+          return {
+            date: normalizeStatementDate(s.date) || localDateStr(),
+            title: s.title || (isDeposit ? '口座入金' : (isTransfer ? 'カード代金引落' : '明細支出')),
+            amount: Math.abs(Number(s.amount) || 0),
+            txType: isDeposit ? 'deposit' : (isTransfer ? 'card_transfer' : 'expense'),
+            category: isDeposit ? '口座入金' : (isTransfer ? 'クレカ引落振替' : (s.category || '食費')),
+            payer: (isDeposit || isTransfer) ? '共同口座' : '共同カード',
+            paymentType: (isDeposit || isTransfer) ? 'shared_account' : 'shared_card',
+            isShared: true,
+            memo: s.memo || 'PDF明細取込'
+          };
+        });
+
+        renderImportPreviewTable();
+        showToast(`📄 PDFから ${state.importedStatementItems.length} 件の明細を抽出しました！`, 'success');
+
+        setTimeout(() => {
+          const container = $('importPreviewContainer');
+          if (container) container.scrollIntoView({ behavior: 'smooth', block: 'start' });
+        }, 100);
+      } else {
+        showToast('PDFから明細を抽出できませんでした。テキストまたは別の明細をお試しください', 'info');
+      }
+    };
+    reader.readAsDataURL(file);
+  } catch (err) {
+    if (spinner) spinner.classList.add('hidden');
+    showToast('PDF読み取りエラー: ' + err.message, 'error');
+  }
+}
+
+/**
+ * CSV / PDFファイル解析の共通処理 (v2.13.2 PDF・Shift_JIS・UTF-8自動対応)
  */
 function processCsvFile(file) {
   if (!file) return;
+
+  // PDFファイルが選択・ドロップされた場合、AI高精度PDF解析へルーティング (v2.13.2)
+  if (file.type === 'application/pdf' || file.name.toLowerCase().endsWith('.pdf')) {
+    processPdfStatementFile(file);
+    return;
+  }
+
   const reader = new FileReader();
   reader.onload = (e) => {
     const buffer = e.target.result;

@@ -884,7 +884,7 @@ async function handleGetInitialData(supabase, targetMonth, actor, requestedPairI
     // 過去支出（月別推移計算用・直近36ヶ月）
     supabase
       .from('transactions')
-      .select('date, amount, is_shared, payment_type, payer_id')
+      .select('date, amount, is_shared, payment_type, payer_id, category_id')
       .eq('pair_id', pairId)
       .gte('date', `${new Date(Date.now() - 36 * 30 * 86400000).toISOString().slice(0, 7)}-01`)
   ]);
@@ -1044,22 +1044,25 @@ async function handleGetInitialData(supabase, targetMonth, actor, requestedPairI
     const amt = Number(tx.amount) || 0;
     const isSharedCard = tx.payment_type === 'shared_card';
     const isSharedAccount = tx.payment_type === 'shared_account';
+    const nonExpenseCats = ['口座入金', '収入', 'クレカ引落振替', '振替'];
+    const isLivingExpense = !nonExpenseCats.includes(tx.category_id);
+
     if (isSharedCard) {
       b.sharedCard += amt;
-      if (tx.is_shared) {
+      if (tx.is_shared && isLivingExpense) {
         b.sharedCardLiving += amt;
       } else {
         b.sharedCardPersonal += amt;
       }
     } else if (isSharedAccount) {
       b.sharedAccount += amt;
-      if (tx.is_shared) {
+      if (tx.is_shared && isLivingExpense) {
         b.sharedAccountLiving += amt;
       } else {
         b.sharedAccountPersonal += amt;
       }
     }
-    if (tx.is_shared) {
+    if (tx.is_shared && isLivingExpense) {
       b.shared += amt;
     } else {
       const slot = resolvePayerSlot(tx.payer_id, config);
@@ -1077,7 +1080,7 @@ async function handleGetInitialData(supabase, targetMonth, actor, requestedPairI
 
   return {
     success: true,
-    version: 'v2.13.1',
+    version: 'v2.13.2',
     pair: {
       id: pairId,
       name: config.pairName,
@@ -4082,7 +4085,7 @@ async function handleHealthCheck(req) {
 
   return {
     success: true,
-    version: 'v2.13.1',
+    version: 'v2.13.2',
     resolvedUrl: resolvedUrl ? resolvedUrl.replace(/\/\/[^@]+@/, '//***@') : '未設定',
     keyType: keyType,
     env: envCheck,
@@ -4214,35 +4217,36 @@ async function handleScanStatementOrBalance(data, actor) {
 
   const mime = String(data.mimeType || 'image/jpeg');
   const b64 = String(data.imageBase64 || '');
-  if (!['image/jpeg', 'image/png', 'image/webp'].includes(mime)) {
-    return { success: false, error: '対応していない画像形式です' };
+  if (!['image/jpeg', 'image/png', 'image/webp', 'application/pdf'].includes(mime)) {
+    return { success: false, error: '対応していないファイル形式です（JPEG, PNG, WebP, PDFに対応）' };
   }
-  if (!b64 || b64.length > 7000000) {
-    return { success: false, error: '画像が空、または大きすぎます' };
+  if (!b64 || b64.length > 10000000) {
+    return { success: false, error: 'ファイルが空、または大きすぎます' };
   }
 
   const prompt =
-    'これは日本の銀行アプリの残高画面、またはクレジットカード利用明細のキャプチャ画像です。\n' +
-    '画面の内容を精緻に判別し、以下のJSON形式で出力してください。\n' +
+    'これは日本の銀行アプリの残高画面、通帳明細、またはクレジットカード利用明細のキャプチャ画像・PDF文書です。\n' +
+    '画面や文書の内容を精緻に判別し、以下のJSON形式で出力してください。\n' +
     '【判別基準】\n' +
-    '1. 画面に通帳の預金残高や口座残高が大きく表示されている場合 -> screenType: "balance"\n' +
-    '2. 画面に利用履歴、支払明細、引落明細のリストが並んでいる場合 -> screenType: "statement"\n' +
+    '1. 通帳の預金残高や口座残高が大きく表示されている場合 -> screenType: "balance"\n' +
+    '2. 利用履歴、支払明細、引落明細のリストが並んでいる場合 -> screenType: "statement"\n' +
     '3. 残高と直近明細の両方が含まれる場合 -> screenType: "both"\n' +
     '【出力JSONフォーマット】\n' +
     '{\n' +
     '  "screenType": "balance" または "statement" または "both",\n' +
     '  "balanceInfo": {\n' +
-    '    "institution": "三井住友銀行 などの金融機関名またはカード会社名（不明なら空文字）",\n' +
+    '    "institution": "金融機関名またはカード会社名（不明なら空文字）",\n' +
     '    "accountName": "普通預金 または 口座名",\n' +
-    '    "balance": 350000（残高の正の整数円。読み取れなければ null）\n' +
+    '    "balance": 161421（残高の正の整数円。読み取れなければ null）\n' +
     '  },\n' +
     '  "detectedCard": "楽天カード / 三井住友カード / JCB等（推定できれば）",\n' +
     '  "statements": [\n' +
     '    {\n' +
     '      "date": "yyyy-MM-dd",\n' +
-    '      "title": "利用店名・利用先（例: イオン、アマゾン、東京電力等）",\n' +
+    '      "title": "利用店名・利用先・振込元",\n' +
     '      "amount": 3480（正の整数円）,\n' +
-    '      "category": "食費 / 日用品 / 光熱費 / 外食 / 交通費 / 衣服・美容 / その他 から最適推定",\n' +
+    '      "txType": "expense" または "deposit" または "card_transfer",\n' +
+    '      "category": "食費 / 口座入金 / クレカ引落振替 / 日用品 / 光熱費 / 外食 / 交通費 / その他 から最適推定",\n' +
     '      "isShared": true\n' +
     '    }\n' +
     '  ]\n' +
@@ -4551,7 +4555,7 @@ export default async function handler(req, res) {
       if (!actor.allowed) {
         return res.status(200).json({
           success: false,
-          version: 'v2.13.1',
+          version: 'v2.13.2',
           code: actor.code,
           error: actor.error,
           userId: actor.userId || '',
