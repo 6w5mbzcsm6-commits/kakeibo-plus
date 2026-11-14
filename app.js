@@ -9,7 +9,7 @@
  */
 
 const APP_CONFIG = window.PAIRBUDGET_CONFIG || {};
-const FRONTEND_VERSION = 'v2.17.1';
+const FRONTEND_VERSION = 'v2.17.2';
 const MAX_HISTORY_MONTHS = 36;
 const FIELD_LABELS = {
   date: '日付', title: '品名', amount: '金額', category: 'カテゴリ', isShared: '共同',
@@ -1708,7 +1708,7 @@ async function loadInitialData(month, opts = {}) {
       if (res && (res.code === 'UNREGISTERED' || res.code === 'AUTH' || res.code === 'SETUP_REQUIRED' || res.code === 'UNAUTHORIZED_LINE_USER')) {
         // バックエンド自体は正常稼働中（未登録または認証案内）なのでデモモードには落とさない
         state.isMockMode = false;
-        state.backendVersion = res.version || 'v2.17.1';
+        state.backendVersion = res.version || 'v2.17.2';
         handleApiError(res);
         renderAll();
         hideMainSkeleton();
@@ -5435,7 +5435,7 @@ async function submitJoinPair() {
 function copyInviteCode() {
   const code = state.inviteCode || 'PAIR2026';
   const url = `${window.location.origin}${window.location.pathname}?invite=${code}`;
-  const text = `ふたり家計簿に招待されました！\n世帯名: ${state.pairName}\n招待コード: ${code}\n合流URL: ${url}`;
+  const text = `ふたり家計簿に招待されました！\n世帯名: ${state.pairName}\n招待コード: ${code}\n合流URL: ${url}\n\n【公式LINE連携方法】\n・1対1トークで連携: 「連携 ${code} 名前」と送信\n・グループLINEで連携: 「グループ連携 ${code}」と送信`;
   if (navigator.clipboard && navigator.clipboard.writeText) {
     navigator.clipboard.writeText(text).then(() => {
       showToast('招待テキストをコピーしました！LINE等で送信してください');

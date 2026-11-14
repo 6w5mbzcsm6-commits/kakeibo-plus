@@ -594,6 +594,7 @@ async function getConfigData(supabase, pairId) {
   };
 
   (settingsRes.data || []).forEach(s => {
+    if (s.key === 'pairInviteCode' && s.value && !config.inviteCode) config.inviteCode = String(s.value).trim();
     if (s.key === 'husbandBaseContribution') config.husbandBaseContribution = Number(s.value) || 60000;
     if (s.key === 'wifeBaseContribution') config.wifeBaseContribution = Number(s.value) || 60000;
     if (s.key === 'husbandName') config.husbandName = s.value;
@@ -646,6 +647,22 @@ async function getConfigData(supabase, pairId) {
       if (u.display_name) config.wifeName = u.display_name;
     }
   });
+
+  // 招待コードが未発行の場合は自動発行して pairs / app_settings に永続化 (v2.17.2)
+  if (!config.inviteCode) {
+    const newCode = generateInviteCode();
+    config.inviteCode = newCode;
+    try {
+      await Promise.all([
+        setAppSetting(supabase, targetPairId, 'pairInviteCode', newCode),
+        supabase.from('pairs').upsert({
+          id: targetPairId,
+          name: config.pairName || 'ふたりの家計簿',
+          invite_code: newCode
+        }, { onConflict: 'id' })
+      ]);
+    } catch (_) {}
+  }
 
   return config;
 }
@@ -1090,7 +1107,7 @@ async function handleGetInitialData(supabase, targetMonth, actor, requestedPairI
 
   return {
     success: true,
-    version: 'v2.17.1',
+    version: 'v2.17.2',
     pair: {
       id: pairId,
       name: config.pairName,
@@ -3093,71 +3110,259 @@ async function generateMonthlyReportMessage(supabase, actor, pairId, config) {
   return report.reportText;
 }
 
-async function processNaturalLanguageMessage(supabase, text, userId) {
-  const lineToken = process.env.LINE_CHANNEL_ACCESS_TOKEN;
+/**
+ * v2.17.1で誤って自動紐付けされた未検証のusersレコードを自動クリーンアップ (v2.17.2)
+ */
+async function purgeUnverifiedAutoLinkedUsers(supabase) {
+  try {
+    const cleaned = await getAppSetting(supabase, DEFAULT_PAIR_ID, 'purgedAutoLinkedUsers_v2172', false);
+    if (cleaned === true || cleaned === 'true') return;
 
-  // ユーザー特定（所属ペアも取得）
+    // 2026-11-14T07:15:00Z 以降に監査ログなしで自動挿入された DEFAULT_PAIR_ID の users を削除
+    const { data: recentUsers } = await supabase
+      .from('users')
+      .select('*')
+      .eq('pair_id', DEFAULT_PAIR_ID)
+      .gte('updated_at', '2026-11-14T07:15:00Z');
+
+    if (recentUsers && recentUsers.length > 0) {
+      const { data: regAudits } = await supabase
+        .from('audit_logs')
+        .select('target_id, after_data, timestamp')
+        .eq('pair_id', DEFAULT_PAIR_ID)
+        .in('action', ['登録', '参加', '作成'])
+        .gte('timestamp', '2026-11-14T07:15:00Z');
+
+      const auditedNames = new Set((regAudits || []).map(a => a.target_id));
+      for (const u of recentUsers) {
+        if (!auditedNames.has(u.display_name)) {
+          await supabase.from('users').delete().eq('line_user_id', u.line_user_id);
+        }
+      }
+    }
+    await setAppSetting(supabase, DEFAULT_PAIR_ID, 'purgedAutoLinkedUsers_v2172', true);
+  } catch (err) {
+    console.warn('purgeUnverifiedAutoLinkedUsers error:', err);
+  }
+}
+
+/**
+ * 招待コードから対象ペアIDを検索するヘルパー (v2.17.2)
+ */
+async function findPairByInviteCode(supabase, rawCode) {
+  const code = String(rawCode || '').trim().toUpperCase();
+  if (!code || code.length < 4) return null;
+
+  // 1. pairs テーブルの invite_code で検索
+  const { data: pairRow } = await supabase
+    .from('pairs')
+    .select('*')
+    .ilike('invite_code', code)
+    .maybeSingle();
+  if (pairRow && pairRow.id) {
+    return { id: pairRow.id, name: pairRow.name || 'ふたりの家計簿', inviteCode: pairRow.invite_code || code };
+  }
+
+  // 2. app_settings の pairInviteCode または REGISTER_CODE で照合
+  const defaultConfig = await getConfigData(supabase, DEFAULT_PAIR_ID);
+  const reqCode = normalizeEnvSecret(process.env.REGISTER_CODE);
+  if (
+    (defaultConfig.inviteCode && defaultConfig.inviteCode.toUpperCase() === code) ||
+    (reqCode && reqCode.toUpperCase() === code)
+  ) {
+    return { id: DEFAULT_PAIR_ID, name: defaultConfig.pairName || 'ふたりの家計簿', inviteCode: defaultConfig.inviteCode || code };
+  }
+
+  return null;
+}
+
+async function processNaturalLanguageMessage(supabase, text, userId, source = null) {
+  await purgeUnverifiedAutoLinkedUsers(supabase);
+
+  const sourceType = source?.type || 'user';
+  const isGroupOrRoom = sourceType === 'group' || sourceType === 'room';
+  const chatGroupId = source?.groupId || source?.roomId || null;
+
+  // =========================================================================
+  // 【最優先セキュリティゲート A】グループLINE / 複数人トークルームの厳格分離 (v2.17.2)
+  // - グループLINEにBotを入れただけでは（たとえ登録済み本人が発言しても）個人の家計簿データは絶対に返さない！
+  // - 明示的に「グループ連携 <招待コード>」で紐付けられたグループのみ、そのペアのデータにアクセス可能
+  // =========================================================================
+  if (isGroupOrRoom && chatGroupId) {
+    // 1) グループ連携解除コマンド
+    if (/^(?:グループ解除|グループ連携解除|連携解除)$/i.test(text)) {
+      await setAppSetting(supabase, DEFAULT_PAIR_ID, `linkedLineGroup_${chatGroupId}`, null);
+      return `🔓 このグループLINEの家計簿連携を解除しました。\nこれ以降、このグループ内で残高や家計簿データは一切表示されません。`;
+    }
+
+    // 2) グループ連携コマンド（「グループ連携 招待コード」）
+    const groupLinkMatch = text.match(/^(?:グループ連携|グループ登録)\s+([A-Za-z0-9_-]{4,20})$/i);
+    if (groupLinkMatch) {
+      const inputCode = groupLinkMatch[1].trim();
+      const matchedPair = await findPairByInviteCode(supabase, inputCode);
+      if (!matchedPair) {
+        return `❌ 招待コード「${inputCode}」が見つかりません。\nWebアプリ左上の「🏷️世帯ペア」に表示されている招待コードをご確認のうえ、「グループ連携 招待コード」と送信してください。\n🌐 Webアプリ: ${PUBLIC_WEB_APP_URL}`;
+      }
+      await setAppSetting(supabase, DEFAULT_PAIR_ID, `linkedLineGroup_${chatGroupId}`, {
+        pairId: matchedPair.id,
+        pairName: matchedPair.name,
+        linkedBy: userId,
+        linkedAt: new Date().toISOString()
+      });
+      await writeAudit(supabase, { name: 'グループ連携' }, matchedPair.id, '登録', 'LINEグループ連携', chatGroupId, null, { pairId: matchedPair.id });
+      return `✅ このグループLINEを「${matchedPair.name}」の専用グループとして連携しました！\n（※解除したい場合はいつでも「グループ解除」と送信してください）`;
+    }
+
+    // 3) グループが連携済みか確認
+    const groupBinding = await getAppSetting(supabase, DEFAULT_PAIR_ID, `linkedLineGroup_${chatGroupId}`, null);
+    if (!groupBinding || !groupBinding.pairId) {
+      return `🔒【グループLINE セキュリティ保護】\n` +
+        `このグループトークには家計簿アカウントが紐付けられていません。\n` +
+        `（個人の口座残高や家計データがグループ内の第三者に漏洩するのを防ぐため、未連携のグループLINEでは、たとえご本人の発言であっても残高や明細を一切表示しない保護仕様です）\n\n` +
+        `💡 公式LINEとの「1対1トーク」でご利用いただくか、このグループをふたり専用の家計簿グループとして使う場合のみ、Webアプリ左上の「🏷️世帯ペア」にある招待コードを使って\n` +
+        `「グループ連携 招待コード」\n` +
+        `と送信してください。\n` +
+        `🌐 Webアプリ: ${PUBLIC_WEB_APP_URL}`;
+    }
+
+    // グループ連携済みの場合は、そのグループに紐付いた pairId を使用
+    const groupPairId = groupBinding.pairId;
+    const groupConfig = await getConfigData(supabase, groupPairId);
+    const { data: senderUser } = await supabase.from('users').select('*').eq('line_user_id', userId).maybeSingle();
+    const groupActor = {
+      allowed: true,
+      verified: true,
+      name: senderUser?.display_name || groupConfig.husbandName || 'メンバー1',
+      userId,
+      slot: senderUser?.slot || 'husband',
+      pairId: groupPairId
+    };
+    return await executeVerifiedLineCommand(supabase, text, userId, groupPairId, groupConfig, groupActor);
+  }
+
+  // =========================================================================
+  // 【最優先セキュリティゲート B】1対1個人トークのアカウント紐付け検証 (v2.17.2)
+  // - DEFAULT_PAIR_ID への無条件フォールバックや自動登録は一切行わない！
+  // - users テーブルに登録されていない LINE アカウントからの照会・操作は 100% 遮断する
+  // =========================================================================
   const { data: user } = await supabase.from('users').select('*, pairs(*)').eq('line_user_id', userId).maybeSingle();
-  const pairId = user?.pair_id || DEFAULT_PAIR_ID;
-  const config = await getConfigData(supabase, pairId);
 
-  // 1. メンバー登録コマンド
-  const regMatch = text.match(/^(.{1,15})として登録(?:\s+(.+))?$/);
-  if (regMatch) {
-    const customName = regMatch[1].trim();
-    const codeArg = (regMatch[2] || '').trim();
-    const reqCode = process.env.REGISTER_CODE;
-    if (!reqCode) {
-      return `🔒 セキュリティ保護のため、アカウント登録は「ふたり家計簿」アプリを開いて登録ボタンを押してください✨\n🌐 Webアプリ: ${PUBLIC_WEB_APP_URL}`;
+  // 0) アカウント連携解除コマンド
+  if (/^(?:連携解除|アカウント解除|登録解除)$/i.test(text)) {
+    if (user) {
+      await supabase.from('users').delete().eq('line_user_id', userId);
+      await writeAudit(supabase, { name: user.display_name }, user.pair_id, '削除', 'メンバー連携解除', userId, null, null);
+      return `🔓 このLINEアカウントの家計簿連携を解除しました。\n再度連携するには「連携 招待コード あなたの名前」と送信してください。`;
     }
-    if (codeArg !== reqCode) {
-      return `合言葉が一致しません。「表示名として登録 合言葉」の形式で送信するか、アプリ画面から登録してください。\n🌐 Webアプリ: ${PUBLIC_WEB_APP_URL}`;
+    return `このLINEアカウントは現在どの家計簿にも連携されていません。`;
+  }
+
+  // 1) 招待コードによるアカウント連携コマンド
+  // 例:「連携 ABC1234 なおや」「参加 ABC1234 なおや」「なおやとして登録 ABC1234」
+  const linkCmdMatch =
+    text.match(/^(?:連携|参加|ペア連携|アカウント連携)\s+([A-Za-z0-9_-]{4,20})(?:\s+(.{1,15}))?$/i) ||
+    text.match(/^(.{1,15})として登録(?:\s+([A-Za-z0-9_-]{4,20}))?$/);
+
+  if (linkCmdMatch) {
+    const isRegFormat = /として登録/.test(text);
+    const codeArg = (isRegFormat ? linkCmdMatch[2] : linkCmdMatch[1] || '').trim();
+    const rawNameArg = (isRegFormat ? linkCmdMatch[1] : linkCmdMatch[2] || '').trim();
+
+    if (!codeArg) {
+      return `🔒 セキュリティ保護のため、招待コードが必要です。\nWebアプリ左上の「🏷️世帯ペア」に表示されている招待コードを確認し、\n「連携 招待コード あなたの名前」\nの形式で送信してください。\n🌐 Webアプリ: ${PUBLIC_WEB_APP_URL}`;
     }
+
+    const matchedPair = await findPairByInviteCode(supabase, codeArg);
+    if (!matchedPair) {
+      return `❌ 招待コード「${codeArg}」が一致しません。\nWebアプリ左上の「🏷️世帯ペア」に表示されている招待コードをご確認ください。\n🌐 Webアプリ: ${PUBLIC_WEB_APP_URL}`;
+    }
+
+    const targetPairId = matchedPair.id;
+    const targetConfig = await getConfigData(supabase, targetPairId);
+    const customName = rawNameArg || targetConfig.husbandName || 'メンバー1';
+
     if (['共同', 'all', '未認証', '自動計上'].includes(customName)) {
       return `「${customName}」はシステム予約語のため使用できません。`;
     }
 
-    const { data: pairUsers } = await supabase.from('users').select('*').eq('pair_id', pairId);
-    if ((pairUsers || []).some(u => u.line_user_id === userId)) {
-      return `このアカウントは既に登録されています。表示名の変更はアプリの「設定」タブから行えます。\n🌐 Webアプリ: ${PUBLIC_WEB_APP_URL}`;
+    const { data: pairUsers } = await supabase.from('users').select('*').eq('pair_id', targetPairId);
+    const existingSelf = (pairUsers || []).find(u => u.line_user_id === userId);
+    const hasHusband = (pairUsers || []).some(u => (u.slot === 'husband' || u.slot === 'slot1') && u.line_user_id !== userId);
+    const hasWife = (pairUsers || []).some(u => (u.slot === 'wife' || u.slot === 'slot2') && u.line_user_id !== userId);
+    const slot = existingSelf?.slot || (!hasHusband ? 'husband' : (!hasWife ? 'wife' : ''));
+    if (!slot) {
+      return `🔒 この家計簿ペアは既に2名分のアカウントが登録されているため、これ以上追加できません。`;
     }
-    const hasHusband = (pairUsers || []).some(u => u.slot === 'husband' || u.slot === 'slot1');
-    const hasWife = (pairUsers || []).some(u => u.slot === 'wife' || u.slot === 'slot2');
-    const slot = !hasHusband ? 'husband' : (!hasWife ? 'wife' : '');
-    if (!slot) return '2名分の枠が既に登録済みです。';
 
-    await supabase.from('users').insert({ line_user_id: userId, pair_id: pairId, slot, display_name: customName });
-    await supabase.from('app_settings').upsert({ pair_id: pairId, key: slot === 'husband' ? 'husbandName' : 'wifeName', value: customName }, { onConflict: 'pair_id, key' });
-    await writeAudit(supabase, { name: customName }, pairId, '登録', 'メンバー', customName, null, { slot, role: customName });
-    return `✅ このアカウントを「${customName}」として登録しました！\n🌐 Webアプリ: ${PUBLIC_WEB_APP_URL}`;
+    await supabase.from('users').upsert({
+      line_user_id: userId,
+      pair_id: targetPairId,
+      slot,
+      display_name: customName,
+      updated_at: new Date().toISOString()
+    }, { onConflict: 'line_user_id' });
+    await supabase.from('app_settings').upsert({
+      pair_id: targetPairId,
+      key: slot === 'husband' ? 'husbandName' : 'wifeName',
+      value: customName
+    }, { onConflict: 'pair_id, key' });
+    await writeAudit(supabase, { name: customName }, targetPairId, '登録', 'メンバー', customName, null, { slot, role: customName });
+
+    return `✅ アカウント認証・連携が完了しました！\nこのLINEアカウントを「${matchedPair.name}」の【${customName}】として紐付けました✨\n\nこれより「残高」「今月いくら使った？」「AI分析」などの全機能がこの1対1トークでご利用いただけます。\n🌐 Webアプリ: ${PUBLIC_WEB_APP_URL}`;
   }
 
-  let actor;
-  if (!user) {
-    // 既存の登録メンバー数を確認（2名登録済みの場合は外部第三者からのアクセスを遮断）
-    const { data: existingMembers } = await supabase.from('users').select('*').eq('pair_id', pairId);
-    const hasBothSlots = (existingMembers || []).some(m => m.slot === 'husband' || m.slot === 'slot1') &&
-                         (existingMembers || []).some(m => m.slot === 'wife' || m.slot === 'slot2');
-    if (hasBothSlots || (existingMembers && existingMembers.length >= 2)) {
-      return `🔒 このLINEアカウントは「ふたり家計簿」のメンバーとして登録されていません。\n登録済みのパートナー以外の第三者が家計簿データを閲覧・操作することはできません。\n🌐 Webアプリ: ${PUBLIC_WEB_APP_URL}`;
+  // 2) 新しい別世帯の家計簿をゼロから作成するコマンド（「新規家計簿 名前」）
+  const newPairMatch = text.match(/^(?:新規家計簿|新規作成|新しく作る)\s+(.{1,15})$/i);
+  if (newPairMatch) {
+    const customName = newPairMatch[1].trim();
+    const newInviteCode = generateInviteCode();
+    const { data: createdPair, error: createErr } = await supabase.from('pairs').insert({
+      name: `${customName}の家計簿`,
+      invite_code: newInviteCode
+    }).select('*').single();
+
+    if (createErr || !createdPair) {
+      return `新しい家計簿の作成に失敗しました。Webアプリから作成してください。\n🌐 Webアプリ: ${PUBLIC_WEB_APP_URL}`;
     }
-    // Web版を中心に利用していてLINE IDがまだ1枠以上空いている場合は、メンバーとして自動紐付けしてAI分析や質問を即座に利用可能にする (v2.17.1)
-    const takenHusband = (existingMembers || []).some(m => m.slot === 'husband' || m.slot === 'slot1');
-    const autoSlot = !takenHusband ? 'husband' : 'wife';
-    const autoName = autoSlot === 'husband' ? (config.husbandName || 'なおや') : (config.wifeName || 'パートナー');
-    try {
-      await supabase.from('users').upsert({
-        line_user_id: userId,
-        pair_id: pairId,
-        slot: autoSlot,
-        display_name: autoName,
-        updated_at: new Date().toISOString()
-      }, { onConflict: 'line_user_id' });
-    } catch (_) {}
-    actor = { allowed: true, verified: true, name: autoName, userId, slot: autoSlot, pairId };
-  } else {
-    actor = { allowed: true, verified: true, name: user.display_name, userId, slot: user.slot, pairId: user.pair_id };
+
+    await supabase.from('users').upsert({
+      line_user_id: userId,
+      pair_id: createdPair.id,
+      slot: 'husband',
+      display_name: customName,
+      updated_at: new Date().toISOString()
+    }, { onConflict: 'line_user_id' });
+    await setAppSetting(supabase, createdPair.id, 'husbandName', customName);
+    await setAppSetting(supabase, createdPair.id, 'pairInviteCode', newInviteCode);
+    await writeAudit(supabase, { name: customName }, createdPair.id, '作成', '世帯ペア', createdPair.id, null, { inviteCode: newInviteCode });
+
+    return `🎉 新しい専用の家計簿「${createdPair.name}」を作成し、あなたのアカウントに紐付けました！\n🔑 招待コード: ${newInviteCode}\n🌐 Webアプリ: ${PUBLIC_WEB_APP_URL}?invite=${newInviteCode}`;
   }
+
+  // 3) 未登録アカウントはここで完全遮断（DEFAULT_PAIR_ID には絶対にフォールバックさせない！）
+  if (!user || !user.pair_id) {
+    return `🔒【未連携アカウント・セキュリティ保護】\n` +
+      `あなたのLINEアカウントはまだどの家計簿にも紐付けられていません。\n` +
+      `（アカウントごとに家計簿データを厳格に分離・保護しているため、未連携のアカウントからは残高照会・AI分析・明細登録は一切行えません）\n\n` +
+      `👇 ご自身の家計簿（Webアプリ）と紐付けるには：\n` +
+      `Webアプリ左上の「🏷️世帯ペア」ボタンを押して表示される【招待コード】を確認し、このトーク画面で\n` +
+      `「連携 招待コード あなたの名前」\n` +
+      `（例: 連携 ABC1234 なおや）と送信してください。\n\n` +
+      `💡 別の新しい家計簿をゼロから作る場合は「新規家計簿 あなたの名前」と送信してください。\n` +
+      `🌐 Webアプリ:\n${PUBLIC_WEB_APP_URL}`;
+  }
+
+  const pairId = user.pair_id;
+  const config = await getConfigData(supabase, pairId);
+  const actor = { allowed: true, verified: true, name: user.display_name, userId, slot: user.slot, pairId: user.pair_id };
+
+  return await executeVerifiedLineCommand(supabase, text, userId, pairId, config, actor);
+}
+
+/**
+ * 認証・紐付け検証を通過したアカウントまたは連携済みグループ専用のコマンド実行部 (v2.17.2)
+ */
+async function executeVerifiedLineCommand(supabase, text, userId, pairId, config, actor) {
 
   // 2. 保留中の重複確認への返答（登録 / キャンセル）
   const pending = await getAppSetting(supabase, pairId, 'pendingLineConfirmation', null);
@@ -3935,35 +4140,40 @@ async function processNaturalLanguageMessage(supabase, text, userId) {
 /**
  * LINE経由で送られたレシート画像を取得・AI解析し、家計簿へ自動保存
  */
-async function processLineImageMessage(supabase, messageId, userId, lineToken) {
+async function processLineImageMessage(supabase, messageId, userId, lineToken, source = null) {
   if (!lineToken) return 'LINE連携トークンが未設定です';
+  await purgeUnverifiedAutoLinkedUsers(supabase);
 
-  // 1. ユーザー特定（既に2名登録済みの場合は第三者LINEアカウントからの画像送信を即時ブロック v2.17.1）
-  const { data: user } = await supabase.from('users').select('*, pairs(*)').eq('line_user_id', userId).maybeSingle();
-  const pairId = user?.pair_id || DEFAULT_PAIR_ID;
-  let actor;
-  if (!user) {
-    const { data: existingMembers } = await supabase.from('users').select('*').eq('pair_id', pairId);
-    const hasBothSlots = (existingMembers || []).some(m => m.slot === 'husband' || m.slot === 'slot1') &&
-                         (existingMembers || []).some(m => m.slot === 'wife' || m.slot === 'slot2');
-    if (hasBothSlots || (existingMembers && existingMembers.length >= 2)) {
-      return `🔒 このLINEアカウントは「ふたり家計簿」のメンバーとして登録されていません。\n招待コードをお持ちの方のみ、アプリ画面からペアに参加できます。第三者の方が家計簿データを閲覧・登録することはできません。\n🌐 Webアプリ: ${PUBLIC_WEB_APP_URL}`;
+  const sourceType = source?.type || 'user';
+  const isGroupOrRoom = sourceType === 'group' || sourceType === 'room';
+  const chatGroupId = source?.groupId || source?.roomId || null;
+
+  let pairId = null;
+  let actor = null;
+
+  if (isGroupOrRoom && chatGroupId) {
+    const groupBinding = await getAppSetting(supabase, DEFAULT_PAIR_ID, `linkedLineGroup_${chatGroupId}`, null);
+    if (!groupBinding || !groupBinding.pairId) {
+      return `🔒【グループLINE セキュリティ保護】\nこのグループトークには家計簿アカウントが紐付けられていないため、レシート画像の登録はできません。\nふたり専用のグループとして使う場合は「グループ連携 招待コード」と送信して連携してください。\n🌐 Webアプリ: ${PUBLIC_WEB_APP_URL}`;
     }
-    const config = await getConfigData(supabase, pairId);
-    const takenHusband = (existingMembers || []).some(m => m.slot === 'husband' || m.slot === 'slot1');
-    const autoSlot = !takenHusband ? 'husband' : 'wife';
-    const autoName = autoSlot === 'husband' ? (config.husbandName || 'なおや') : (config.wifeName || 'パートナー');
-    try {
-      await supabase.from('users').upsert({
-        line_user_id: userId,
-        pair_id: pairId,
-        slot: autoSlot,
-        display_name: autoName,
-        updated_at: new Date().toISOString()
-      }, { onConflict: 'line_user_id' });
-    } catch (_) {}
-    actor = { allowed: true, verified: true, name: autoName, userId, slot: autoSlot, pairId };
+    pairId = groupBinding.pairId;
+    const groupConfig = await getConfigData(supabase, pairId);
+    const { data: senderUser } = await supabase.from('users').select('*').eq('line_user_id', userId).maybeSingle();
+    actor = {
+      allowed: true,
+      verified: true,
+      name: senderUser?.display_name || groupConfig.husbandName || 'メンバー1',
+      userId,
+      slot: senderUser?.slot || 'husband',
+      pairId
+    };
   } else {
+    // 1. 1対1トーク: アカウント紐付け厳格検証（DEFAULT_PAIR_IDへの自動フォールバック・自動登録は一切禁止 v2.17.2）
+    const { data: user } = await supabase.from('users').select('*, pairs(*)').eq('line_user_id', userId).maybeSingle();
+    if (!user || !user.pair_id) {
+      return `🔒【未連携アカウント・セキュリティ保護】\nこのLINEアカウントはまだどの家計簿にも紐付けられていません。\nWebアプリ左上の「🏷️世帯ペア」にある招待コードを確認し、「連携 招待コード あなたの名前」と送信して紐付けてください。\n🌐 Webアプリ: ${PUBLIC_WEB_APP_URL}`;
+    }
+    pairId = user.pair_id;
     actor = {
       allowed: true,
       verified: true,
@@ -4208,7 +4418,7 @@ async function handleHealthCheck(req) {
 
   return {
     success: true,
-    version: 'v2.17.1',
+    version: 'v2.17.2',
     resolvedUrl: resolvedUrl ? resolvedUrl.replace(/\/\/[^@]+@/, '//***@') : '未設定',
     keyType: keyType,
     env: envCheck,
@@ -4989,7 +5199,7 @@ export default async function handler(req, res) {
         for (const ev of body.events) {
           if (ev.type === 'message' && ev.message?.type === 'text') {
             try {
-              const reply = await processNaturalLanguageMessage(supabase, ev.message.text.trim(), ev.source.userId);
+              const reply = await processNaturalLanguageMessage(supabase, ev.message.text.trim(), ev.source?.userId, ev.source);
               await sendLineReply(ev.replyToken, reply, lineToken);
             } catch (err) {
               console.error('LINEイベント処理エラー:', err);
@@ -4997,7 +5207,7 @@ export default async function handler(req, res) {
             }
           } else if (ev.type === 'message' && ev.message?.type === 'image') {
             try {
-              const reply = await processLineImageMessage(supabase, ev.message.id, ev.source.userId, lineToken);
+              const reply = await processLineImageMessage(supabase, ev.message.id, ev.source?.userId, lineToken, ev.source);
               await sendLineReply(ev.replyToken, reply, lineToken);
             } catch (err) {
               console.error('LINE画像イベント処理エラー:', err);
@@ -5036,7 +5246,7 @@ export default async function handler(req, res) {
       if (!actor.allowed) {
         return res.status(200).json({
           success: false,
-          version: 'v2.17.1',
+          version: 'v2.17.2',
           code: actor.code,
           error: actor.error,
           userId: actor.userId || '',
