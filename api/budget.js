@@ -1057,7 +1057,7 @@ async function handleGetInitialData(supabase, targetMonth, actor, requestedPairI
 
   return {
     success: true,
-    version: 'v2.12.3',
+    version: 'v2.12.4',
     pair: {
       id: pairId,
       name: config.pairName,
@@ -4062,7 +4062,7 @@ async function handleHealthCheck(req) {
 
   return {
     success: true,
-    version: 'v2.12.3',
+    version: 'v2.12.4',
     resolvedUrl: resolvedUrl ? resolvedUrl.replace(/\/\/[^@]+@/, '//***@') : '未設定',
     keyType: keyType,
     env: envCheck,
@@ -4123,23 +4123,49 @@ async function handleImportCardStatements(supabase, actor, data) {
   const actorSlot = resolvePayerSlot(actor?.name) || 'husband';
   const defaultPayer = actorSlot === 'husband' ? '夫' : '妻';
 
-  const rowsToInsert = items.map(item => ({
-    pair_id: pairId,
-    date: (() => {
-      const raw = String(item.date || '').trim();
-      const m = raw.match(/^(\d{4})[-/.](\d{1,2})[-/.](\d{1,2})/);
-      if (m) return `${m[1]}-${String(m[2]).padStart(2, '0')}-${String(m[3]).padStart(2, '0')}`;
-      return raw.slice(0, 10) || new Date().toISOString().slice(0, 10);
-    })(),
-    title: String(item.title || '明細インポート').trim(),
-    amount: Math.abs(Number(item.amount) || 0),
-    category_id: String(item.category || '食費').trim(),
-    is_shared: item.isShared !== false,
-    payment_type: item.paymentType || 'shared_card',
-    payer_id: item.payer || (item.paymentType === 'shared_card' ? '共同カード' : (item.paymentType === 'shared_account' ? '共同口座' : defaultPayer)),
-    memo: String(item.memo || 'クレカ/明細取込').trim(),
-    created_by: actor?.name || '明細インポート'
-  }));
+  const rowsToInsert = items
+    .map(item => {
+      const rawDate = String(item.date || '').trim();
+      let validDate = todayStr();
+      const m = rawDate.match(/^(\d{4})[-/.](\d{1,2})[-/.](\d{1,2})/);
+      if (m) {
+        validDate = `${m[1]}-${String(m[2]).padStart(2, '0')}-${String(m[3]).padStart(2, '0')}`;
+      } else if (isValidDateStr(rawDate.slice(0, 10))) {
+        validDate = rawDate.slice(0, 10);
+      }
+
+      const amt = Math.abs(parseInt(String(item.amount).replace(/[,¥円\s]/g, ''), 10));
+      const cleanTitle = String(item.title || '明細インポート').trim().slice(0, 50) || '明細';
+      const cleanCat = String(item.category || '食費').trim().slice(0, 20) || 'その他';
+      const cleanMemo = String(item.memo || 'クレカ/明細取込').trim().slice(0, 100);
+
+      const pType = ['shared_card', 'shared_account', 'advanced_by_user'].includes(item.paymentType)
+        ? item.paymentType
+        : 'shared_card';
+
+      let payer = String(item.payer || '').trim();
+      if (!payer) {
+        payer = pType === 'shared_card' ? '共同カード' : (pType === 'shared_account' ? '共同口座' : defaultPayer);
+      }
+
+      return {
+        pair_id: pairId,
+        date: validDate,
+        title: cleanTitle,
+        amount: amt,
+        category_id: cleanCat,
+        is_shared: item.isShared !== false,
+        payment_type: pType,
+        payer_id: payer,
+        memo: cleanMemo,
+        created_by: actor?.name || '明細インポート'
+      };
+    })
+    .filter(row => row.amount > 0 && isValidDateStr(row.date));
+
+  if (rowsToInsert.length === 0) {
+    return { success: false, error: '登録可能な有効な明細（金額が1円以上）がありませんでした' };
+  }
 
   const { data: inserted, error } = await supabase.from('transactions').insert(rowsToInsert).select();
   if (error) {
@@ -4501,7 +4527,7 @@ export default async function handler(req, res) {
       if (!actor.allowed) {
         return res.status(200).json({
           success: false,
-          version: 'v2.12.3',
+          version: 'v2.12.4',
           code: actor.code,
           error: actor.error,
           userId: actor.userId || '',
