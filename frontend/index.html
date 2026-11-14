@@ -83,7 +83,7 @@
         <div>
           <div class="flex items-center gap-1.5">
             <h1 class="text-base font-bold text-slate-900 leading-tight">ふたり家計簿</h1>
-            <span id="headerVersionBadge" onclick="forceHardReload()" title="タップして最新版に更新" class="bg-brand-50 text-brand-700 hover:bg-brand-100 text-[10px] font-bold px-1.5 py-0.5 rounded-full border border-brand-200 cursor-pointer transition-colors active:scale-95 select-none">v2.12.4</span>
+            <span id="headerVersionBadge" onclick="forceHardReload()" title="タップして最新版に更新" class="bg-brand-50 text-brand-700 hover:bg-brand-100 text-[10px] font-bold px-1.5 py-0.5 rounded-full border border-brand-200 cursor-pointer transition-colors active:scale-95 select-none">v2.12.5</span>
           </div>
           <!-- 月ナビゲーション（爆速クイック月選択対応 v2.10.0） -->
           <div class="flex items-center gap-1 mt-0.5">
@@ -1028,7 +1028,7 @@
           <footer class="pt-2 pb-6 text-center text-[10px] text-slate-400 font-mono flex items-center justify-center gap-2 select-none flex-wrap">
             <span class="inline-flex items-center gap-1 bg-slate-100 text-slate-600 px-2 py-0.5 rounded-full">
               <span>Web</span>
-              <b id="frontVersionLabel" class="text-slate-800">v2.12.4</b>
+              <b id="frontVersionLabel" class="text-slate-800">v2.12.5</b>
             </span>
             <span>/</span>
             <span class="inline-flex items-center gap-1 bg-slate-100 text-slate-600 px-2 py-0.5 rounded-full">
@@ -2218,7 +2218,7 @@
 
   <!-- アプリ本体スクリプト -->
   <script src="config.js?v=2.12.1"></script>
-  <script src="app.js?v=2.12.4"></script>
+  <script src="app.js?v=2.12.5"></script>
 
   <!-- 口座追加・編集モーダル (v2.12.1) -->
   <div id="bankAccountModal" class="hidden fixed inset-0 z-50 bg-black/50 backdrop-blur-xs flex items-center justify-center p-4">
@@ -2289,14 +2289,22 @@
     <div class="bg-white rounded-2xl max-w-2xl w-full p-4 md:p-6 space-y-4 shadow-xl max-h-[90vh] flex flex-col">
       <div class="flex items-center justify-between shrink-0">
         <div>
-          <h3 class="text-base font-bold text-slate-800 flex items-center gap-1.5">
-            <i data-lucide="receipt" class="w-5 h-5 text-sky-600"></i> 明細取込 ＆ おしどり風仕分け
-          </h3>
+          <div class="flex items-center gap-2">
+            <h3 class="text-base font-bold text-slate-800 flex items-center gap-1.5">
+              <i data-lucide="receipt" class="w-5 h-5 text-sky-600"></i> 明細取込 ＆ おしどり風仕分け
+            </h3>
+            <span class="text-[10px] font-bold bg-sky-100 text-sky-700 px-1.5 py-0.5 rounded">v2.12.5</span>
+          </div>
           <p class="text-xs text-slate-400">CSVまたはスマホの明細スクショから取り込み「共有 / 私物」を仕分け</p>
         </div>
-        <button type="button" onclick="closeStatementImportModal()" class="text-slate-400 hover:text-slate-600 p-1 rounded-lg">
-          <i data-lucide="x" class="w-5 h-5"></i>
-        </button>
+        <div class="flex items-center gap-1">
+          <button type="button" onclick="forceHardReload()" title="最新版に再読み込み" class="text-[11px] font-bold text-slate-600 hover:text-sky-700 bg-slate-100 hover:bg-sky-50 px-2 py-1 rounded-lg flex items-center gap-1 transition-colors">
+            <i data-lucide="refresh-cw" class="w-3.5 h-3.5"></i> <span class="hidden sm:inline">最新版に更新</span>
+          </button>
+          <button type="button" onclick="closeStatementImportModal()" class="text-slate-400 hover:text-slate-600 p-1 rounded-lg">
+            <i data-lucide="x" class="w-5 h-5"></i>
+          </button>
+        </div>
       </div>
 
       <!-- 取込方式選択 (CSV or スクショ画像) -->

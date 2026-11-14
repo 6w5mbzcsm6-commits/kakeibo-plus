@@ -9,7 +9,7 @@
  */
 
 const APP_CONFIG = window.PAIRBUDGET_CONFIG || {};
-const FRONTEND_VERSION = 'v2.12.4';
+const FRONTEND_VERSION = 'v2.12.5';
 const MAX_HISTORY_MONTHS = 36;
 const FIELD_LABELS = {
   date: '日付', title: '品名', amount: '金額', category: 'カテゴリ', isShared: '共同',
@@ -6750,68 +6750,76 @@ function renderImportPreviewTable() {
   const wName = memberName('wife');
 
   items.forEach((item, idx) => {
-    const isDeposit = item.txType === 'deposit';
-    if (item.isShared && !isDeposit) sharedSum += item.amount;
+    try {
+      const isDeposit = item.txType === 'deposit';
+      const safeAmount = Number(item.amount) || 0;
+      if (item.isShared && !isDeposit) sharedSum += safeAmount;
 
-    const txBadge = isDeposit
-      ? '<span class="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-bold bg-emerald-100 text-emerald-800 mr-1 shrink-0">💰 入金</span>'
-      : (hasBankColumns
-        ? '<span class="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-bold bg-sky-100 text-sky-800 mr-1 shrink-0">💸 出金</span>'
-        : '');
+      const txBadge = isDeposit
+        ? '<span class="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-bold bg-emerald-100 text-emerald-800 mr-1 shrink-0">💰 入金</span>'
+        : (hasBankColumns
+          ? '<span class="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-bold bg-sky-100 text-sky-800 mr-1 shrink-0">💸 出金</span>'
+          : '');
 
-    const depositNoteHtml = isDeposit
-      ? '<div class="text-[10px] text-emerald-600 font-normal mt-0.5">💡 入金明細（支出計算から自動除外済み・上のボタンで残高反映可能）</div>'
-      : '';
+      const depositNoteHtml = isDeposit
+        ? '<div class="text-[10px] text-emerald-600 font-normal mt-0.5">💡 入金明細（支出計算から自動除外済み・上のボタンで残高反映可能）</div>'
+        : '';
 
-    const memoHtml = item.memo
-      ? `<div class="text-[10px] text-slate-400 font-normal mt-0.5">📝 メモ: ${escapeHtml(item.memo)}</div>`
-      : '';
+      const memoHtml = item.memo
+        ? `<div class="text-[10px] text-slate-400 font-normal mt-0.5">📝 メモ: ${escapeHtml(String(item.memo))}</div>`
+        : '';
 
-    const balanceSubHtml = (item.balance !== null && item.balance !== undefined)
-      ? `<div class="text-[10px] font-normal text-slate-400 font-mono mt-0.5">残高: ¥${Number(item.balance).toLocaleString()}</div>`
-      : '';
+      const balanceSubHtml = (item.balance !== null && item.balance !== undefined && !isNaN(Number(item.balance)))
+        ? `<div class="text-[10px] font-normal text-slate-400 font-mono mt-0.5">残高: ¥${Number(item.balance).toLocaleString()}</div>`
+        : '';
 
-    const amountDisplay = isDeposit
-      ? `<span class="text-emerald-600">+¥${Number(item.amount).toLocaleString()}</span>`
-      : `<span class="text-slate-900">¥${Number(item.amount).toLocaleString()}</span>`;
+      const amountDisplay = isDeposit
+        ? `<span class="text-emerald-600 font-mono">+¥${safeAmount.toLocaleString()}</span>`
+        : `<span class="text-slate-900 font-mono">¥${safeAmount.toLocaleString()}</span>`;
 
-    const rowBgClass = isDeposit
-      ? 'bg-emerald-50/40'
-      : (item.isShared ? 'bg-sky-50/20' : 'opacity-60 bg-slate-50/50');
+      const rowBgClass = isDeposit
+        ? 'bg-emerald-50/40'
+        : (item.isShared ? 'bg-sky-50/20' : 'opacity-60 bg-slate-50/50');
 
-    html += `
-      <tr class="hover:bg-slate-50 transition-colors ${rowBgClass}">
-        <td class="p-2 text-center">
-          <input type="checkbox" ${item.isShared ? 'checked' : ''} onchange="updateImportItemShared(${idx}, this.checked)" class="w-4 h-4 text-sky-600 rounded border-slate-300 focus:ring-sky-500 cursor-pointer" title="${isDeposit ? '入金明細は通常チェック不要です' : '共有支出として登録'}">
-        </td>
-        <td class="p-2 font-mono text-slate-500 whitespace-nowrap">${item.date}</td>
-        <td class="p-2 font-bold text-slate-800">
-          <div class="flex items-center flex-wrap">
-            ${txBadge}
-            <span class="truncate max-w-[160px] md:max-w-[220px]">${escapeHtml(item.title)}</span>
-          </div>
-          ${depositNoteHtml}
-          ${memoHtml}
-        </td>
-        <td class="p-2 text-right font-black font-mono whitespace-nowrap">
-          ${amountDisplay}
-          ${balanceSubHtml}
-        </td>
-        <td class="p-2">
-          <select onchange="updateImportItemCategory(${idx}, this.value)" class="bg-white border border-slate-200 rounded-lg px-2 py-1 text-xs focus:ring-1 focus:ring-sky-400">
-            ${categories.map(cat => `<option value="${cat}" ${item.category === cat ? 'selected' : ''}>${cat}</option>`).join('')}
-          </select>
-        </td>
-        <td class="p-2">
-          <select onchange="updateImportItemPayer(${idx}, this.value)" class="bg-white border border-slate-200 rounded-lg px-2 py-1 text-xs focus:ring-1 focus:ring-sky-400">
-            <option value="共同カード" ${item.payer === '共同カード' ? 'selected' : ''}>共同カード</option>
-            <option value="共同口座" ${item.payer === '共同口座' ? 'selected' : ''}>共同口座</option>
-            <option value="${hName}" ${item.payer === hName ? 'selected' : ''}>${hName}</option>
-            <option value="${wName}" ${item.payer === wName ? 'selected' : ''}>${wName}</option>
-          </select>
-        </td>
-      </tr>
-    `;
+      const safeDate = escapeHtml(String(item.date || localDateStr()));
+      const safeTitle = escapeHtml(String(item.title || '明細'));
+
+      html += `
+        <tr class="hover:bg-slate-50 transition-colors ${rowBgClass}">
+          <td class="p-2 text-center">
+            <input type="checkbox" ${item.isShared ? 'checked' : ''} onchange="updateImportItemShared(${idx}, this.checked)" class="w-4 h-4 text-sky-600 rounded border-slate-300 focus:ring-sky-500 cursor-pointer" title="${isDeposit ? '入金明細は通常チェック不要です' : '共有支出として登録'}">
+          </td>
+          <td class="p-2 font-mono text-slate-500 whitespace-nowrap">${safeDate}</td>
+          <td class="p-2 font-bold text-slate-800">
+            <div class="flex items-center flex-wrap">
+              ${txBadge}
+              <span class="truncate max-w-[160px] md:max-w-[220px]">${safeTitle}</span>
+            </div>
+            ${depositNoteHtml}
+            ${memoHtml}
+          </td>
+          <td class="p-2 text-right font-black font-mono whitespace-nowrap">
+            ${amountDisplay}
+            ${balanceSubHtml}
+          </td>
+          <td class="p-2">
+            <select onchange="updateImportItemCategory(${idx}, this.value)" class="bg-white border border-slate-200 rounded-lg px-2 py-1 text-xs focus:ring-1 focus:ring-sky-400">
+              ${categories.map(cat => `<option value="${cat}" ${item.category === cat ? 'selected' : ''}>${cat}</option>`).join('')}
+            </select>
+          </td>
+          <td class="p-2">
+            <select onchange="updateImportItemPayer(${idx}, this.value)" class="bg-white border border-slate-200 rounded-lg px-2 py-1 text-xs focus:ring-1 focus:ring-sky-400">
+              <option value="共同カード" ${item.payer === '共同カード' ? 'selected' : ''}>共同カード</option>
+              <option value="共同口座" ${item.payer === '共同口座' ? 'selected' : ''}>共同口座</option>
+              <option value="${hName}" ${item.payer === hName ? 'selected' : ''}>${hName}</option>
+              <option value="${wName}" ${item.payer === wName ? 'selected' : ''}>${wName}</option>
+            </select>
+          </td>
+        </tr>
+      `;
+    } catch (rowErr) {
+      console.warn('明細行レンダリングエラー:', rowErr, item);
+    }
   });
 
   tbody.innerHTML = html;
