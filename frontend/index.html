@@ -83,7 +83,7 @@
         <div>
           <div class="flex items-center gap-1.5">
             <h1 class="text-base font-bold text-slate-900 leading-tight">ふたり家計簿</h1>
-            <span id="headerVersionBadge" onclick="forceHardReload()" title="タップして最新版に更新" class="bg-brand-50 text-brand-700 hover:bg-brand-100 text-[10px] font-bold px-1.5 py-0.5 rounded-full border border-brand-200 cursor-pointer transition-colors active:scale-95 select-none">v2.17.4</span>
+            <span id="headerVersionBadge" onclick="forceHardReload()" title="タップして最新版に更新" class="bg-brand-50 text-brand-700 hover:bg-brand-100 text-[10px] font-bold px-1.5 py-0.5 rounded-full border border-brand-200 cursor-pointer transition-colors active:scale-95 select-none">v2.17.5</span>
           </div>
           <!-- 月ナビゲーション（爆速クイック月選択対応 v2.10.0） -->
           <div class="flex items-center gap-1 mt-0.5">
@@ -1140,7 +1140,7 @@
             </div>
           </section>
 
-          <!-- 🤖 AI家計診断・データベースまとめ抽出 (v2.17.4) -->
+          <!-- 🤖 AI家計診断・データベースまとめ抽出 (v2.17.5) -->
           <section class="bg-gradient-to-br from-purple-50 via-indigo-50 to-white rounded-2xl p-4 shadow-sm border border-purple-200/80 space-y-3">
             <div class="flex items-center justify-between gap-2 flex-wrap">
               <div>
@@ -1194,7 +1194,7 @@
           <footer class="pt-2 pb-6 text-center text-[10px] text-slate-400 font-mono flex items-center justify-center gap-2 select-none flex-wrap">
             <span class="inline-flex items-center gap-1 bg-slate-100 text-slate-600 px-2 py-0.5 rounded-full">
               <span>Web</span>
-              <b id="frontVersionLabel" class="text-slate-800">v2.17.4</b>
+              <b id="frontVersionLabel" class="text-slate-800">v2.17.5</b>
             </span>
             <span>/</span>
             <span class="inline-flex items-center gap-1 bg-slate-100 text-slate-600 px-2 py-0.5 rounded-full">
@@ -1977,18 +1977,32 @@
       </div>
 
       <!-- 現在のペア情報 -->
-      <div class="bg-slate-50 border border-slate-200/80 rounded-2xl p-4 space-y-2">
+      <div class="bg-slate-50 border border-slate-200/80 rounded-2xl p-4 space-y-2.5">
         <p class="text-[11px] font-bold text-slate-500 uppercase tracking-wide">現在の世帯ペア</p>
         <p id="modalPairName" class="text-base font-extrabold text-slate-800">公式デモ・メイン世帯</p>
-        <div class="pt-2">
+        <div class="grid grid-cols-2 gap-2 pt-1">
+          <div class="bg-white border border-slate-200 rounded-xl px-2.5 py-1.5">
+            <span class="text-[9px] font-bold text-slate-400 block">ホスト (Aさん)</span>
+            <span id="modalHostMemberName" class="text-xs font-extrabold text-slate-700">なおや</span>
+          </div>
+          <div class="bg-white border border-brand-200 rounded-xl px-2.5 py-1.5">
+            <span class="text-[9px] font-bold text-brand-600 block">事前登録パートナー (Bさん)</span>
+            <span id="modalPartnerMemberName" class="text-xs font-extrabold text-brand-700">ゆか</span>
+          </div>
+        </div>
+        <div class="pt-1.5">
           <label class="text-[10px] font-bold text-slate-500 block mb-1">パートナー合流用 招待コード</label>
           <div class="flex items-center gap-2">
             <span id="modalInviteCode" class="text-lg font-mono font-black text-brand-600 bg-white border border-brand-200 px-3 py-1 rounded-xl tracking-widest">PAIR2026</span>
-            <button id="copyInviteCodeBtn" class="bg-brand-500 hover:bg-brand-600 active:scale-95 text-white px-3 py-1.5 rounded-xl text-xs font-bold transition-all flex items-center gap-1">
-              <i data-lucide="copy" class="w-3.5 h-3.5"></i> コードコピー
+            <button id="copyInviteCodeBtn" class="bg-slate-700 hover:bg-slate-800 active:scale-95 text-white px-3 py-1.5 rounded-xl text-xs font-bold transition-all flex items-center gap-1 cursor-pointer">
+              <i data-lucide="copy" class="w-3.5 h-3.5"></i> コピー
             </button>
           </div>
-          <p class="text-[10px] text-slate-400 mt-1.5">このコードをパートナーに送ると、家計簿と精算データをリアルタイム共有できます✨</p>
+          <button type="button" onclick="invitePreRegisteredPartnerViaLine()" class="mt-2.5 w-full bg-[#06C755] hover:bg-[#05b34c] active:scale-98 text-white font-bold py-2.5 px-3 rounded-xl text-xs shadow-sm transition-all flex items-center justify-center gap-1.5 cursor-pointer">
+            <i data-lucide="send" class="w-4 h-4"></i>
+            <span id="invitePartnerLineBtnLabel">事前登録したパートナーをLINEで招待する</span>
+          </button>
+          <p class="text-[10px] text-slate-400 mt-1.5">招待された方はLINEで「参加 招待コード」と送るだけで、事前登録されたBさんとして自動登録されます✨</p>
         </div>
       </div>
 
@@ -1997,24 +2011,25 @@
         <!-- アコーディオン: 招待コードで合流 -->
         <div class="border border-slate-200 rounded-2xl p-3.5 space-y-2">
           <h4 class="text-xs font-bold text-slate-700 flex items-center gap-1.5">
-            <i data-lucide="user-plus" class="w-4 h-4 text-brand-500"></i> パートナーの招待コードで合流する
+            <i data-lucide="user-plus" class="w-4 h-4 text-brand-500"></i> 招待コードで参加する（Bさん用）
           </h4>
           <input type="text" id="joinInviteCodeInput" placeholder="招待コード（例: 7K2M9X）" class="w-full bg-slate-50 border border-slate-200 rounded-xl px-3 py-2 text-xs font-mono uppercase focus:outline-none">
-          <input type="text" id="joinUserNameInput" placeholder="あなたの表示名（例: パートナー, ニックネーム）" class="w-full bg-slate-50 border border-slate-200 rounded-xl px-3 py-2 text-xs focus:outline-none">
+          <input type="text" id="joinUserNameInput" placeholder="空欄のままで事前登録されたBさんの名前が自動適用されます" class="w-full bg-slate-50 border border-slate-200 rounded-xl px-3 py-2 text-xs focus:outline-none">
           <button id="submitJoinPairBtn" class="w-full bg-slate-800 hover:bg-slate-700 text-white font-bold py-2 rounded-xl text-xs transition-colors">
-            この世帯に合流する
+            事前登録メンバーとしてこの世帯に参加する
           </button>
         </div>
 
         <!-- アコーディオン: 新規世帯ペア作成 -->
         <div class="border border-slate-200 rounded-2xl p-3.5 space-y-2">
           <h4 class="text-xs font-bold text-slate-700 flex items-center gap-1.5">
-            <i data-lucide="sparkles" class="w-4 h-4 text-purple-500"></i> 新しい世帯ペアを立ち上げる
+            <i data-lucide="sparkles" class="w-4 h-4 text-purple-500"></i> 新しい世帯ペアを立ち上げる（Aさん用）
           </h4>
           <input type="text" id="newPairNameInput" placeholder="世帯名（例: 佐藤家, ふたり暮らし）" class="w-full bg-slate-50 border border-slate-200 rounded-xl px-3 py-2 text-xs focus:outline-none">
-          <input type="text" id="newPairCreatorNameInput" placeholder="あなたの表示名（例: ホスト, ニックネーム）" class="w-full bg-slate-50 border border-slate-200 rounded-xl px-3 py-2 text-xs focus:outline-none">
+          <input type="text" id="newPairCreatorNameInput" placeholder="ホスト(Aさん)の表示名（例: なおや）" class="w-full bg-slate-50 border border-slate-200 rounded-xl px-3 py-2 text-xs focus:outline-none">
+          <input type="text" id="newPairPartnerNameInput" placeholder="後からLINE参加するパートナー(Bさん)の表示名（例: ゆか）" class="w-full bg-slate-50 border border-slate-200 rounded-xl px-3 py-2 text-xs focus:outline-none">
           <button id="submitCreatePairBtn" class="w-full bg-purple-600 hover:bg-purple-500 text-white font-bold py-2 rounded-xl text-xs transition-colors">
-            新しい世帯ペアを作成（招待コード発行）
+            2人の名前を事前登録して世帯ペアを作成
           </button>
         </div>
       </div>
@@ -2383,8 +2398,8 @@
   </div>
 
   <!-- アプリ本体スクリプト -->
-  <script src="config.js?v=2.17.4"></script>
-  <script src="app.js?v=2.17.4"></script>
+  <script src="config.js?v=2.17.5"></script>
+  <script src="app.js?v=2.17.5"></script>
 
   <!-- 口座追加・編集モーダル (v2.14.0) -->
   <div id="bankAccountModal" class="hidden fixed inset-0 z-50 bg-black/50 backdrop-blur-xs flex items-center justify-center p-4">
@@ -2460,7 +2475,7 @@
             <h3 class="text-base font-bold text-slate-800 flex items-center gap-1.5">
               <i data-lucide="receipt" class="w-5 h-5 text-sky-600"></i> 明細取込 ＆ おしどり風仕分け
             </h3>
-            <span class="text-[10px] font-bold bg-sky-100 text-sky-700 px-1.5 py-0.5 rounded">v2.17.4</span>
+            <span class="text-[10px] font-bold bg-sky-100 text-sky-700 px-1.5 py-0.5 rounded">v2.17.5</span>
           </div>
           <p class="text-xs text-slate-400">CSVまたはスマホの明細スクショから取り込み「共有 / 私物」を仕分け</p>
         </div>

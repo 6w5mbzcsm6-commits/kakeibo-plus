@@ -9,7 +9,7 @@
  */
 
 const APP_CONFIG = window.PAIRBUDGET_CONFIG || {};
-const FRONTEND_VERSION = 'v2.17.4';
+const FRONTEND_VERSION = 'v2.17.5';
 const MAX_HISTORY_MONTHS = 36;
 const FIELD_LABELS = {
   date: '日付', title: '品名', amount: '金額', category: 'カテゴリ', isShared: '共同',
@@ -1708,7 +1708,7 @@ async function loadInitialData(month, opts = {}) {
       if (res && (res.code === 'UNREGISTERED' || res.code === 'AUTH' || res.code === 'SETUP_REQUIRED' || res.code === 'UNAUTHORIZED_LINE_USER')) {
         // バックエンド自体は正常稼働中（未登録または認証案内）なのでデモモードには落とさない
         state.isMockMode = false;
-        state.backendVersion = res.version || 'v2.17.4';
+        state.backendVersion = res.version || 'v2.17.5';
         handleApiError(res);
         renderAll();
         hideMainSkeleton();
@@ -5368,7 +5368,16 @@ function updatePairHeader() {
   const modalName = $('modalPairName');
   if (modalName) modalName.textContent = state.pairName || '世帯ペア';
   const modalCode = $('modalInviteCode');
-  if (modalCode) modalCode.textContent = state.inviteCode || '未発行';
+  if (modalCode) modalCode.textContent = state.inviteCode || 'PAIR2026';
+
+  const hostName = state.config?.husbandName || 'メンバー1';
+  const partnerName = state.config?.wifeName || 'パートナー';
+  const hostEl = $('modalHostMemberName');
+  if (hostEl) hostEl.textContent = hostName;
+  const partnerEl = $('modalPartnerMemberName');
+  if (partnerEl) partnerEl.textContent = partnerName;
+  const inviteBtnLabel = $('invitePartnerLineBtnLabel');
+  if (inviteBtnLabel) inviteBtnLabel.textContent = `事前登録した「${partnerName}」さんをLINEで招待する`;
 }
 
 function openPairModal() {
@@ -5385,12 +5394,13 @@ function closePairModal() {
 async function submitCreatePair() {
   const name = $('newPairNameInput')?.value.trim();
   const userName = $('newPairCreatorNameInput')?.value.trim();
+  const partnerName = $('newPairPartnerNameInput')?.value.trim() || 'パートナー';
   if (!name || !userName) {
-    showToast('世帯名とお名前を入力してください');
+    showToast('世帯名とホストのお名前を入力してください');
     return;
   }
   showToast('新しい世帯を作成中…', 'loading');
-  const res = await api('createPair', { name, userName });
+  const res = await api('createPair', { name, userName, partnerName });
   hideToast();
   if (!res.success) {
     showToast(res.error || '作成に失敗しました');
@@ -5410,8 +5420,8 @@ async function submitCreatePair() {
 async function submitJoinPair() {
   const inviteCode = $('joinInviteCodeInput')?.value.trim().toUpperCase();
   const userName = $('joinUserNameInput')?.value.trim();
-  if (!inviteCode || !userName) {
-    showToast('招待コードとお名前を入力してください');
+  if (!inviteCode) {
+    showToast('招待コードを入力してください');
     return;
   }
   showToast('世帯に合流中…', 'loading');
@@ -5424,21 +5434,42 @@ async function submitJoinPair() {
   state.pairId = res.pair.id;
   state.pairName = res.pair.name;
   state.inviteCode = res.pair.inviteCode;
+  if (res.role) {
+    state.currentUser = res.role;
+    localStorage.setItem('pairbudget_user', res.role);
+  }
   localStorage.setItem('pairbudget_pair_id', res.pair.id);
   localStorage.setItem('pairbudget_pair_name', res.pair.name);
   localStorage.setItem('pairbudget_invite_code', res.pair.inviteCode);
   closePairModal();
-  showToast(`世帯「${res.pair.name}」に合流しました！`);
+  showToast(`「${res.role || 'パートナー'}」さんとして世帯「${res.pair.name}」に参加しました！`);
   loadInitialData(state.viewMonth, { skipCache: true });
 }
 
-function copyInviteCode() {
+function buildPartnerInviteText() {
   const code = state.inviteCode || 'PAIR2026';
+  const hostName = state.config?.husbandName || 'ホスト';
+  const partnerName = state.config?.wifeName || 'パートナー';
   const url = `${window.location.origin}${window.location.pathname}?invite=${code}`;
-  const text = `ふたり家計簿に招待されました！\n世帯名: ${state.pairName}\n招待コード: ${code}\n合流URL: ${url}\n\n【公式LINE連携方法】\n・1対1トークで連携: 「連携 ${code} 名前」と送信\n・グループLINEで連携: 「グループ連携 ${code}」と送信`;
+  return `【ふたり家計簿】${hostName}さんから「${partnerName}」さんへ招待が届いています✨\n` +
+    `世帯名: ${state.pairName || 'ふたりの家計簿'}\n` +
+    `招待コード: ${code}\n\n` +
+    `① 公式LINEで参加する場合:\n` +
+    `トーク画面で「参加 ${code}」と送信するだけで、事前登録済みの「${partnerName}」さんとして自動登録されます！\n\n` +
+    `② Webアプリを開く場合:\n${url}`;
+}
+
+function invitePreRegisteredPartnerViaLine() {
+  const text = buildPartnerInviteText();
+  const lineShareUrl = `https://line.me/R/msg/text/?${encodeURIComponent(text)}`;
+  window.open(lineShareUrl, '_blank', 'noopener,noreferrer');
+}
+
+function copyInviteCode() {
+  const text = buildPartnerInviteText();
   if (navigator.clipboard && navigator.clipboard.writeText) {
     navigator.clipboard.writeText(text).then(() => {
-      showToast('招待テキストをコピーしました！LINE等で送信してください');
+      showToast('事前登録パートナー用の招待テキストをコピーしました！');
     }).catch(() => {
       prompt('以下のテキストをコピーしてください:', text);
     });
