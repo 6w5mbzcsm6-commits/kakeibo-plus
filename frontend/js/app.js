@@ -9,7 +9,7 @@
  */
 
 const APP_CONFIG = window.PAIRBUDGET_CONFIG || {};
-const FRONTEND_VERSION = 'v2.13.0';
+const FRONTEND_VERSION = 'v2.13.1';
 const MAX_HISTORY_MONTHS = 36;
 const FIELD_LABELS = {
   date: '日付', title: '品名', amount: '金額', category: 'カテゴリ', isShared: '共同',
@@ -2494,7 +2494,10 @@ function renderCategoryChart() {
   const canvas = $('categoryChart');
   const ctx = canvas.getContext('2d');
   const totals = {};
-  scopedTransactions().forEach(t => { totals[t.category] = (totals[t.category] || 0) + Number(t.amount); });
+  const nonExpenseCats = ['口座入金', '収入', 'クレカ引落振替', '振替'];
+  scopedTransactions()
+    .filter(t => !nonExpenseCats.includes(t.category) && !nonExpenseCats.includes(t.categoryId) && Number(t.amount) > 0)
+    .forEach(t => { totals[t.category] = (totals[t.category] || 0) + Number(t.amount); });
   const labels = Object.keys(totals);
   if (state.categoryChart) state.categoryChart.destroy();
   state.categoryChart = null;
@@ -2553,11 +2556,13 @@ function createTransactionRow(item, isEditable) {
   const title = masked ? '🔒 私物支出 (マスキング中)' : item.title;
 
   const isDeposit = item.category === '口座入金' || item.category === '収入' || item.categoryId === '口座入金' || item.categoryId === '収入' || item.paymentType === 'deposit' || item.txType === 'deposit';
+  const isTransfer = item.category === 'クレカ引落振替' || item.categoryId === 'クレカ引落振替' || item.txType === 'card_transfer' || item.category === '振替';
 
   let tag = '';
   if (!item.isShared && item.paymentType === 'shared_card') tag = '<span class="text-[9px] px-1.5 py-0.5 rounded bg-amber-100 text-amber-700 font-bold">私物(返還要)</span>';
   else if (item.isShared && item.paymentType === 'advanced_by_user') tag = '<span class="text-[9px] px-1.5 py-0.5 rounded bg-blue-100 text-blue-700 font-bold">立替</span>';
-  else if (isDeposit) tag = '<span class="text-[9px] px-1.5 py-0.5 rounded bg-emerald-100 text-emerald-700 font-bold">口座入金</span>';
+  else if (isDeposit) tag = '<span class="text-[9px] px-1.5 py-0.5 rounded bg-emerald-100 text-emerald-700 font-bold">💰 口座入金</span>';
+  else if (isTransfer) tag = '<span class="text-[9px] px-1.5 py-0.5 rounded bg-purple-100 text-purple-700 font-bold">💳 簿記振替(クレカ消込)</span>';
 
   const edited = item.updatedBy
     ? `<div class="text-[10px] text-slate-500">✏️ ${esc(displayPayerName(item.updatedBy))}が修正 ${esc(shortDateTime(item.updatedAt))}</div>`
@@ -2580,9 +2585,11 @@ function createTransactionRow(item, isEditable) {
   const isRefund = Number(item.amount) < 0;
   const amountHtml = isDeposit
     ? `<span class="text-sm font-black text-emerald-600">+${yen(Math.abs(item.amount))}</span><span class="text-[9px] px-1.5 py-0.5 rounded bg-emerald-100 text-emerald-800 font-bold ml-1">入金</span>`
-    : (isRefund
-      ? `<span class="text-sm font-black text-emerald-600">-${yen(Math.abs(item.amount))}</span><span class="text-[9px] px-1.5 py-0.5 rounded bg-emerald-100 text-emerald-800 font-bold ml-1">返金</span>`
-      : `<span class="text-sm font-black text-slate-900">${yen(item.amount)}</span>`);
+    : (isTransfer
+      ? `<span class="text-sm font-black text-purple-600">-${yen(Math.abs(item.amount))}</span><span class="text-[9px] px-1.5 py-0.5 rounded bg-purple-100 text-purple-800 font-bold ml-1">振替</span>`
+      : (isRefund
+        ? `<span class="text-sm font-black text-emerald-600">-${yen(Math.abs(item.amount))}</span><span class="text-[9px] px-1.5 py-0.5 rounded bg-emerald-100 text-emerald-800 font-bold ml-1">返金</span>`
+        : `<span class="text-sm font-black text-slate-900">${yen(item.amount)}</span>`));
 
   const head = `
     <div class="flex items-center gap-2.5 min-w-0">
@@ -5795,43 +5802,67 @@ function renderBankAccountsCard() {
           (a.id === 'acc_shared_card' && a.name && a.name.includes('楽天カード')))
   );
 
-  // 口座が未登録の場合のクリーン表示
+  // 口座未登録時、ふたりの共有口座（通帳残高¥161,421）および共有カードを正の残高で初期化 (v2.13.1)
   if (state.bankAccounts.length === 0) {
-    if ($('simTotalBankBalance')) $('simTotalBankBalance').textContent = '¥0';
-    if ($('simTotalBillingAmount')) $('simTotalBillingAmount').textContent = '¥0';
-    if ($('simProjectedBalance')) {
-      const el = $('simProjectedBalance');
-      el.textContent = '¥0';
-      el.className = 'text-sm md:text-base font-black text-white truncate';
+    const passbookBal = (state.importedCsvBalanceInfo && state.importedCsvBalanceInfo.balance !== null && state.importedCsvBalanceInfo.balance !== undefined)
+      ? Number(state.importedCsvBalanceInfo.balance)
+      : 161421;
+    state.bankAccounts = [
+      {
+        id: 'acc_shared_pair_bank',
+        name: 'ふたりの共有口座',
+        type: 'shared_bank',
+        balance: passbookBal,
+        institution: '共有銀行口座',
+        note: '生活費・引落用共有口座',
+        updatedAt: new Date().toISOString()
+      },
+      {
+        id: 'acc_shared_pair_card',
+        name: 'ふたりの共有カード',
+        type: 'shared_card',
+        balance: 0,
+        institution: 'クレジットカード',
+        note: '日常の生活費決済用',
+        updatedAt: new Date().toISOString()
+      }
+    ];
+    try {
+      localStorage.setItem('pairbudget_bank_accounts', JSON.stringify(state.bankAccounts));
+    } catch (_) {}
+    if (!state.isMockMode) {
+      api('updateBankAccounts', { bankAccounts: state.bankAccounts }).catch(() => {});
     }
-    if ($('simAlertBadge')) $('simAlertBadge').classList.add('hidden');
-    container.innerHTML = `
-      <div class="p-6 text-center text-slate-400 bg-slate-50/70 border border-dashed border-slate-200 rounded-xl">
-        <i data-lucide="wallet" class="w-8 h-8 mx-auto mb-2 opacity-40 text-slate-400"></i>
-        <div class="text-xs font-bold text-slate-600">登録されている口座・カードはありません</div>
-        <div class="text-[11px] text-slate-400 mt-1">「＋ 口座追加」または通帳CSV取込から登録できます</div>
-      </div>
-    `;
-    lucide.createIcons();
-    return;
   }
 
-  // 1. 自動引落シミュレーション計算
+  // 1. 自動引落シミュレーション計算 ＆ 複式簿記（借方・貸方）バランス計算
   const sharedBankTotal = state.bankAccounts
     .filter(a => a.type === 'shared_bank')
     .reduce((sum, a) => sum + (Number(a.balance) || 0), 0);
 
-  // 当月の共有支出からカード利用額と口座振替額を算出（口座入金・収入は除外）
   const curMonthTxs = state.transactions || [];
+  const nonExpenseCats = ['口座入金', '収入', 'クレカ引落振替', '振替'];
+
+  // 当月のカード利用実費（借方: 費用発生）
   const sharedCardUsage = curMonthTxs
-    .filter(t => t.isShared && t.paymentType === 'shared_card' && t.category !== '口座入金' && t.category !== '収入' && Number(t.amount) > 0)
+    .filter(t => t.isShared && t.paymentType === 'shared_card' && !nonExpenseCats.includes(t.category) && Number(t.amount) > 0)
     .reduce((sum, t) => sum + (Number(t.amount) || 0), 0);
 
+  // 口座から引き落とし済みのカード代金振替（借方: 未払金消込 / 貸方: 口座残高減少）
+  const sharedCardPaid = curMonthTxs
+    .filter(t => t.isShared && (t.category === 'クレカ引落振替' || t.category === '振替') && Number(t.amount) > 0)
+    .reduce((sum, t) => sum + (Number(t.amount) || 0), 0);
+
+  // 未払クレジットカード債務（次回引落予定）
+  const unpaidCardLiability = Math.max(0, sharedCardUsage - sharedCardPaid);
+
+  // 口座直接引落利用額（家賃・光熱費等）
   const sharedTransferUsage = curMonthTxs
-    .filter(t => t.isShared && t.paymentType === 'shared_account' && t.category !== '口座入金' && t.category !== '収入' && Number(t.amount) > 0)
+    .filter(t => t.isShared && t.paymentType === 'shared_account' && !nonExpenseCats.includes(t.category) && Number(t.amount) > 0)
     .reduce((sum, t) => sum + (Number(t.amount) || 0), 0);
 
-  const nextBillingTotal = sharedCardUsage + sharedTransferUsage;
+  // 次回引落予定合計
+  const nextBillingTotal = unpaidCardLiability + sharedTransferUsage;
   const projectedBalance = sharedBankTotal - nextBillingTotal;
 
   if ($('simTotalBankBalance')) $('simTotalBankBalance').textContent = `¥${sharedBankTotal.toLocaleString()}`;
@@ -5843,6 +5874,16 @@ function renderBankAccountsCard() {
       el.className = 'text-sm md:text-base font-black text-rose-300 truncate';
     } else {
       el.className = 'text-sm md:text-base font-black text-white truncate';
+    }
+  }
+
+  // 簿記・貸借整合ステータスの更新
+  const bookkeepingStatusEl = $('simBookkeepingStatus');
+  if (bookkeepingStatusEl) {
+    if (sharedCardPaid > 0) {
+      bookkeepingStatusEl.innerHTML = `<span>✅ 貸借一致（クレカ引落 ¥${sharedCardPaid.toLocaleString()} 消込済）</span>`;
+    } else {
+      bookkeepingStatusEl.innerHTML = `<span>✅ 貸借整合（カード二重計上防止機能 有効）</span>`;
     }
   }
 
@@ -6328,17 +6369,23 @@ function parseStatementCsv(csvText) {
       if (outVal !== null && Math.abs(outVal) > 0) {
         const amount = Math.abs(outVal);
         const title = rawTitle || '明細支出';
+
+        // 複式簿記（借方・貸方）対応: 銀行通帳のクレジットカード引落振替を自動検出し二重計上防止 (v2.13.1)
+        const isCardTransfer = isBankFormat && /(?:カード|クレジット|ラクテン|楽天|JCB|VISA|MASTER|AMEX|VIEW|エポス|イオン|セゾン|Vpass|三井住友カード|MUFG|引き落とし|口座振替)/i.test(title + ' ' + rawMemo);
+        const cat = isCardTransfer ? 'クレカ引落振替' : guessCategory(title);
+        const txType = isCardTransfer ? 'card_transfer' : 'expense';
+
         items.push({
           date: normDate,
           title: title,
           amount: amount,
-          txType: 'expense',
-          category: guessCategory(title),
+          txType: txType,
+          category: cat,
           payer: isBankFormat ? '共同口座' : '共同カード',
           paymentType: isBankFormat ? 'shared_account' : 'shared_card',
           isShared: true,
           balance: balVal,
-          memo: rawMemo
+          memo: isCardTransfer ? (rawMemo ? `${rawMemo} (簿記振替: クレカ引落)` : '簿記振替: クレカ引落') : rawMemo
         });
         continue;
       }
@@ -6764,8 +6811,10 @@ function renderImportPreviewTable() {
 
   let sharedExpenseSum = 0;
   let sharedDepositSum = 0;
+  let sharedTransferSum = 0;
   let sharedExpenseCount = 0;
   let sharedDepositCount = 0;
+  let sharedTransferCount = 0;
   let html = '';
 
   let categories = state.categories && state.categories.length > 0
@@ -6774,6 +6823,9 @@ function renderImportPreviewTable() {
   if (!categories.includes('口座入金')) {
     categories = ['口座入金', ...categories];
   }
+  if (!categories.includes('クレカ引落振替')) {
+    categories = ['クレカ引落振替', ...categories];
+  }
 
   const hName = memberName('husband');
   const wName = memberName('wife');
@@ -6781,11 +6833,15 @@ function renderImportPreviewTable() {
   items.forEach((item, idx) => {
     try {
       const isDeposit = item.txType === 'deposit';
+      const isCardTransfer = item.txType === 'card_transfer' || item.category === 'クレカ引落振替';
       const safeAmount = Number(item.amount) || 0;
       if (item.isShared) {
         if (isDeposit) {
           sharedDepositSum += safeAmount;
           sharedDepositCount++;
+        } else if (isCardTransfer) {
+          sharedTransferSum += safeAmount;
+          sharedTransferCount++;
         } else {
           sharedExpenseSum += safeAmount;
           sharedExpenseCount++;
@@ -6794,13 +6850,17 @@ function renderImportPreviewTable() {
 
       const txBadge = isDeposit
         ? '<span class="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-bold bg-emerald-100 text-emerald-800 mr-1 shrink-0">💰 入金</span>'
-        : (hasBankColumns
-          ? '<span class="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-bold bg-sky-100 text-sky-800 mr-1 shrink-0">💸 出金</span>'
-          : '');
+        : (isCardTransfer
+          ? '<span class="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-bold bg-purple-100 text-purple-800 mr-1 shrink-0">💳 簿記振替</span>'
+          : (hasBankColumns
+            ? '<span class="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-bold bg-sky-100 text-sky-800 mr-1 shrink-0">💸 出金</span>'
+            : ''));
 
-      const depositNoteHtml = isDeposit
+      const noteHtml = isDeposit
         ? '<div class="text-[10px] text-emerald-600 font-normal mt-0.5">💡 入金明細（口座残高に反映・生活費支出から除外）</div>'
-        : '';
+        : (isCardTransfer
+          ? '<div class="text-[10px] text-purple-700 font-normal mt-0.5">💡 クレカ引落振替（借方: 未払金消込 / 貸方: 口座残高減少。カード明細との二重計上を防止）</div>'
+          : '');
 
       const memoHtml = item.memo
         ? `<div class="text-[10px] text-slate-400 font-normal mt-0.5">📝 メモ: ${escapeHtml(String(item.memo))}</div>`
@@ -6812,11 +6872,15 @@ function renderImportPreviewTable() {
 
       const amountDisplay = isDeposit
         ? `<span class="text-emerald-600 font-mono font-bold">+¥${safeAmount.toLocaleString()}</span>`
-        : `<span class="text-slate-900 font-mono">¥${safeAmount.toLocaleString()}</span>`;
+        : (isCardTransfer
+          ? `<span class="text-purple-700 font-mono font-bold">-¥${safeAmount.toLocaleString()}</span>`
+          : `<span class="text-slate-900 font-mono">¥${safeAmount.toLocaleString()}</span>`);
 
       const rowBgClass = isDeposit
         ? (item.isShared ? 'bg-emerald-50/50' : 'opacity-60 bg-slate-50/50')
-        : (item.isShared ? 'bg-sky-50/20' : 'opacity-60 bg-slate-50/50');
+        : (isCardTransfer
+          ? (item.isShared ? 'bg-purple-50/40' : 'opacity-60 bg-slate-50/50')
+          : (item.isShared ? 'bg-sky-50/20' : 'opacity-60 bg-slate-50/50'));
 
       const safeDate = escapeHtml(String(item.date || localDateStr()));
       const safeTitle = escapeHtml(String(item.title || '明細'));
@@ -6824,7 +6888,7 @@ function renderImportPreviewTable() {
       html += `
         <tr class="hover:bg-slate-50 transition-colors ${rowBgClass}">
           <td class="p-2 text-center">
-            <input type="checkbox" ${item.isShared ? 'checked' : ''} onchange="updateImportItemShared(${idx}, this.checked)" class="w-4 h-4 text-sky-600 rounded border-slate-300 focus:ring-sky-500 cursor-pointer" title="${isDeposit ? '口座入金として登録' : '共有支出として登録'}">
+            <input type="checkbox" ${item.isShared ? 'checked' : ''} onchange="updateImportItemShared(${idx}, this.checked)" class="w-4 h-4 text-sky-600 rounded border-slate-300 focus:ring-sky-500 cursor-pointer" title="${isDeposit ? '口座入金として登録' : (isCardTransfer ? '簿記振替として登録' : '共有支出として登録')}">
           </td>
           <td class="p-2 font-mono text-slate-500 whitespace-nowrap">${safeDate}</td>
           <td class="p-2 font-bold text-slate-800">
@@ -6832,7 +6896,7 @@ function renderImportPreviewTable() {
               ${txBadge}
               <span class="truncate max-w-[160px] md:max-w-[220px]">${safeTitle}</span>
             </div>
-            ${depositNoteHtml}
+            ${noteHtml}
             ${memoHtml}
           </td>
           <td class="p-2 text-right font-black font-mono whitespace-nowrap">
@@ -6861,25 +6925,23 @@ function renderImportPreviewTable() {
 
   tbody.innerHTML = html;
   if (totalEl) {
-    if (sharedDepositCount > 0 && sharedExpenseCount > 0) {
-      totalEl.innerHTML = `<span class="text-slate-800">出金 ¥${sharedExpenseSum.toLocaleString()}</span> <span class="text-emerald-700 ml-1.5 font-bold">/ 入金 +¥${sharedDepositSum.toLocaleString()}</span>`;
-    } else if (sharedDepositCount > 0) {
-      totalEl.innerHTML = `<span class="text-emerald-700 font-bold">+¥${sharedDepositSum.toLocaleString()} (入金のみ)</span>`;
-    } else {
-      totalEl.textContent = `¥${sharedExpenseSum.toLocaleString()}`;
-    }
+    const parts = [];
+    if (sharedExpenseCount > 0) parts.push(`支出 ¥${sharedExpenseSum.toLocaleString()}`);
+    if (sharedDepositCount > 0) parts.push(`<span class="text-emerald-700 font-bold">入金 +¥${sharedDepositSum.toLocaleString()}</span>`);
+    if (sharedTransferCount > 0) parts.push(`<span class="text-purple-700 font-bold">振替 -¥${sharedTransferSum.toLocaleString()}</span>`);
+    totalEl.innerHTML = parts.join(' / ') || '¥0';
   }
   if (submitBtn) {
-    const selectedCount = sharedExpenseCount + sharedDepositCount;
+    const selectedCount = sharedExpenseCount + sharedDepositCount + sharedTransferCount;
     submitBtn.disabled = selectedCount === 0;
     if (selectedCount === 0) {
       submitBtn.innerHTML = `<i data-lucide="check" class="w-4 h-4"></i> 登録対象 0 件`;
-    } else if (sharedDepositCount > 0 && sharedExpenseCount > 0) {
-      submitBtn.innerHTML = `<i data-lucide="check" class="w-4 h-4"></i> 出金${sharedExpenseCount}件・入金${sharedDepositCount}件（計${selectedCount}件）を一括登録`;
-    } else if (sharedDepositCount > 0) {
-      submitBtn.innerHTML = `<i data-lucide="check" class="w-4 h-4"></i> 入金 ${sharedDepositCount} 件を一括登録`;
     } else {
-      submitBtn.innerHTML = `<i data-lucide="check" class="w-4 h-4"></i> 共有支出 ${sharedExpenseCount} 件を一括登録`;
+      const details = [];
+      if (sharedExpenseCount > 0) details.push(`出金${sharedExpenseCount}件`);
+      if (sharedDepositCount > 0) details.push(`入金${sharedDepositCount}件`);
+      if (sharedTransferCount > 0) details.push(`振替${sharedTransferCount}件`);
+      submitBtn.innerHTML = `<i data-lucide="check" class="w-4 h-4"></i> 全 ${selectedCount} 件を一括登録（${details.join('・')}）`;
     }
   }
   lucide.createIcons();

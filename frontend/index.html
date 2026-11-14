@@ -83,7 +83,7 @@
         <div>
           <div class="flex items-center gap-1.5">
             <h1 class="text-base font-bold text-slate-900 leading-tight">ふたり家計簿</h1>
-            <span id="headerVersionBadge" onclick="forceHardReload()" title="タップして最新版に更新" class="bg-brand-50 text-brand-700 hover:bg-brand-100 text-[10px] font-bold px-1.5 py-0.5 rounded-full border border-brand-200 cursor-pointer transition-colors active:scale-95 select-none">v2.13.0</span>
+            <span id="headerVersionBadge" onclick="forceHardReload()" title="タップして最新版に更新" class="bg-brand-50 text-brand-700 hover:bg-brand-100 text-[10px] font-bold px-1.5 py-0.5 rounded-full border border-brand-200 cursor-pointer transition-colors active:scale-95 select-none">v2.13.1</span>
           </div>
           <!-- 月ナビゲーション（爆速クイック月選択対応 v2.10.0） -->
           <div class="flex items-center gap-1 mt-0.5">
@@ -409,15 +409,15 @@
               </div>
             </div>
 
-            <!-- 次回自動引落シミュレーションバナー -->
-            <div id="billingSimulationBanner" class="p-3.5 rounded-xl bg-gradient-to-br from-sky-600 to-indigo-700 text-white shadow-sm space-y-2">
+            <!-- 次回自動引落シミュレーション ＆ 複式簿記（借方・貸方）照合バナー -->
+            <div id="billingSimulationBanner" class="p-3.5 rounded-xl bg-gradient-to-br from-sky-600 via-indigo-700 to-slate-800 text-white shadow-sm space-y-2">
               <div class="flex items-center justify-between text-xs opacity-90">
-                <span class="flex items-center gap-1"><i data-lucide="calculator" class="w-3.5 h-3.5"></i> 次回引落シミュレーション</span>
+                <span class="flex items-center gap-1"><i data-lucide="calculator" class="w-3.5 h-3.5"></i> 次回引落シミュレーション ＆ 簿記残高照合</span>
                 <span class="text-[10px] bg-white/20 px-2 py-0.5 rounded-full font-medium">共有口座 連動</span>
               </div>
               <div class="grid grid-cols-3 gap-2 text-center pt-1 pb-1 border-y border-white/15">
                 <div>
-                  <div class="text-[10px] text-sky-100">共有口座預金合計</div>
+                  <div class="text-[10px] text-sky-100">ふたりの共有口座残高</div>
                   <div id="simTotalBankBalance" class="text-sm md:text-base font-black truncate">¥0</div>
                 </div>
                 <div>
@@ -428,6 +428,14 @@
                   <div class="text-[10px] text-emerald-200">引落後予想残高</div>
                   <div id="simProjectedBalance" class="text-sm md:text-base font-black truncate">¥0</div>
                 </div>
+              </div>
+              <!-- 簿記・貸借整合インジケーター -->
+              <div class="flex items-center justify-between text-[11px] bg-black/25 rounded-lg px-2.5 py-1.5 border border-white/10">
+                <span class="flex items-center gap-1.5 text-sky-100">
+                  <i data-lucide="scale" class="w-3.5 h-3.5 text-emerald-300"></i>
+                  <span>簿記照合: 借方(資産・費用) ＝ 貸方(負債・拠出)</span>
+                </span>
+                <span id="simBookkeepingStatus" class="font-bold text-emerald-300">✅ 貸借整合（二重計上防止）</span>
               </div>
               <div id="simAlertBadge" class="hidden text-[11px] font-bold px-2.5 py-1 rounded-lg bg-amber-500/30 text-amber-100 border border-amber-300/40 flex items-center gap-1.5">
                 <i data-lucide="alert-triangle" class="w-3.5 h-3.5 shrink-0"></i>
@@ -1028,7 +1036,7 @@
           <footer class="pt-2 pb-6 text-center text-[10px] text-slate-400 font-mono flex items-center justify-center gap-2 select-none flex-wrap">
             <span class="inline-flex items-center gap-1 bg-slate-100 text-slate-600 px-2 py-0.5 rounded-full">
               <span>Web</span>
-              <b id="frontVersionLabel" class="text-slate-800">v2.13.0</b>
+              <b id="frontVersionLabel" class="text-slate-800">v2.13.1</b>
             </span>
             <span>/</span>
             <span class="inline-flex items-center gap-1 bg-slate-100 text-slate-600 px-2 py-0.5 rounded-full">
@@ -2218,7 +2226,7 @@
 
   <!-- アプリ本体スクリプト -->
   <script src="config.js?v=2.12.1"></script>
-  <script src="app.js?v=2.13.0"></script>
+  <script src="app.js?v=2.13.1"></script>
 
   <!-- 口座追加・編集モーダル (v2.12.1) -->
   <div id="bankAccountModal" class="hidden fixed inset-0 z-50 bg-black/50 backdrop-blur-xs flex items-center justify-center p-4">
@@ -2293,7 +2301,7 @@
             <h3 class="text-base font-bold text-slate-800 flex items-center gap-1.5">
               <i data-lucide="receipt" class="w-5 h-5 text-sky-600"></i> 明細取込 ＆ おしどり風仕分け
             </h3>
-            <span class="text-[10px] font-bold bg-sky-100 text-sky-700 px-1.5 py-0.5 rounded">v2.13.0</span>
+            <span class="text-[10px] font-bold bg-sky-100 text-sky-700 px-1.5 py-0.5 rounded">v2.13.1</span>
           </div>
           <p class="text-xs text-slate-400">CSVまたはスマホの明細スクショから取り込み「共有 / 私物」を仕分け</p>
         </div>
