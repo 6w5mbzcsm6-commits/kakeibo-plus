@@ -587,7 +587,7 @@ async function getConfigData(supabase, pairId) {
     categoryBudgets: {},
     categoryBudgetsByMonth: {},
     surplusPolicy: 'savings',
-    savingsConfig: { initialSavings: 0, monthlyInterests: {} },
+    savingsConfig: { initialSavings: 0, monthlyInterests: {}, monthlyBalances: {}, monthlyWithdrawals: {} },
     autoCheckShoppingOnReceipt: true,
     bankAccounts: null,
     securityPinHash: null
@@ -1107,7 +1107,7 @@ async function handleGetInitialData(supabase, targetMonth, actor, requestedPairI
 
   return {
     success: true,
-    version: 'v2.17.5',
+    version: 'v2.18.0',
     pair: {
       id: pairId,
       name: config.pairName,
@@ -1985,11 +1985,16 @@ async function handleScanReceipt(data, actor) {
   }
 
   const prompt =
-    'これは日本のレシート画像です。店名、購入日、明細を精確に読み取ってください。\n' +
-    '【大原則: 99%以上のレシートは通常の購入（支出）である】\n' +
-    '- 通常の買い物レシートは、必ず isRefund: false、total は正の整数（例: 840）で出力すること。\n' +
-    '- 値引き行（CPNや割引）が一部含まれていても、レシート全体は通常の購入（isRefund: false）である。\n' +
-    '- レシート全体が「返金・返品レシート」になるのは、レシートのタイトルに「返金」「返品」「REFUND」と印字され、全商品が返品されている極めて稀なケースのみである。\n' +
+    'これは日本のレシート画像、またはスマホ決済完了画面（PayPay・楽天ペイ・d払い・au PAY・Suica・メルペイ等）・ネット通販注文履歴（Amazon・楽天市場・Uber Eats等）・カード明細・銀行振込画面のスクリーンショット画像です。\n' +
+    '店名（または決済先・利用先名）、購入日（決済日）、明細を精確に読み取ってください。\n' +
+    '【大原則: 99%以上のレシート・スクショは通常の購入（支出）である】\n' +
+    '- 通常の買い物レシートや決済完了スクショは、必ず isRefund: false、total は正の整数（例: 840）で出力すること。\n' +
+    '- 値引き行（CPNや割引・ポイント利用）が一部含まれていても、全体は通常の購入（isRefund: false）である。\n' +
+    '- レシート全体が「返金・返品レシート」になるのは、タイトルに「返金」「返品」「REFUND」「決済取消」と印字され、全商品が返品・返金されている極めて稀なケースのみである。\n' +
+    '【重要ルール0: スマホスクリーンショット（QR決済完了画面・通販画面・カード明細スクショ）の読み取り (v2.18.0)】\n' +
+    '- 画像がスマホのスクリーンショット（上部に時刻やバッテリーアイコン、PayPay等の決済完了ロゴ、Amazon注文履歴、クレカ明細画面など）である場合は sourceKind: "screenshot" とし、検出されたサービス名を paymentService（例: "PayPay", "楽天ペイ", "d払い", "au PAY", "Suica", "Amazon", "楽天市場", "Uber Eats", "カード明細", "銀行振込" 等。紙のレシートなら ""）に出力すること。\n' +
+    '- PayPay・楽天ペイ・d払い等の「決済完了画面」のように、店名（支払先）と支払合計金額（total）のみが表示され、個別の商品明細行が表示されていないスクショの場合は、items を空配列にせず、必ず【店名（または決済先名）を name にし、price に total を入れた1件の明細】（例: {"name":"セブン-イレブン","category":"食費","quantity":1,"price":1280}）を生成して出力すること！\n' +
+    '- カード明細一覧や決済履歴一覧のスクショで複数の利用履歴が並んでいる場合は、各決済行を items の各要素（name: 利用先名, price: 金額）として抽出し、それらの合計を total にすること。\n' +
     '【重要ルール1: 単価・数量・金額の行ズレ防止（日本のスーパー、ベイシア・イオン等）】\n' +
     '- 商品名のみの行（右端に金額印字がない行）の直下の行に「@単価 数量 小計金額」（例: "@52 2 ¥104"）が印字されている場合、その数量と金額は【必ず直上の商品名（例: まろやか絹豆腐）】のものである。絶対に直下の別商品（例: 白菜）と結びつけたり分断しないこと！\n' +
     '【重要ルール2: クーポン値引き・税区分表記（コストコ・スーパー等）】\n' +
@@ -2004,18 +2009,19 @@ async function handleScanReceipt(data, actor) {
     '- quantity は数量（不明なら1）。\n' +
     '- 品名はレシート表記のまま。ポイント・小計・合計・お釣り・税額の行は明細に含めない。\n' +
     '- date は yyyy-MM-dd。読み取れなければ空文字。\n' +
-    '- total はレシートに印字された最終支払合計（税込）の整数円（通常購入は必ず正の整数）。読み取れなければ0。\n' +
+    '- total はレシートやスクショに表示された最終支払合計（税込）の整数円（通常購入は必ず正の整数）。読み取れなければ0。\n' +
     '- 各明細の price の合計（プラス分とマイナス値引き分の和）が total と一致するか検算すること。\n' +
-    '【重要ルール5: 品目別カテゴリ自動推測 (v2.8.0)】\n' +
-    '- 各品目の品名から最も適したカテゴリを自動判定し category に指定してください:\n' +
-    '  - 食料品・生鮮食品・調味料・飲料・お菓子・パン → "食費"\n' +
-    '  - 日用品・洗剤・ティッシュ・トイレットペーパー・ラップ・ゴミ袋・掃除用品・キッチン雑貨 → "日用品"\n' +
-    '  - 医薬品・目薬・湿布・サプリメント・マスク・絆創膏 → "医療・健康"\n' +
-    '  - 化粧品・コスメ・スキンケア・シートマスク・衣料品・ヘアケア → "衣服・美容"\n' +
-    '  - レストラン・カフェ・テイクアウト弁当等で明確に外食の場合 → "外食"\n' +
+    '【重要ルール5: 品目別・店舗別カテゴリ自動推測 (v2.18.0)】\n' +
+    '- 各品目の品名（またはスクショの店舗名・サービス名）から最も適したカテゴリを自動判定し category に指定してください:\n' +
+    '  - 食料品・生鮮食品・調味料・飲料・お菓子・パン・スーパー・コンビニ → "食費"\n' +
+    '  - 日用品・洗剤・ティッシュ・トイレットペーパー・ラップ・ゴミ袋・掃除用品・キッチン雑貨・ドラッグストア・ホームセンター → "日用品"\n' +
+    '  - 医薬品・目薬・湿布・サプリメント・マスク・絆創膏・病院・薬局 → "医療・健康"\n' +
+    '  - 化粧品・コスメ・スキンケア・シートマスク・衣料品・ヘアケア・美容院・アパレル → "衣服・美容"\n' +
+    '  - レストラン・カフェ・居酒屋・ファストフード・Uber Eats・出前館・テイクアウト弁当等で外食の場合 → "外食"\n' +
+    '  - 電車・バス・Suicaチャージ・タクシー・ガソリン・駐車場 → "交通費"\n' +
     '  - その他・不明・値引き行 → 前後の品目と同じ、または "食費" もしくは "日用品"\n' +
     '必ず以下のJSON形式のみで出力してください:\n' +
-    '{"store":"店名","date":"yyyy-MM-dd","total":528,"isRefund":false,"items":[{"name":"品名","category":"食費","quantity":1,"price":390},{"name":"クレラップ","category":"日用品","quantity":1,"price":218},{"name":"CPN値引","category":"食費","quantity":1,"price":-80}]}';
+    '{"store":"店名","date":"yyyy-MM-dd","total":528,"isRefund":false,"sourceKind":"receipt","paymentService":"","items":[{"name":"品名","category":"食費","quantity":1,"price":390},{"name":"クレラップ","category":"日用品","quantity":1,"price":218},{"name":"CPN値引","category":"食費","quantity":1,"price":-80}]}';
 
   // 最速・高互換のリクエストBody（余計なresponseSchemaを持たせずresponseMimeTypeのみで超高速推論）
   const requestBody = {
@@ -2149,6 +2155,23 @@ async function handleScanReceipt(data, actor) {
     }
 
     let storeName = String(parsed.store || '').trim().slice(0, 50);
+    const sourceKind = String(parsed.sourceKind || '').toLowerCase() === 'screenshot' || !!parsed.paymentService ? 'screenshot' : 'receipt';
+    const paymentService = String(parsed.paymentService || '').trim().slice(0, 30);
+
+    // スマホ決済完了スクショ（PayPay・楽天ペイ・d払い等）で明細行がなく店名と合計金額のみの場合の確実なフォールバック生成 (v2.18.0)
+    if (items.length === 0 && total !== 0) {
+      const fallbackName = storeName || (paymentService ? `${paymentService}決済` : 'スマホ決済・スクショ記帳');
+      const fallbackCat = inferItemCategory(fallbackName);
+      items = [{
+        name: fallbackName,
+        category: fallbackCat,
+        quantity: 1,
+        price: total
+      }];
+    } else if (total === 0 && items.length > 0) {
+      total = items.reduce((s, it) => s + it.price, 0);
+    }
+
     if (isRefund && !/返金|返品|REFUND/i.test(storeName)) {
       storeName = `${storeName || '店舗'} (返金)`;
     }
@@ -2156,10 +2179,12 @@ async function handleScanReceipt(data, actor) {
     return {
       success: true,
       receipt: {
-        store: storeName,
+        store: storeName || (paymentService ? `${paymentService}利用` : 'レシート店舗'),
         date: isValidDateStr(parsed.date) ? parsed.date : todayStr(),
         total: total,
         isRefund: isRefund,
+        sourceKind: sourceKind,
+        paymentService: paymentService,
         items: items
       }
     };
@@ -4131,8 +4156,75 @@ async function executeVerifiedLineCommand(supabase, text, userId, pairId, config
       '■ レシート対話編集\n・レシート変更（直近レシートの私物・共同を対話修正）\n\n' +
       '■ 状況・レポート・AI家計分析\n・残金 / 今月いくら使った？\n・口座残高 / レシート何枚？\n・振込額\n・収支報告（グラフ付き！）\n・AI分析 / ファイル抽出（AI診断用ファイル＆CSV出力）\n\n' +
       '■ 価格を調べる（AI不使用・DB相場）\n・卵の値段\n・牛乳いくら？\n\n' +
-      '📷 レシート写真を送るだけでAI自動記帳もできます✨\n' +
+      '■ 積立貯蓄からのマイナス・月次超過補填 (v2.18.0)\n・積立から補填（今月の生活費超過分を貯蓄から自動補填）\n・積立から 15000円 マイナス（指定額を貯蓄から取り崩し）\n\n' +
+      '📷 レシート写真やスマホ決済スクショ（PayPay・楽天ペイ・Amazon等）を送るだけでAI自動記帳もできます✨\n' +
       `🌐 Webアプリを開く:\n${PUBLIC_WEB_APP_URL}`;
+  }
+
+  // 4.2. 積立・貯蓄からのマイナス（取り崩し）＆月次生活費超過分の補填コマンド (v2.18.0)
+  const coverDeficitMatch = text.match(/^(?:積立|積み立て|貯蓄|貯金|別口座|繰越|繰り越し)(?:分)?(?:から)?(?:今月の)?(?:生活費|予算)?(?:の)?(?:超過分|赤字分|不足分|マイナス分)?(?:を)?(?:補填|ほてん|充当|カバー|マイナス|取り崩し|取崩し|出す|出金)(?:して|する|お願い)?[！!〜ー♪✨\s]*$/i);
+  const withdrawAmountMatch = text.match(/^(?:積立|積み立て|貯蓄|貯金|別口座|繰越|繰り越し)(?:分)?(?:から)?\s*([0-9,，]+)\s*円?\s*(?:を)?\s*(?:マイナス|補填|ほてん|取り崩し|取崩し|出す|出金|引く|差し引く)(?:\s+(.+))?[！!〜ー♪✨\s]*$/i);
+
+  if (coverDeficitMatch || withdrawAmountMatch) {
+    const curMonth = currentMonthStr();
+    const initData = await handleGetInitialData(supabase, curMonth, actor, pairId);
+    const s = initData.summary;
+    const savingsCfg = config.savingsConfig && typeof config.savingsConfig === 'object'
+      ? { ...config.savingsConfig }
+      : { initialSavings: 0, monthlyInterests: {}, monthlyBalances: {}, monthlyWithdrawals: {} };
+    if (!savingsCfg.monthlyBalances) savingsCfg.monthlyBalances = {};
+    if (!savingsCfg.monthlyInterests) savingsCfg.monthlyInterests = {};
+    if (!savingsCfg.monthlyWithdrawals) savingsCfg.monthlyWithdrawals = {};
+
+    let deductAmount = 0;
+    let deductReason = '月次生活費の予算超過補填';
+    if (withdrawAmountMatch) {
+      deductAmount = parseInt(String(withdrawAmountMatch[1]).replace(/[,，]/g, ''), 10) || 0;
+      if (withdrawAmountMatch[2]) deductReason = String(withdrawAmountMatch[2]).trim().slice(0, 40);
+      else deductReason = '積立からの取り崩し・補填';
+    } else {
+      // 自動で当月の予算超過分を算出
+      const rawOver = Math.max(0, Number(s.totalExpense || 0) - Number(s.budget || DEFAULT_BUDGET));
+      if (rawOver <= 0) {
+        return `🐷【積立からの超過補填チェック】\n今月（${curMonth}）の生活費支出は ¥${Number(s.totalExpense || 0).toLocaleString()}（予算 ¥${Number(s.budget || DEFAULT_BUDGET).toLocaleString()}）で、まだ予算超過していません✨（残り ¥${Number(s.remaining || 0).toLocaleString()}）\n\n💡 任意の金額を積立からマイナスしたい場合は\n「積立から 15000円 マイナス」\nのように金額を指定して送信してください！`;
+      }
+      deductAmount = rawOver;
+    }
+
+    if (deductAmount <= 0) {
+      return '⚠️ 積立からマイナスする金額を正しく指定してください（例:「積立から 10000円 マイナス」または「積立から補填」）。';
+    }
+
+    // 対象月の月次収支（monthlyBalances）にマイナス計上し、補填履歴を記録
+    savingsCfg.monthlyBalances[curMonth] = -Math.abs(deductAmount);
+    savingsCfg.monthlyWithdrawals[curMonth] = {
+      amount: Math.abs(deductAmount),
+      reason: deductReason,
+      updatedBy: actor.name || 'メンバー',
+      updatedAt: new Date().toISOString()
+    };
+
+    await setAppSetting(supabase, pairId, 'savingsConfig', savingsCfg);
+    await writeAudit(supabase, actor, pairId, 'update', 'savingsConfig', curMonth, config.savingsConfig, savingsCfg);
+
+    // 最新の別口座貯金残高を計算
+    const sharedSavingsAcc = (config.bankAccounts || []).find(a => a.type === 'shared_savings');
+    const baseSavings = sharedSavingsAcc && Number(sharedSavingsAcc.balance) > 0
+      ? Number(sharedSavingsAcc.balance)
+      : Number(savingsCfg.initialSavings || 0);
+    const sumManualBalances = Object.values(savingsCfg.monthlyBalances).reduce((acc, v) => acc + (Number(v) || 0), 0);
+    const sumInterests = Object.values(savingsCfg.monthlyInterests).reduce((acc, v) => acc + (Number(v) || 0), 0);
+    const newSeparateSavings = baseSavings + sumManualBalances + sumInterests;
+
+    return `🐷【積立貯蓄からのマイナス（補填）完了】\n` +
+      `━━━━━━━━━━━━━━\n` +
+      `📅 対象月: ${curMonth}\n` +
+      `💸 積立からの補填額: -¥${Math.abs(deductAmount).toLocaleString()}\n` +
+      `📝 内容: ${deductReason}\n` +
+      `🏦 補填後の別口座貯金（繰越分）残高: ¥${newSeparateSavings.toLocaleString()}\n` +
+      `━━━━━━━━━━━━━━\n` +
+      `アプリの「ホーム」タブ（生活費予算カード＆別口座貯金ボード）に即時反映されました✨\n` +
+      `🌐 Webアプリ: ${PUBLIC_WEB_APP_URL}`;
   }
 
   // 4. 残金確認
@@ -4831,13 +4923,18 @@ async function processLineImageMessage(supabase, messageId, userId, lineToken, s
   const currentModeFooter = `\n━━━━━━━━━━━━━━\n（現在の設定: ${isProxy ? `👥 支払者: ${payer}さん ｜ ` : ''}支払方法: ${receiptPaymentType === 'advanced_by_user' ? '👤 個人立替' : (receiptPaymentType === 'shared_account' ? '🏦 口座振替' : '💳 共同カード')}）\n💡 切替:「立替モード」「共同カードモード」${isProxy ? ' ｜ 「代理解除」' : ''}`;
 
   const isRefundReceipt = receipt.isRefund || receipt.total < 0;
-  const headerTitle = isRefundReceipt ? '💸 返金レシートを記録しました' : '🧾 レシートを自動記録しました！';
+  const isScreenshot = receipt.sourceKind === 'screenshot' || !!receipt.paymentService;
+  const headerTitle = isRefundReceipt
+    ? '💸 返金レシートを記録しました'
+    : (isScreenshot ? '📱 スマホスクショをAI自動記帳しました！' : '🧾 レシートを自動記録しました！');
+  const serviceLine = receipt.paymentService ? `📲 検出画面: ${receipt.paymentService}\n` : '';
   const totalDisplay = isRefundReceipt
     ? `-¥${Math.abs(receipt.total).toLocaleString()}（返金計上）`
     : `¥${Math.abs(receipt.total).toLocaleString()}`;
 
   return waitNotice + proxyBanner + `${headerTitle}\n` +
     `━━━━━━━━━━━━━━\n` +
+    serviceLine +
     `🏪 店名: ${receipt.store || '未設定'}\n` +
     `📅 日付: ${receipt.date}\n` +
     `💰 合計: ${totalDisplay}（明細 ${receipt.items.length}件）\n` +
@@ -4927,7 +5024,7 @@ async function handleHealthCheck(req) {
 
   return {
     success: true,
-    version: 'v2.17.5',
+    version: 'v2.18.0',
     resolvedUrl: resolvedUrl ? resolvedUrl.replace(/\/\/[^@]+@/, '//***@') : '未設定',
     keyType: keyType,
     env: envCheck,
@@ -5785,7 +5882,7 @@ export default async function handler(req, res) {
       if (!actor.allowed) {
         return res.status(200).json({
           success: false,
-          version: 'v2.17.5',
+          version: 'v2.18.0',
           code: actor.code,
           error: actor.error,
           userId: actor.userId || '',

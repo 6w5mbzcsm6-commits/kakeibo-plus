@@ -1,6 +1,6 @@
 {
   "name": "pair-budget-app",
-  "version": "2.17.5",
+  "version": "2.18.0",
   "description": "ふたり家計簿 (PairBudget) - Vercel Serverless Functions + Supabase PostgreSQL",
   "type": "module",
   "dependencies": {

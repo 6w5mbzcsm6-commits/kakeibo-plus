@@ -83,7 +83,7 @@
         <div>
           <div class="flex items-center gap-1.5">
             <h1 class="text-base font-bold text-slate-900 leading-tight">ふたり家計簿</h1>
-            <span id="headerVersionBadge" onclick="forceHardReload()" title="タップして最新版に更新" class="bg-brand-50 text-brand-700 hover:bg-brand-100 text-[10px] font-bold px-1.5 py-0.5 rounded-full border border-brand-200 cursor-pointer transition-colors active:scale-95 select-none">v2.17.5</span>
+            <span id="headerVersionBadge" onclick="forceHardReload()" title="タップして最新版に更新" class="bg-brand-50 text-brand-700 hover:bg-brand-100 text-[10px] font-bold px-1.5 py-0.5 rounded-full border border-brand-200 cursor-pointer transition-colors active:scale-95 select-none">v2.18.0</span>
           </div>
           <!-- 月ナビゲーション（爆速クイック月選択対応 v2.10.0） -->
           <div class="flex items-center gap-1 mt-0.5">
@@ -311,6 +311,33 @@
               </div>
               <div id="surplusRefundDetails" class="text-[11px] text-emerald-700 flex flex-wrap gap-2 pt-0.5"></div>
             </div>
+
+            <!-- 🐷 月次生活費超過時の「積立・貯蓄からのマイナス（補填）」バナー (v2.18.0) -->
+            <div id="deficitCoverBanner" class="hidden mt-3 p-3 rounded-xl bg-rose-50/90 border border-rose-200 text-xs text-rose-900 space-y-2">
+              <div class="flex items-center justify-between gap-2 flex-wrap">
+                <span id="deficitCoverTitle" class="font-extrabold flex items-center gap-1.5 text-rose-800">
+                  <i data-lucide="piggy-bank" class="w-4 h-4 text-rose-600"></i>
+                  <span>月間の生活費が予算を超過しています</span>
+                </span>
+                <span id="deficitCoverStatusBadge" class="text-[10px] bg-rose-200/80 text-rose-950 px-2 py-0.5 rounded-full font-bold"></span>
+              </div>
+              <p id="deficitCoverDesc" class="text-[11px] text-rose-700 leading-relaxed">
+                超過した生活費分を「② 別口座貯金（繰越・積立分）」からマイナスして補填できます。
+              </p>
+              <div id="deficitCoverActions" class="flex items-center gap-2 flex-wrap pt-0.5">
+                <button type="button" id="coverFullDeficitBtn" onclick="coverDeficitFromSavings()" class="bg-rose-600 hover:bg-rose-700 text-white font-bold text-[11px] px-3 py-1.5 rounded-lg shadow-2xs transition-all active:scale-95 cursor-pointer flex items-center gap-1">
+                  <i data-lucide="arrow-down-left" class="w-3.5 h-3.5"></i>
+                  <span id="coverFullDeficitBtnLabel">超過分を積立から補填する</span>
+                </button>
+                <button type="button" onclick="openSavingsWithdrawalPrompt()" class="bg-white hover:bg-rose-100 text-rose-700 border border-rose-300 font-bold text-[11px] px-2.5 py-1.5 rounded-lg transition-all active:scale-95 cursor-pointer flex items-center gap-1">
+                  <i data-lucide="minus-circle" class="w-3.5 h-3.5"></i>
+                  <span>金額を指定して積立から出す</span>
+                </button>
+                <button type="button" id="cancelDeficitCoverBtn" onclick="cancelSavingsWithdrawalForMonth()" class="hidden text-[11px] text-slate-500 hover:text-slate-700 underline px-1.5 py-1 cursor-pointer">
+                  補填を取り消す
+                </button>
+              </div>
+            </div>
           </section>
 
           <!-- 💰🏦 ふたりの共同口座 ＆ 別口座積立 統合ボード (v2.14.0: 案C口座分け × 案Aスッキリ統合) -->
@@ -374,13 +401,17 @@
 
                 <!-- ② 別口座貯金（余った分の繰越） -->
                 <div class="bg-black/20 rounded-xl p-3 border border-white/10 space-y-1.5">
-                  <div class="flex items-center justify-between text-[11px] text-emerald-200 font-bold">
+                  <div class="flex items-center justify-between text-[11px] text-emerald-200 font-bold gap-1 flex-wrap">
                     <span class="flex items-center gap-1"><i data-lucide="piggy-bank" class="w-3.5 h-3.5"></i> ② 別口座貯金（繰越分）</span>
-                    <button type="button" onclick="openSavingsModal()" class="text-[9px] bg-emerald-500/30 hover:bg-emerald-500/50 text-emerald-100 px-1.5 py-0.5 rounded cursor-pointer transition-colors">金額設定 ✏️</button>
+                    <div class="flex items-center gap-1">
+                      <button type="button" onclick="openSavingsWithdrawalPrompt()" class="text-[9px] bg-rose-500/40 hover:bg-rose-500/60 text-rose-100 px-1.5 py-0.5 rounded cursor-pointer transition-colors font-bold" title="生活費の超過分や特別支出を積立からマイナス（補填・取崩）します">💸 積立から出す</button>
+                      <button type="button" onclick="openSavingsModal()" class="text-[9px] bg-emerald-500/30 hover:bg-emerald-500/50 text-emerald-100 px-1.5 py-0.5 rounded cursor-pointer transition-colors">金額設定 ✏️</button>
+                    </div>
                   </div>
                   <div id="separateSavingsBalanceLabel" class="text-lg font-black font-mono text-white truncate">¥0</div>
-                  <div class="flex items-center justify-between text-[10px] text-slate-200 pt-1 border-t border-white/10">
+                  <div class="flex items-center justify-between text-[10px] text-slate-200 pt-1 border-t border-white/10 flex-wrap gap-1">
                     <span>別口座/初期: <b id="initialSavingsLabel" class="text-white font-mono">¥0</b></span>
+                    <span id="currentMonthWithdrawalStatus" class="hidden text-rose-200 font-bold">当月補填: <b id="currentMonthWithdrawalAmount" class="font-mono">-¥0</b></span>
                     <span>累計利息: <b id="totalInterestsLabel" class="text-emerald-200 font-mono">¥0</b></span>
                   </div>
                 </div>
@@ -1194,7 +1225,7 @@
           <footer class="pt-2 pb-6 text-center text-[10px] text-slate-400 font-mono flex items-center justify-center gap-2 select-none flex-wrap">
             <span class="inline-flex items-center gap-1 bg-slate-100 text-slate-600 px-2 py-0.5 rounded-full">
               <span>Web</span>
-              <b id="frontVersionLabel" class="text-slate-800">v2.17.5</b>
+              <b id="frontVersionLabel" class="text-slate-800">v2.18.0</b>
             </span>
             <span>/</span>
             <span class="inline-flex items-center gap-1 bg-slate-100 text-slate-600 px-2 py-0.5 rounded-full">
@@ -1247,10 +1278,10 @@
     <button id="fabToggleBtn" type="button" onclick="toggleFabCompact()" class="bg-slate-700/60 hover:bg-slate-800 text-white w-6 h-6 rounded-full flex items-center justify-center text-[10px] shadow-sm backdrop-blur-xs transition-transform active:scale-90 cursor-pointer" aria-label="操作ボタンの表示切替" title="操作ボタンの最小化/展開">
       <i id="fabToggleIcon" data-lucide="chevron-down" class="w-3.5 h-3.5"></i>
     </button>
-    <div id="quickScanReceiptBtn" class="fab-item relative overflow-hidden bg-white hover:bg-brand-50 active:scale-95 text-brand-700 border-2 border-brand-500 px-3.5 py-2 rounded-full shadow-lg flex items-center gap-1.5 text-xs font-extrabold cursor-pointer transition-all select-none" aria-label="レシートを読み取る">
-      <input type="file" accept="image/*" class="receipt-file-input absolute inset-0 w-full h-full opacity-0 cursor-pointer z-10" aria-label="レシート画像を選択" onchange="handleReceiptInputChange(this)">
+    <div id="quickScanReceiptBtn" class="fab-item relative overflow-hidden bg-white hover:bg-brand-50 active:scale-95 text-brand-700 border-2 border-brand-500 px-3.5 py-2 rounded-full shadow-lg flex items-center gap-1.5 text-xs font-extrabold cursor-pointer transition-all select-none" aria-label="レシート・スクショを読み取る">
+      <input type="file" accept="image/*" class="receipt-file-input absolute inset-0 w-full h-full opacity-0 cursor-pointer z-10" aria-label="レシートまたはスマホスクショ画像を選択" onchange="handleReceiptInputChange(this)">
       <i data-lucide="camera" class="w-4 h-4 text-brand-600 pointer-events-none"></i>
-      <span class="pointer-events-none">レシート読取</span>
+      <span class="pointer-events-none">レシート/スクショ読取</span>
     </div>
     <button id="openExpenseModalBtn" class="fab-item bg-brand-500 hover:bg-brand-600 active:scale-95 text-white w-14 h-14 rounded-full shadow-xl flex items-center justify-center transition-all cursor-pointer" aria-label="支出を記録">
       <i data-lucide="plus" class="w-7 h-7 pointer-events-none"></i>
@@ -1308,10 +1339,10 @@
           </div>
           <div class="flex-1">
             <div class="text-xs font-black text-emerald-950 flex items-center gap-1.5">
-              <span>レシート写真をスキャン (AI-OCR)</span>
+              <span>レシート写真 / スマホ決済スクショ (AI記帳)</span>
               <span class="text-[9px] bg-emerald-200 text-emerald-900 px-1.5 py-0.2 rounded font-bold">推奨</span>
             </div>
-            <p class="text-[10px] text-emerald-800/80 mt-0.5">カメラ撮影または保存画像から自動読み取り＆明細仕分け</p>
+            <p class="text-[10px] text-emerald-800/80 mt-0.5">紙のレシートやPayPay・楽天ペイ・Amazon等のスクショをAI自動解析</p>
           </div>
           <i data-lucide="chevron-right" class="w-4 h-4 text-emerald-400"></i>
         </label>
@@ -1930,6 +1961,31 @@
           </p>
         </div>
 
+        <!-- 💸 積立からのマイナス（月次超過分の補填・取り崩し）クイック操作 (v2.18.0) -->
+        <div class="bg-rose-50/80 border border-rose-200/90 rounded-2xl p-3.5 space-y-2">
+          <div class="flex items-center justify-between">
+            <span class="font-bold text-rose-800 flex items-center gap-1">
+              <i data-lucide="arrow-down-left" class="w-3.5 h-3.5 text-rose-600"></i>
+              <span>積立・貯蓄からマイナス（生活費超過の補填・取崩）</span>
+            </span>
+            <span id="savingsModalCurrentMonthLabel" class="text-[10px] bg-rose-200/70 text-rose-900 px-2 py-0.5 rounded-full font-bold">当月</span>
+          </div>
+          <p class="text-[10px] text-rose-700 leading-relaxed">
+            月間の生活費が予算を超えた時などに、貯蓄（繰越分）から補填額を差し引いて出せます。
+          </p>
+          <div class="flex items-center gap-1.5">
+            <input type="number" id="savingsQuickWithdrawInput" placeholder="例: 15000 (マイナスする金額)" min="1" class="flex-1 bg-white border border-rose-200 rounded-xl px-3 py-1.5 text-xs font-mono focus:outline-none focus:ring-2 focus:ring-rose-400">
+            <button type="button" onclick="applyQuickSavingsWithdrawalFromModal()" class="bg-rose-600 hover:bg-rose-700 text-white font-bold px-3 py-1.5 rounded-xl text-xs transition-all cursor-pointer shrink-0 shadow-2xs">
+              💸 積立からマイナス
+            </button>
+          </div>
+          <div id="savingsModalDeficitQuickBtnWrap" class="hidden pt-0.5">
+            <button type="button" onclick="fillCurrentMonthDeficitInModal()" class="text-[11px] text-rose-700 hover:text-rose-900 font-bold underline cursor-pointer flex items-center gap-1">
+              <span id="savingsModalDeficitQuickBtnText">👉 当月の予算超過分を自動セットする</span>
+            </button>
+          </div>
+        </div>
+
         <!-- 月別 収支・利息入力リスト (過去実績の上書き入力) -->
         <div class="bg-slate-50 border border-slate-200/80 rounded-2xl p-3.5 space-y-2">
           <div class="flex items-center justify-between">
@@ -2398,8 +2454,8 @@
   </div>
 
   <!-- アプリ本体スクリプト -->
-  <script src="config.js?v=2.17.5"></script>
-  <script src="app.js?v=2.17.5"></script>
+  <script src="config.js?v=2.18.0"></script>
+  <script src="app.js?v=2.18.0"></script>
 
   <!-- 口座追加・編集モーダル (v2.14.0) -->
   <div id="bankAccountModal" class="hidden fixed inset-0 z-50 bg-black/50 backdrop-blur-xs flex items-center justify-center p-4">
@@ -2475,7 +2531,7 @@
             <h3 class="text-base font-bold text-slate-800 flex items-center gap-1.5">
               <i data-lucide="receipt" class="w-5 h-5 text-sky-600"></i> 明細取込 ＆ おしどり風仕分け
             </h3>
-            <span class="text-[10px] font-bold bg-sky-100 text-sky-700 px-1.5 py-0.5 rounded">v2.17.5</span>
+            <span class="text-[10px] font-bold bg-sky-100 text-sky-700 px-1.5 py-0.5 rounded">v2.18.0</span>
           </div>
           <p class="text-xs text-slate-400">CSVまたはスマホの明細スクショから取り込み「共有 / 私物」を仕分け</p>
         </div>

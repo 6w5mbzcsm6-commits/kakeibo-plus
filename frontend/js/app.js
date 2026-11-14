@@ -9,7 +9,7 @@
  */
 
 const APP_CONFIG = window.PAIRBUDGET_CONFIG || {};
-const FRONTEND_VERSION = 'v2.17.5';
+const FRONTEND_VERSION = 'v2.18.0';
 const MAX_HISTORY_MONTHS = 36;
 const FIELD_LABELS = {
   date: '日付', title: '品名', amount: '金額', category: 'カテゴリ', isShared: '共同',
@@ -1708,7 +1708,7 @@ async function loadInitialData(month, opts = {}) {
       if (res && (res.code === 'UNREGISTERED' || res.code === 'AUTH' || res.code === 'SETUP_REQUIRED' || res.code === 'UNAUTHORIZED_LINE_USER')) {
         // バックエンド自体は正常稼働中（未登録または認証案内）なのでデモモードには落とさない
         state.isMockMode = false;
-        state.backendVersion = res.version || 'v2.17.5';
+        state.backendVersion = res.version || 'v2.18.0';
         handleApiError(res);
         renderAll();
         hideMainSkeleton();
@@ -2158,8 +2158,30 @@ function renderBudgetSummary() {
     $('homeReceiptCounterBadge').textContent = `🧾 レシート ${receiptCount}枚 (明細 ${totalTxCount}件)`;
   }
 
-  // 残金ラベル・金額
-  if ($('remainingBudget')) $('remainingBudget').textContent = yen(s.remaining);
+  // 残金ラベル・金額（積立からの補填・取り崩しがある場合は加味して表示 v2.18.0）
+  const curMonthBal = Number(state.savingsConfig?.monthlyBalances?.[state.viewMonth] || 0);
+  const coveredFromSavings = curMonthBal < 0 ? Math.abs(curMonthBal) : 0;
+  const rawRemaining = Number(s.remaining || 0);
+  const effectiveRemaining = rawRemaining + coveredFromSavings;
+
+  if ($('remainingBudget')) {
+    $('remainingBudget').textContent = yen(coveredFromSavings > 0 ? effectiveRemaining : rawRemaining);
+    $('remainingBudget').className = (coveredFromSavings > 0 ? effectiveRemaining : rawRemaining) < 0
+      ? 'text-base font-black text-rose-600 font-mono'
+      : 'text-base font-black text-slate-900 font-mono';
+  }
+  if ($('remainingBudgetSub')) {
+    if (coveredFromSavings > 0) {
+      $('remainingBudgetSub').textContent = `🐷 積立から+${yen(coveredFromSavings)}補填済`;
+      $('remainingBudgetSub').className = 'text-[10px] text-emerald-600 font-bold block';
+    } else if (rawRemaining < 0) {
+      $('remainingBudgetSub').textContent = `${yen(Math.abs(rawRemaining))} 予算超過`;
+      $('remainingBudgetSub').className = 'text-[10px] text-rose-500 font-bold block';
+    } else {
+      $('remainingBudgetSub').textContent = '';
+      $('remainingBudgetSub').className = 'text-[10px] text-slate-400 block';
+    }
+  }
 
   // 「今月使えるお金」＆過去月の表示刷新
   const dailyLabel = $('dailyAllowanceLabel');
@@ -2169,8 +2191,10 @@ function renderBudgetSummary() {
   if (s.isCurrentMonth) {
     if (dailyLabel) dailyLabel.textContent = '今月使えるお金';
     if (dailyEl) {
-      dailyEl.textContent = yen(s.remaining);
-      dailyEl.className = s.remaining < 0 ? 'text-base font-black text-rose-600' : 'text-base font-black text-brand-600';
+      dailyEl.textContent = yen(coveredFromSavings > 0 ? effectiveRemaining : rawRemaining);
+      dailyEl.className = (coveredFromSavings > 0 ? effectiveRemaining : rawRemaining) < 0
+        ? 'text-base font-black text-rose-600 font-mono'
+        : 'text-base font-black text-brand-600 font-mono';
     }
     if (dailySub) {
       dailySub.textContent = `1日あたり目安: ${yen(s.dailyAllowance)} / 日 (残${s.daysLeft}日)`;
@@ -2180,17 +2204,75 @@ function renderBudgetSummary() {
     // 過去月の月次収支結果表示（「過去の月」を廃止し黒字/赤字をスタイリッシュに表示）
     if (dailyLabel) dailyLabel.textContent = '月次収支結果';
     if (dailyEl) {
-      if (s.remaining >= 0) {
-        dailyEl.textContent = `+${yen(s.remaining)}（黒字達成✨）`;
+      if (rawRemaining >= 0) {
+        dailyEl.textContent = `+${yen(rawRemaining)}（黒字達成✨）`;
+        dailyEl.className = 'text-xs font-black text-emerald-600';
+      } else if (coveredFromSavings > 0 && effectiveRemaining >= 0) {
+        dailyEl.textContent = `±¥0（積立補填済🐷）`;
         dailyEl.className = 'text-xs font-black text-emerald-600';
       } else {
-        dailyEl.textContent = `-${yen(Math.abs(s.remaining))}（予算超過）`;
+        dailyEl.textContent = `-${yen(Math.abs(rawRemaining))}（予算超過）`;
         dailyEl.className = 'text-xs font-black text-rose-600';
       }
     }
     if (dailySub) {
-      dailySub.textContent = '当月の生活費精算確定';
+      dailySub.textContent = coveredFromSavings > 0 ? `積立から ${yen(coveredFromSavings)} 補填` : '当月の生活費精算確定';
       dailySub.className = 'text-[10px] text-slate-400 block';
+    }
+  }
+
+  // 🐷 月次生活費の予算超過時・積立からのマイナス（補填）バナー描画 (v2.18.0)
+  const deficitBanner = $('deficitCoverBanner');
+  if (deficitBanner) {
+    const rawDeficit = rawRemaining < 0 ? Math.abs(rawRemaining) : 0;
+    if (rawDeficit > 0 || coveredFromSavings > 0) {
+      deficitBanner.classList.remove('hidden');
+      const statusBadge = $('deficitCoverStatusBadge');
+      const descEl = $('deficitCoverDesc');
+      const coverBtn = $('coverFullDeficitBtn');
+      const coverBtnLabel = $('coverFullDeficitBtnLabel');
+      const cancelBtn = $('cancelDeficitCoverBtn');
+      const titleEl = $('deficitCoverTitle');
+
+      if (coveredFromSavings > 0 && coveredFromSavings >= rawDeficit) {
+        // すでに超過分を積立から補填済み
+        deficitBanner.className = 'mt-3 p-3 rounded-xl bg-emerald-50/90 border border-emerald-200 text-xs text-emerald-900 space-y-2';
+        if (titleEl) titleEl.innerHTML = `<i data-lucide="check-circle-2" class="w-4 h-4 text-emerald-600"></i><span>積立貯蓄から生活費へ ${yen(coveredFromSavings)} を補填中</span>`;
+        if (statusBadge) {
+          statusBadge.textContent = `積立から -${yen(coveredFromSavings)} 出金済`;
+          statusBadge.className = 'text-[10px] bg-emerald-200/80 text-emerald-950 px-2 py-0.5 rounded-full font-bold';
+        }
+        if (descEl) {
+          descEl.textContent = rawDeficit > 0
+            ? `当月の予算超過分（${yen(rawDeficit)}）を「② 別口座貯金（繰越分）」からマイナスしてカバーしています。`
+            : `当月は「② 別口座貯金（繰越分）」から ${yen(coveredFromSavings)} を取り崩して生活費に充当しています。`;
+          descEl.className = 'text-[11px] text-emerald-800 leading-relaxed';
+        }
+        if (coverBtn) coverBtn.classList.add('hidden');
+        if (cancelBtn) cancelBtn.classList.remove('hidden');
+      } else {
+        // 予算超過が発生しており未補填（または一部のみ補填）
+        deficitBanner.className = 'mt-3 p-3 rounded-xl bg-rose-50/90 border border-rose-200 text-xs text-rose-900 space-y-2';
+        const uncovered = Math.max(0, rawDeficit - coveredFromSavings);
+        if (titleEl) titleEl.innerHTML = `<i data-lucide="piggy-bank" class="w-4 h-4 text-rose-600"></i><span>月間の生活費が予算を ${yen(rawDeficit)} 超過しています</span>`;
+        if (statusBadge) {
+          statusBadge.textContent = coveredFromSavings > 0 ? `未補填 ${yen(uncovered)}` : `超過 -${yen(rawDeficit)}`;
+          statusBadge.className = 'text-[10px] bg-rose-200/80 text-rose-950 px-2 py-0.5 rounded-full font-bold';
+        }
+        if (descEl) {
+          descEl.textContent = `超過した生活費（${yen(rawDeficit)}）を「② 別口座貯金（繰越・積立分）」からマイナスして補填できます。`;
+          descEl.className = 'text-[11px] text-rose-700 leading-relaxed';
+        }
+        if (coverBtn) coverBtn.classList.remove('hidden');
+        if (coverBtnLabel) coverBtnLabel.textContent = `超過分（${yen(rawDeficit)}）を積立から補填する`;
+        if (cancelBtn) {
+          if (coveredFromSavings > 0) cancelBtn.classList.remove('hidden');
+          else cancelBtn.classList.add('hidden');
+        }
+      }
+      lucide.createIcons();
+    } else {
+      deficitBanner.classList.add('hidden');
     }
   }
 
@@ -2433,7 +2515,9 @@ function renderSavingsCard() {
       <tr class="hover:bg-slate-50/80 transition-colors">
         <td class="py-2 px-3 font-bold text-slate-700">
           ${monthLabel}
-          ${item.isManual ? '<span class="text-[9px] text-brand-600 bg-brand-50 rounded px-1 ml-0.5 font-normal">繰越記録</span>' : ''}
+          ${item.balance < 0
+            ? '<span class="text-[9px] text-rose-600 bg-rose-50 border border-rose-200 rounded px-1 ml-0.5 font-bold">積立から補填</span>'
+            : (item.isManual ? '<span class="text-[9px] text-brand-600 bg-brand-50 rounded px-1 ml-0.5 font-normal">繰越記録</span>' : '')}
         </td>
         <td class="py-2 px-3 text-right">
           <button type="button" onclick="openSavingsModal('${item.month}')" class="hover:underline cursor-pointer" title="収支・利息を編集">
@@ -2454,6 +2538,19 @@ function renderSavingsCard() {
   if ($('separateSavingsBalanceLabel')) $('separateSavingsBalanceLabel').textContent = yen(summary.separateSavingsBalance);
   if ($('initialSavingsLabel')) $('initialSavingsLabel').textContent = yen(summary.initialSavings);
   if ($('totalInterestsLabel')) $('totalInterestsLabel').textContent = yen(summary.totalInterests);
+
+  // 当月の積立からのマイナス（補填額）バッジ表示 (v2.18.0)
+  const curMonthBal = Number(state.savingsConfig?.monthlyBalances?.[state.viewMonth] || 0);
+  const withdrawalStatusEl = $('currentMonthWithdrawalStatus');
+  const withdrawalAmountEl = $('currentMonthWithdrawalAmount');
+  if (withdrawalStatusEl && withdrawalAmountEl) {
+    if (curMonthBal < 0) {
+      withdrawalStatusEl.classList.remove('hidden');
+      withdrawalAmountEl.textContent = `-${yen(Math.abs(curMonthBal))}`;
+    } else {
+      withdrawalStatusEl.classList.add('hidden');
+    }
+  }
   if ($('savingsCountMonths')) {
     $('savingsCountMonths').textContent = summary.separateSavingsBalance > 0
       ? `生活費口座 ＋ 別口座貯金`
@@ -4879,8 +4976,30 @@ function hideToast() {
 window.openSavingsModal = function (targetMonth) {
   const modal = $('savingsModal');
   if (!modal) return;
+  const focusMonth = targetMonth || state.viewMonth;
   const summary = computeJointSavingsSummary();
   if ($('savingsInitialInput')) $('savingsInitialInput').value = summary.initialSavings || '';
+
+  // 当月の積立マイナス（超過補填）クイック欄の初期化 (v2.18.0)
+  if ($('savingsModalCurrentMonthLabel') && focusMonth) {
+    const [y, m] = focusMonth.split('-');
+    $('savingsModalCurrentMonthLabel').textContent = `${Number(y)}年${Number(m)}月分`;
+  }
+  const existingBal = Number(state.savingsConfig?.monthlyBalances?.[focusMonth] || 0);
+  if ($('savingsQuickWithdrawInput')) {
+    $('savingsQuickWithdrawInput').value = existingBal < 0 ? Math.abs(existingBal) : '';
+  }
+  const rawRemaining = Number(state.summary?.remaining || 0);
+  const deficitWrap = $('savingsModalDeficitQuickBtnWrap');
+  const deficitBtnText = $('savingsModalDeficitQuickBtnText');
+  if (deficitWrap && deficitBtnText) {
+    if (rawRemaining < 0) {
+      deficitWrap.classList.remove('hidden');
+      deficitBtnText.textContent = `👉 当月の生活費超過分（${yen(Math.abs(rawRemaining))}）を自動入力する`;
+    } else {
+      deficitWrap.classList.add('hidden');
+    }
+  }
 
   const list = $('savingsInterestsList');
   if (list) {
@@ -4942,7 +5061,8 @@ window.resetSavingsData = async function () {
   state.savingsConfig = {
     initialSavings: 0,
     monthlyInterests: {},
-    monthlyBalances: {}
+    monthlyBalances: {},
+    monthlyWithdrawals: {}
   };
   if (Array.isArray(state.bankAccounts)) {
     state.bankAccounts = state.bankAccounts.map(a => a.type === 'shared_savings' ? { ...a, balance: 0, updatedAt: new Date().toISOString() } : a);
@@ -4950,11 +5070,137 @@ window.resetSavingsData = async function () {
   }
   try { localStorage.setItem('pairbudget_savings_config', JSON.stringify(state.savingsConfig)); } catch (_) {}
   closeSavingsModal();
+  renderBudgetSummary();
   renderBankAccountsCard();
   renderSavingsCard();
   updateBudgetOverWarningBox();
   await writeAndRefresh('updateSavingsConfig', { savingsConfig: state.savingsConfig }, '🗑️ 別口座・積立データを0にリセットしました');
 };
+
+/**
+ * 🐷 月間の生活費が予算を超えた時に、超過分をワンタップで積立貯蓄（別口座繰越分）からマイナスして補填する関数 (v2.18.0)
+ */
+window.coverDeficitFromSavings = async function (targetMonth) {
+  const m = targetMonth || state.viewMonth;
+  const rawRemaining = Number(state.summary?.remaining || 0);
+  if (rawRemaining >= 0) {
+    showToast('今月はまだ生活費予算を超過していません✨ 金額を指定して取り崩す場合は「💸 積立から出す」をご利用ください。', 'info');
+    return;
+  }
+  const deficitAmount = Math.abs(rawRemaining);
+  await applySavingsWithdrawal(deficitAmount, '月間生活費の予算超過分を補填', m);
+};
+
+/**
+ * 💸 任意の金額を指定して積立貯蓄（別口座繰越分）からマイナス（補填・取り崩し）するダイアログ (v2.18.0)
+ */
+window.openSavingsWithdrawalPrompt = async function (targetMonth) {
+  const m = targetMonth || state.viewMonth;
+  const [y, mon] = String(m).split('-');
+  const rawRemaining = Number(state.summary?.remaining || 0);
+  const defaultVal = rawRemaining < 0 ? Math.abs(rawRemaining) : '';
+  const summary = computeJointSavingsSummary();
+  const inputStr = prompt(
+    `🐷【積立・貯蓄からマイナス（生活費補填・取り崩し）】\n` +
+    `現在の別口座貯金（繰越分）残高: ${yen(summary.separateSavingsBalance)}\n\n` +
+    `${Number(y)}年${Number(mon)}月分として、積立貯蓄からマイナス（出金・補填）する金額（円）を入力してください:`,
+    defaultVal ? String(defaultVal) : ''
+  );
+  if (inputStr === null) return;
+  const cleaned = String(inputStr).replace(/[,，円¥\s-]/g, '');
+  const amount = parseInt(cleaned, 10);
+  if (isNaN(amount) || amount <= 0) {
+    showToast('⚠️ 正しい金額（1円以上の整数）を入力してください', 'error');
+    return;
+  }
+  await applySavingsWithdrawal(amount, '積立貯蓄からの補填・取り崩し', m);
+};
+
+/**
+ * savingsModal 内の「当月の予算超過分を自動入力」ボタン
+ */
+window.fillCurrentMonthDeficitInModal = function () {
+  const rawRemaining = Number(state.summary?.remaining || 0);
+  if (rawRemaining < 0 && $('savingsQuickWithdrawInput')) {
+    $('savingsQuickWithdrawInput').value = Math.abs(rawRemaining);
+    applyQuickSavingsWithdrawalFromModal();
+  }
+};
+
+/**
+ * savingsModal 内の「💸 積立からマイナス」クイック反映ボタン
+ */
+window.applyQuickSavingsWithdrawalFromModal = async function () {
+  const val = parseInt($('savingsQuickWithdrawInput')?.value, 10);
+  if (isNaN(val) || val <= 0) {
+    showToast('⚠️ 積立からマイナスする金額（円）を入力してください', 'error');
+    return;
+  }
+  const m = state.viewMonth;
+  const monthInput = document.querySelector(`input[data-savings-balance-month="${m}"]`);
+  if (monthInput) {
+    monthInput.value = -Math.abs(val);
+  }
+  await applySavingsWithdrawal(val, '積立モーダルからの補填・取り崩し', m);
+  closeSavingsModal();
+};
+
+/**
+ * 当月の積立補填（マイナス計上）を取り消す関数 (v2.18.0)
+ */
+window.cancelSavingsWithdrawalForMonth = async function (targetMonth) {
+  const m = targetMonth || state.viewMonth;
+  if (!state.savingsConfig) state.savingsConfig = { initialSavings: 0, monthlyInterests: {}, monthlyBalances: {}, monthlyWithdrawals: {} };
+  if (state.savingsConfig.monthlyBalances) {
+    delete state.savingsConfig.monthlyBalances[m];
+  }
+  if (state.savingsConfig.monthlyWithdrawals) {
+    delete state.savingsConfig.monthlyWithdrawals[m];
+  }
+  try { localStorage.setItem('pairbudget_savings_config', JSON.stringify(state.savingsConfig)); } catch (_) {}
+  renderBudgetSummary();
+  renderBankAccountsCard();
+  renderSavingsCard();
+  updateBudgetOverWarningBox();
+  await writeAndRefresh('updateSavingsConfig', { savingsConfig: state.savingsConfig }, '↩️ 当月の積立からの補填を取り消しました');
+};
+
+/**
+ * 指定した金額を積立貯蓄（savingsConfig.monthlyBalances[m]）からマイナス計上して即時反映・保存する共通処理 (v2.18.0)
+ */
+async function applySavingsWithdrawal(amount, reason, targetMonth) {
+  const m = targetMonth || state.viewMonth;
+  const deduct = Math.abs(parseInt(amount, 10) || 0);
+  if (deduct <= 0) return;
+
+  if (!state.savingsConfig || typeof state.savingsConfig !== 'object') {
+    state.savingsConfig = { initialSavings: 0, monthlyInterests: {}, monthlyBalances: {}, monthlyWithdrawals: {} };
+  }
+  if (!state.savingsConfig.monthlyBalances) state.savingsConfig.monthlyBalances = {};
+  if (!state.savingsConfig.monthlyInterests) state.savingsConfig.monthlyInterests = {};
+  if (!state.savingsConfig.monthlyWithdrawals) state.savingsConfig.monthlyWithdrawals = {};
+
+  state.savingsConfig.monthlyBalances[m] = -deduct;
+  state.savingsConfig.monthlyWithdrawals[m] = {
+    amount: deduct,
+    reason: reason || '生活費超過分の補填',
+    updatedAt: new Date().toISOString()
+  };
+
+  try { localStorage.setItem('pairbudget_savings_config', JSON.stringify(state.savingsConfig)); } catch (_) {}
+
+  renderBudgetSummary();
+  renderBankAccountsCard();
+  renderSavingsCard();
+  updateBudgetOverWarningBox();
+
+  await writeAndRefresh(
+    'updateSavingsConfig',
+    { savingsConfig: state.savingsConfig },
+    `🐷 積立貯蓄から -${yen(deduct)} をマイナス（生活費へ補填）しました✨`,
+    '積立からの補填を保存中…'
+  );
+}
 
 async function handleSaveSavingsModal() {
   const initial = parseInt($('savingsInitialInput')?.value, 10) || 0;
@@ -5013,6 +5259,7 @@ async function handleSaveSavingsModal() {
 
   try { localStorage.setItem('pairbudget_savings_config', JSON.stringify(state.savingsConfig)); } catch (_) {}
   closeSavingsModal();
+  renderBudgetSummary();
   renderBankAccountsCard();
   renderSavingsCard();
   updateBudgetOverWarningBox();
